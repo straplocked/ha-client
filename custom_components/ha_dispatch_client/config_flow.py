@@ -7,7 +7,7 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import aiohttp_client
-from homeassistant.helpers.network import get_url
+from homeassistant.helpers.network import get_url, NoURLAvailableError
 import aiohttp
 import yarl
 
@@ -52,7 +52,7 @@ class HADispatchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 try:
                     ha_url = yarl.URL(get_url(self.hass, allow_internal=True))
                     port = ha_url.port or 8123  # Default to 8123 if not specified
-                except Exception:
+                except (NoURLAvailableError, ValueError):
                     port = 8123  # Fallback to default HA port
                 
                 # Construct hostname with .local domain and port (e.g., homeassistant.local:8123)
@@ -83,7 +83,7 @@ class HADispatchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except aiohttp.ClientError as err:
                 _LOGGER.error("Cannot connect to server: %s", err)
                 errors["base"] = "cannot_connect"
-            except Exception as err:
+            except (KeyError, ValueError, TypeError, TimeoutError) as err:
                 _LOGGER.exception("Unexpected error during registration: %s", err)
                 errors["base"] = "unknown"
 

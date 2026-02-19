@@ -2,6 +2,7 @@
 import logging
 import time
 from datetime import timedelta
+import aiohttp
 import psutil
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
@@ -70,7 +71,7 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                 "metrics": metrics,
             }
 
-        except Exception as err:
+        except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
             _LOGGER.error("Error communicating with API: %s", err)
             raise UpdateFailed(f"Error communicating with API: {err}")
 
@@ -91,7 +92,7 @@ class HADispatchCoordinator(DataUpdateCoordinator):
             # (thresholds, features, etc. can be stored for future use)
             _LOGGER.info("Applied configuration version %s", self.config_version)
 
-        except Exception as err:
+        except (KeyError, TypeError, ValueError) as err:
             _LOGGER.error("Error applying configuration: %s", err)
 
     def _collect_metrics(self) -> dict:
@@ -122,7 +123,7 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                 "uptime_seconds": uptime_seconds,
                 "warnings": self._check_warnings(memory, disk),
             }
-        except Exception as err:
+        except OSError as err:
             _LOGGER.error("Error collecting metrics: %s", err)
             return {}
 
@@ -140,6 +141,6 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         try:
             import platform
             return f"{platform.system()} {platform.release()}"
-        except Exception:
+        except OSError:
             return "Unknown"
 
