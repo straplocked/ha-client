@@ -1,0 +1,165 @@
+send_test_metrics:
+  name: Send Test Metrics
+  description: Send test metrics to the server to verify connectivity
+  fields:
+    cpu_load:
+      name: CPU Load
+      description: CPU load value (0-100)
+      example: 75.5
+      selector:
+        number:
+          min: 0
+          max: 200
+          step: 0.1
+    memory_used:
+      name: Memory Used %
+      description: Memory usage percentage (0-100)
+      example: 85.0
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+    disk_free:
+      name: Disk Free %
+      description: Disk free percentage (0-100)
+      example: 15.0
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+
+trigger_alert:
+  name: Trigger Alert
+  description: Send metrics that will trigger an alert on the server
+  fields:
+    alert_type:
+      name: Alert Type
+      description: Type of alert to trigger
+      required: true
+      default: disk_low
+      example: disk_low
+      selector:
+        select:
+          options:
+            - label: Low Disk Space
+              value: disk_low
+            - label: High CPU Load
+              value: cpu_high
+            - label: High Memory Usage
+              value: memory_high
+            - label: All Warnings
+              value: all
+
+force_update:
+  name: Force Update
+  description: Force an immediate status update and metric submission
+  fields: {}
+
+send_custom_metric:
+  name: Send Custom Metric
+  description: Send a custom metric with arbitrary values for testing
+  fields:
+    cpu_load_1m:
+      name: CPU Load 1m
+      description: 1-minute CPU load average
+      example: 1.5
+      selector:
+        number:
+          min: 0
+          max: 999
+          step: 0.01
+          mode: box
+    memory_used_percent:
+      name: Memory Used %
+      description: Memory usage percentage
+      example: 85.5
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          mode: box
+    disk_free_percent:
+      name: Disk Free %
+      description: Disk free percentage
+      example: 8.5
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          mode: box
+    warnings:
+      name: Warnings
+      description: Comma-separated warning tags (e.g., "low_disk,high_memory")
+      example: "low_disk,high_cpu"
+      selector:
+        text:
+
+submit_alert:
+  name: Submit Alert
+  description: Submit a structured alert to the HA Dispatch server
+  fields:
+    severity:
+      name: Severity
+      description: Alert severity level
+      required: true
+      example: warning
+      selector:
+        select:
+          options:
+            - label: Info
+              value: info
+            - label: Warning
+              value: warning
+            - label: Critical
+              value: critical
+    type:
+      name: Type
+      description: Alert type identifier (e.g., low_disk_space, high_cpu_load)
+      required: true
+      example: low_disk_space
+      selector:
+        text:
+    title:
+      name: Title
+      description: Short alert title (max 255 characters)
+      required: true
+      example: Low Disk Space
+      selector:
+        text:
+    message:
+      name: Message
+      description: Detailed alert message
+      required: true
+      example: Disk space has dropped below 10% on the system drive
+      selector:
+        text:
+          multiline: true
+    context:
+      name: Context
+      description: Additional context data as JSON (optional)
+      example: '{"disk_free_percent": 8.5, "disk_free_mb": 5120}'
+      selector:
+        object:
+    resolved:
+      name: Resolved
+      description: Mark alert as already resolved
+      default: false
+      selector:
+        boolean:
+
+resolve_alert:
+  name: Resolve Alert
+  description: Resolve all unresolved alerts of a specific type
+  fields:
+    type:
+      name: Type
+      description: Alert type to resolve (e.g., low_disk_space)
+      required: true
+      example: low_disk_space
+      selector:
+        text:
+

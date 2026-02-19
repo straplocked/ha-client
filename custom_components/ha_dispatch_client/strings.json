@@ -1,0 +1,119 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HA Dispatch Client Setup",
+        "description": "Connect your Home Assistant instance to HA Dispatch server",
+        "data": {
+          "server_url": "Server URL",
+          "name": "Installation Name"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to server",
+      "invalid_auth": "Invalid authentication",
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "This integration is already configured"
+    }
+  },
+  "services": {
+    "send_test_metrics": {
+      "name": "Send test metrics",
+      "description": "Send test metrics to verify server connectivity and metric submission.",
+      "fields": {
+        "cpu_load": {
+          "name": "CPU Load %",
+          "description": "CPU load percentage (0-100)"
+        },
+        "memory_used": {
+          "name": "Memory Used %",
+          "description": "Memory usage percentage (0-100)"
+        },
+        "disk_free": {
+          "name": "Disk Free %",
+          "description": "Disk free percentage (0-100)"
+        }
+      }
+    },
+    "trigger_alert": {
+      "name": "Trigger alert",
+      "description": "Quick test to trigger predefined alerts on the server (disk_low, cpu_high, memory_high, or all).",
+      "fields": {
+        "alert_type": {
+          "name": "Alert Type",
+          "description": "Type of alert to trigger"
+        }
+      }
+    },
+    "force_update": {
+      "name": "Force update",
+      "description": "Force an immediate status update and metric submission instead of waiting for the next scheduled update."
+    },
+    "send_custom_metric": {
+      "name": "Send custom metric",
+      "description": "Send custom metric values for advanced testing.",
+      "fields": {
+        "cpu_load_1m": {
+          "name": "CPU Load 1m",
+          "description": "1-minute CPU load average"
+        },
+        "memory_used_percent": {
+          "name": "Memory Used %",
+          "description": "Memory usage percentage (0-100)"
+        },
+        "disk_free_percent": {
+          "name": "Disk Free %",
+          "description": "Disk free percentage (0-100)"
+        },
+        "warnings": {
+          "name": "Warnings",
+          "description": "Comma-separated warning tags (e.g., 'low_disk,high_memory')"
+        }
+      }
+    },
+    "submit_alert": {
+      "name": "Submit alert",
+      "description": "Submit a structured alert to the HA Dispatch server with full control over all fields.",
+      "fields": {
+        "severity": {
+          "name": "Severity",
+          "description": "Alert severity level (info, warning, critical)"
+        },
+        "type": {
+          "name": "Type",
+          "description": "Alert type identifier (e.g., low_disk_space, high_cpu_load)"
+        },
+        "title": {
+          "name": "Title",
+          "description": "Short alert title (max 255 characters)"
+        },
+        "message": {
+          "name": "Message",
+          "description": "Detailed alert message"
+        },
+        "context": {
+          "name": "Context",
+          "description": "Additional context data as JSON object (optional)"
+        },
+        "resolved": {
+          "name": "Resolved",
+          "description": "Mark alert as already resolved"
+        }
+      }
+    },
+    "resolve_alert": {
+      "name": "Resolve alert",
+      "description": "Resolve all unresolved alerts of a specific type for this installation.",
+      "fields": {
+        "type": {
+          "name": "Type",
+          "description": "Alert type to resolve (e.g., low_disk_space)"
+        }
+      }
+    }
+  }
+}
+
