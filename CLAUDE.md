@@ -109,6 +109,25 @@ ssh user@ha-host 'ha core logs | grep ha_dispatch_client'
 
 - **No automated tests exist.** Testing is manual via HA UI and logs.
 - `reference_integrations/meross_lan/` is a reference codebase for learning HA patterns - not part of this integration.
-- **Caching caveat:** HA heavily caches `manifest.json` and `strings.json`. Version bumps may require deleting the old integration and reinstalling rather than overwriting. See `DEPLOYMENT_TIPS.md`.
+- **Caching caveat:** HA heavily caches `manifest.json` and `strings.json`. Version bumps may require deleting the old integration and reinstalling rather than overwriting. See `docs/user/deployment.md`.
 - The `VERSION` file at root and `version` in `manifest.json` must stay in sync.
 - The server poll interval (default 60s) can be changed remotely via the server's config push.
+
+## Documentation
+
+All documentation is organized under `docs/` — see `docs/INDEX.md` as the master hub.
+
+| Need | Doc |
+|------|-----|
+| Full doc index | `docs/INDEX.md` |
+| API endpoints | `docs/technical/api-reference.md` |
+| Service schemas | `docs/technical/services.md` |
+| Data model | `docs/technical/data-model/README.md` |
+| Dev guide | `docs/technical/dev-guide/README.md` |
+| Quickstart | `docs/user/quickstart.md` |
+| Deployment | `docs/user/deployment.md` |
+| Troubleshooting | `docs/user/troubleshooting.md` |
+| Doc update process | `DOC_UPDATE.md` (root) |
+| Doc changelog | `docs/DOCS_CHANGELOG.md` |
+
+When working on documentation tasks, check `DOC_UPDATE.md` for the update process and `docs/DOCS_CHANGELOG.md` for recent doc changes.
