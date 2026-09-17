@@ -6,14 +6,20 @@
         "description": "Connect your Home Assistant instance to HA Dispatch server",
         "data": {
           "server_url": "Server URL",
-          "name": "Installation Name"
+          "name": "Installation Name",
+          "registration_secret": "Registration Secret"
+        },
+        "data_description": {
+          "server_url": "Base URL of the HA Dispatch server, e.g. https://dispatch.example.com",
+          "registration_secret": "Required by internet-facing servers. Leave blank if the server has no enrolment secret configured."
         }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to server",
       "invalid_auth": "Invalid authentication",
-      "unknown": "Unexpected error occurred"
+      "unknown": "Unexpected error occurred",
+      "invalid_registration_secret": "The server rejected the registration secret. Check the value and try again."
     },
     "abort": {
       "already_configured": "This integration is already configured"
@@ -116,4 +122,3 @@
     }
   }
 }
-

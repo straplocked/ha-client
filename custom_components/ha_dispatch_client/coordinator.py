@@ -12,7 +12,14 @@ from homeassistant.helpers.update_coordinator import (
 from homeassistant.const import __version__ as HA_VERSION
 
 from .api_client import HADispatchApiClient
-from .const import DOMAIN, DEFAULT_SCAN_INTERVAL
+from .const import (
+    DEFAULT_BATTERY_CRITICAL_PERCENT,
+    DEFAULT_BATTERY_LOW_PERCENT,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_STALE_ENTITY_HOURS,
+    DOMAIN,
+)
+from .health import collect_health
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +44,9 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         self.installation_id = installation_id
         self.config_version = 0
         self.poll_interval = DEFAULT_SCAN_INTERVAL
+        self.stale_entity_hours = DEFAULT_STALE_ENTITY_HOURS
+        self.battery_low_percent = DEFAULT_BATTERY_LOW_PERCENT
+        self.battery_critical_percent = DEFAULT_BATTERY_CRITICAL_PERCENT
 
     async def _async_update_data(self):
         """Fetch data from API."""
@@ -59,9 +69,11 @@ class HADispatchCoordinator(DataUpdateCoordinator):
 
             # Collect and submit metrics
             metrics = self._collect_metrics()
+            health = self._collect_health()
             await self.api_client.submit_metrics(
                 installation_id=self.installation_id,
                 metrics=metrics,
+                health=health,
             )
 
             # Return combined data for sensors
@@ -69,6 +81,7 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                 "status": status_data.get("installation_status"),
                 "config_version": status_data.get("config_version"),
                 "metrics": metrics,
+                "health": health,
             }
 
         except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
@@ -88,12 +101,43 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                 self.update_interval = timedelta(seconds=new_interval)
                 _LOGGER.info("Updated poll interval to %s seconds", new_interval)
 
-            # Apply other configuration
-            # (thresholds, features, etc. can be stored for future use)
+            # Health signal thresholds are server-controlled so an integrator can
+            # tune noise levels per installation without touching the client.
+            self.stale_entity_hours = int(
+                desired_state.get("stale_entity_hours", DEFAULT_STALE_ENTITY_HOURS)
+            )
+            self.battery_low_percent = int(
+                desired_state.get("battery_low_percent", DEFAULT_BATTERY_LOW_PERCENT)
+            )
+            self.battery_critical_percent = int(
+                desired_state.get(
+                    "battery_critical_percent", DEFAULT_BATTERY_CRITICAL_PERCENT
+                )
+            )
+
             _LOGGER.info("Applied configuration version %s", self.config_version)
 
         except (KeyError, TypeError, ValueError) as err:
             _LOGGER.error("Error applying configuration: %s", err)
+
+    def _collect_health(self) -> dict | None:
+        """Collect Home Assistant health signals.
+
+        Returns None on failure rather than an empty payload. The server treats
+        a missing health key as "no report" and leaves existing items alone,
+        whereas an empty payload would read as "everything recovered" and
+        wrongly resolve every open problem.
+        """
+        try:
+            return collect_health(
+                self.hass,
+                stale_hours=self.stale_entity_hours,
+                battery_low=self.battery_low_percent,
+                battery_critical=self.battery_critical_percent,
+            )
+        except (AttributeError, KeyError, TypeError, ValueError) as err:
+            _LOGGER.error("Error collecting health signals: %s", err)
+            return None
 
     def _collect_metrics(self) -> dict:
         """Collect system metrics."""

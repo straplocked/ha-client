@@ -7,10 +7,35 @@ CONF_SERVER_URL = "server_url"
 CONF_INSTALLATION_ID = "installation_id"
 CONF_ACCESS_TOKEN = "access_token"
 CONF_CLIENT_ID = "client_id"
+CONF_REGISTRATION_SECRET = "registration_secret"
 
 # Default values
 DEFAULT_SCAN_INTERVAL = 60  # seconds
 DEFAULT_NAME = "HA Dispatch"
+
+# Health signal thresholds. Overridable from the server via desired_state.
+DEFAULT_STALE_ENTITY_HOURS = 24
+DEFAULT_BATTERY_LOW_PERCENT = 20
+DEFAULT_BATTERY_CRITICAL_PERCENT = 5
+
+# Domains worth checking for staleness. Restricted to things that report on a
+# cadence -- a scene or an input_boolean legitimately never changes on its own,
+# so flagging those as stale would be pure noise.
+STALE_CANDIDATE_DOMAINS = frozenset({"sensor", "binary_sensor"})
+
+# Must stay at or under the server's retention cap. The server keeps the first
+# 500 items and drops the rest; rollup counts are sent separately, so they stay
+# accurate even when detail is truncated.
+HEALTH_ITEM_CAP = 500
+
+# Health item types. These strings are a wire contract with the server -- see
+# InstallationHealthItem::TYPES. Unknown types are rejected with a 422.
+HEALTH_TYPE_UNAVAILABLE_ENTITY = "unavailable_entity"
+HEALTH_TYPE_STALE_ENTITY = "stale_entity"
+HEALTH_TYPE_FAILED_INTEGRATION = "failed_integration"
+HEALTH_TYPE_LOW_BATTERY = "low_battery"
+HEALTH_TYPE_DISABLED_AUTOMATION = "disabled_automation"
+HEALTH_TYPE_UNAVAILABLE_AUTOMATION = "unavailable_automation"
 
 # API endpoints
 API_REGISTER = "/api/v1/installations/register"

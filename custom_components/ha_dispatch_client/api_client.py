@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 _LOGGER = logging.getLogger(__name__)
 
 
+class RegistrationSecretError(Exception):
+    """Raised when the server rejects the enrolment secret."""
+
+
 class HADispatchApiClient:
     """HA Dispatch API Client."""
 
@@ -37,8 +41,15 @@ class HADispatchApiClient:
         name: Optional[str] = None,
         ha_version: Optional[str] = None,
         os_info: Optional[str] = None,
+        registration_secret: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Register installation with server."""
+        """Register installation with server.
+
+        Internet-facing servers require an enrolment secret: registration is the
+        only unauthenticated endpoint and it issues a bearer token, so without
+        one anybody who can reach the URL can mint installations. Servers on a
+        trusted network may leave it unset, hence the optional argument.
+        """
         url = f"{self.server_url}/api/v1/installations/register"
         data = {
             "client_id": client_id,
@@ -48,10 +59,18 @@ class HADispatchApiClient:
             "os_info": os_info,
         }
 
+        headers = self._get_headers()
+        if registration_secret:
+            headers["X-Registration-Secret"] = registration_secret
+
         _LOGGER.debug("Registering installation with server: %s", url)
-        async with self.session.post(
-            url, json=data, headers=self._get_headers()
-        ) as response:
+        async with self.session.post(url, json=data, headers=headers) as response:
+            if response.status == 401:
+                # Distinct from a transport failure: the server is reachable and
+                # answering, the secret is simply missing or wrong.
+                raise RegistrationSecretError(
+                    "Server rejected the registration secret"
+                )
             response.raise_for_status()
             result = await response.json()
             _LOGGER.info("Successfully registered installation: %s", result.get("installation_id"))
@@ -103,13 +122,22 @@ class HADispatchApiClient:
         self,
         installation_id: str,
         metrics: Dict[str, Any],
+        health: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Submit metrics to server."""
+        """Submit metrics, and optionally Home Assistant health signals.
+
+        The health key is omitted entirely when None. The server reads its
+        absence as "not reported" and preserves existing health state, so a
+        collection failure never resolves open problems by accident.
+        """
         url = f"{self.server_url}/api/v1/installations/{installation_id}/metrics"
         data = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             **metrics,
         }
+
+        if health is not None:
+            data["health"] = health
 
         _LOGGER.debug("Submitting metrics to server")
         async with self.session.post(

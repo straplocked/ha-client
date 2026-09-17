@@ -17,8 +17,9 @@ from .const import (
     CONF_INSTALLATION_ID,
     CONF_ACCESS_TOKEN,
     CONF_CLIENT_ID,
+    CONF_REGISTRATION_SECRET,
 )
-from .api_client import HADispatchApiClient
+from .api_client import HADispatchApiClient, RegistrationSecretError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class HADispatchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     client_id=client_id,
                     hostname=hostname,
                     name=name,
+                    registration_secret=user_input.get(CONF_REGISTRATION_SECRET) or None,
                 )
 
                 # Store configuration
@@ -80,6 +82,11 @@ class HADispatchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     },
                 )
 
+            except RegistrationSecretError:
+                # Surfaced separately so the user is told to check the secret
+                # rather than hunting a connection problem that does not exist.
+                _LOGGER.error("Server rejected the registration secret")
+                errors["base"] = "invalid_registration_secret"
             except aiohttp.ClientError as err:
                 _LOGGER.error("Cannot connect to server: %s", err)
                 errors["base"] = "cannot_connect"
@@ -99,6 +106,9 @@ class HADispatchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_NAME,
                         default=self.hass.config.location_name or "Home Assistant",
                     ): str,
+                    # Required by internet-facing servers; leave blank on a
+                    # trusted network where the server has no secret configured.
+                    vol.Optional(CONF_REGISTRATION_SECRET, default=""): str,
                 }
             ),
             errors=errors,

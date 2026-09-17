@@ -2,6 +2,42 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.3.0] - 2026-08-09
+
+### Added
+- Home Assistant health signal reporting (`health.py`), sent alongside metrics:
+  - Unavailable entities, with per-entity detail
+  - Entities that have gone quiet relative to their own reporting cadence, based
+    on `last_reported` rather than `last_changed`
+  - Config entries in a failed or retrying state
+  - Battery levels, split into low and critical bands
+  - Automations that are disabled or unavailable
+- Server-controlled thresholds via `desired_state`: `stale_entity_hours`,
+  `battery_low_percent`, `battery_critical_percent`
+- Unit tests for health classification (`tests/test_health.py`), which stub the
+  handful of Home Assistant symbols involved rather than requiring a full install
+
+### Added (registration secret)
+- `register_installation()` accepts a `registration_secret`, sent as the
+  `X-Registration-Secret` header. Internet-facing servers require one: registration
+  is the only unauthenticated endpoint and it issues a bearer token.
+- New optional "Registration Secret" field in the config flow. A rejected secret
+  raises `RegistrationSecretError` and surfaces as its own error message, rather
+  than being reported as a connection failure.
+- Leave the field blank for servers on a trusted network with no secret configured.
+
+### Changed
+- `api_client.submit_metrics()` accepts an optional `health` payload. The key is
+  omitted entirely when collection fails, which the server reads as "not
+  reported" and so leaves existing health state untouched. An empty payload
+  would instead mean "everything recovered".
+
+### Notes
+- Backward compatible. A server without the health migration ignores the extra
+  key and continues accepting metrics as before.
+- Item detail is capped at 500 per report. Rollup counts are sent separately and
+  are not derived from that list, so they stay accurate during a mass outage.
+
 ## [1.2.2] - 2025-11-17
 
 ### Changed

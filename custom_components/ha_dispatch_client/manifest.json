@@ -1,7 +1,7 @@
 {
   "domain": "ha_dispatch_client",
   "name": "HA Dispatch Client",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "documentation": "https://github.com/yourusername/ha-dispatch-client",
   "issue_tracker": "https://github.com/yourusername/ha-dispatch-client/issues",
   "requirements": [
