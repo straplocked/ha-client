@@ -323,6 +323,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass=hass,
         api_client=api_client,
         installation_id=entry.data[CONF_INSTALLATION_ID],
+        # Lets the coordinator persist a new token if it has to re-enrol.
+        entry=entry,
     )
 
     # Fetch initial data

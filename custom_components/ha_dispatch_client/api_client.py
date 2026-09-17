@@ -11,6 +11,31 @@ class RegistrationSecretError(Exception):
     """Raised when the server rejects the enrolment secret."""
 
 
+class InstallationAuthError(Exception):
+    """Raised when the server rejects this installation's bearer token.
+
+    Deliberately not an aiohttp.ClientError: a rejected token is not a
+    transient network problem and must not be retried indefinitely. It means
+    the server no longer recognises this installation -- its record was removed,
+    or the database was rebuilt -- and the only route back is to re-enrol.
+    """
+
+
+class InstallationGoneError(InstallationAuthError):
+    """Raised when the server has no installation with our stored id.
+
+    Subclasses InstallationAuthError because the remedy is identical: re-enrol.
+    This is the more common case in practice -- Laravel resolves the route model
+    before the auth middleware runs, so an installation whose record was removed
+    (or a database that was rebuilt, renumbering ids) answers 404 rather than
+    401, no matter what token is presented.
+    """
+
+
+class ClientIdTakenError(Exception):
+    """Raised when the server already has an installation with this client_id."""
+
+
 class HADispatchApiClient:
     """HA Dispatch API Client."""
 
@@ -24,6 +49,23 @@ class HADispatchApiClient:
         self.session = session
         self.server_url = server_url.rstrip("/")
         self.token = token
+
+    @staticmethod
+    async def _raise_for_status(response, *, installation_scoped: bool = True) -> None:
+        """Map "server does not recognise us" onto distinct errors.
+
+        installation_scoped is False for registration, where a 404 means the
+        server URL or path is wrong rather than the installation being absent.
+        """
+        if response.status == 401:
+            raise InstallationAuthError(
+                f"Server rejected the installation token (HTTP 401) for {response.url}"
+            )
+        if installation_scoped and response.status == 404:
+            raise InstallationGoneError(
+                f"Server has no record of this installation (HTTP 404) at {response.url}"
+            )
+        response.raise_for_status()
 
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers."""
@@ -71,7 +113,11 @@ class HADispatchApiClient:
                 raise RegistrationSecretError(
                     "Server rejected the registration secret"
                 )
-            response.raise_for_status()
+            if response.status == 422:
+                body = await response.text()
+                if "client_id" in body:
+                    raise ClientIdTakenError(body)
+            await self._raise_for_status(response, installation_scoped=False)
             result = await response.json()
             _LOGGER.info("Successfully registered installation: %s", result.get("installation_id"))
             return result
@@ -94,7 +140,7 @@ class HADispatchApiClient:
         async with self.session.post(
             url, json=data, headers=self._get_headers()
         ) as response:
-            response.raise_for_status()
+            await self._raise_for_status(response)
             return await response.json()
 
     async def fetch_configuration(
@@ -113,7 +159,7 @@ class HADispatchApiClient:
             if response.status == 204:
                 _LOGGER.debug("Configuration is up-to-date")
                 return None  # No update
-            response.raise_for_status()
+            await self._raise_for_status(response)
             result = await response.json()
             _LOGGER.info("Received new configuration version: %s", result.get("config_version"))
             return result
@@ -143,7 +189,7 @@ class HADispatchApiClient:
         async with self.session.post(
             url, json=data, headers=self._get_headers()
         ) as response:
-            response.raise_for_status()
+            await self._raise_for_status(response)
             return await response.json()
 
     async def submit_metrics_batch(
@@ -159,7 +205,7 @@ class HADispatchApiClient:
         async with self.session.post(
             url, json=data, headers=self._get_headers()
         ) as response:
-            response.raise_for_status()
+            await self._raise_for_status(response)
             return await response.json()
 
     async def submit_alert(
@@ -207,7 +253,7 @@ class HADispatchApiClient:
         async with self.session.post(
             url, json=data, headers=self._get_headers()
         ) as response:
-            response.raise_for_status()
+            await self._raise_for_status(response)
             result = await response.json()
             _LOGGER.info(
                 "Alert submitted: id=%s, action=%s",
@@ -237,7 +283,7 @@ class HADispatchApiClient:
         async with self.session.post(
             url, json=data, headers=self._get_headers()
         ) as response:
-            response.raise_for_status()
+            await self._raise_for_status(response)
             result = await response.json()
             _LOGGER.info(
                 "Alert batch submitted: processed=%s",
@@ -265,7 +311,7 @@ class HADispatchApiClient:
         async with self.session.post(
             url, headers=self._get_headers()
         ) as response:
-            response.raise_for_status()
+            await self._raise_for_status(response)
             result = await response.json()
             _LOGGER.info(
                 "Alerts resolved: type=%s, count=%s",

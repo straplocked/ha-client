@@ -79,6 +79,9 @@ class HADispatchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_CLIENT_ID: client_id,
                         CONF_INSTALLATION_ID: registration_data["installation_id"],
                         CONF_ACCESS_TOKEN: registration_data["access_token"],
+                        # Stored so the coordinator can re-enrol unattended if the
+                        # server ever stops recognising our token.
+                        CONF_REGISTRATION_SECRET: user_input.get(CONF_REGISTRATION_SECRET) or "",
                     },
                 )
 

@@ -2,6 +2,43 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.4.0] - 2026-09-17
+
+### Fixed
+- **The integration no longer has to be deleted and re-added after a server
+  reset.** A rejected bearer token was caught as a generic
+  `aiohttp.ClientError`, turned into `UpdateFailed`, and retried forever. Since
+  the client had no way to obtain a new token, manual deletion in Home Assistant
+  was the only cure -- needed every time the server's database was rebuilt.
+
+  A 401 on an authenticated endpoint now raises `InstallationAuthError`, which is
+  deliberately *not* an `aiohttp.ClientError`: a rejected token is not a
+  transient network fault and must not be retried indefinitely. The coordinator
+  catches it and re-enrols automatically, persisting the new installation id and
+  token to the config entry so they survive a restart.
+
+  Covers both failure shapes. A 404 is the more common one: Laravel resolves the
+  route model before the auth middleware runs, so an installation whose record
+  was removed -- or a database that was rebuilt, renumbering ids -- answers 404
+  regardless of the token presented. `InstallationGoneError` subclasses
+  `InstallationAuthError` so one handler covers both.
+
+  Re-enrolment reuses the stored `client_id`, which is this installation's stable
+  identity. If the server still holds that id -- record present, token stale --
+  registration is refused with a 422, and a fresh id is generated instead
+  (`ClientIdTakenError`).
+
+  The cycle that triggered re-enrolment still reports failure rather than
+  retrying inline, so a persistently failing server cannot spin.
+
+### Changed
+- The registration secret is now stored in the config entry. Unattended
+  re-enrolment needs it, and it was previously discarded after setup.
+
+### Notes
+- Re-enrolment is refused, loudly, if the stored secret is missing or wrong;
+  reconfigure the integration in that case. Nothing is persisted on failure.
+
 ## [1.3.0] - 2026-08-09
 
 ### Added

@@ -1,9 +1,12 @@
 """DataUpdateCoordinator for HA Dispatch Client."""
 import logging
+import socket
 import time
+import uuid
 from datetime import timedelta
 import aiohttp
 import psutil
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -11,8 +14,19 @@ from homeassistant.helpers.update_coordinator import (
 )
 from homeassistant.const import __version__ as HA_VERSION
 
-from .api_client import HADispatchApiClient
+from .api_client import (
+    ClientIdTakenError,
+    HADispatchApiClient,
+    InstallationAuthError,
+    RegistrationSecretError,
+)
+# InstallationGoneError subclasses InstallationAuthError, so the handler below
+# covers both a rejected token (401) and a vanished record (404).
 from .const import (
+    CONF_ACCESS_TOKEN,
+    CONF_CLIENT_ID,
+    CONF_INSTALLATION_ID,
+    CONF_REGISTRATION_SECRET,
     DEFAULT_BATTERY_CRITICAL_PERCENT,
     DEFAULT_BATTERY_LOW_PERCENT,
     DEFAULT_SCAN_INTERVAL,
@@ -32,6 +46,7 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         hass: HomeAssistant,
         api_client: HADispatchApiClient,
         installation_id: str,
+        entry: ConfigEntry | None = None,
     ):
         """Initialize coordinator."""
         super().__init__(
@@ -42,6 +57,9 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         )
         self.api_client = api_client
         self.installation_id = installation_id
+        # Needed to persist a new token after re-enrolment. Optional so existing
+        # callers and tests keep working.
+        self.entry = entry
         self.config_version = 0
         self.poll_interval = DEFAULT_SCAN_INTERVAL
         self.stale_entity_hours = DEFAULT_STALE_ENTITY_HOURS
@@ -84,9 +102,92 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                 "health": health,
             }
 
+        except InstallationAuthError as err:
+            # The server no longer recognises this installation -- its record was
+            # deleted or the database was rebuilt. Retrying the same token can
+            # never succeed, so re-enrol instead of failing forever. Without
+            # this, the only fix is deleting and re-adding the integration by
+            # hand, which is what used to be required after every server reset.
+            _LOGGER.warning("Server does not recognise this installation: %s -- re-enrolling", err)
+
+            if await self._async_reregister():
+                # Re-enrolled successfully; report on the next cycle rather than
+                # recursing, so a persistent failure cannot spin.
+                raise UpdateFailed("Re-enrolled with the server; retrying shortly")
+
+            raise UpdateFailed(f"Token rejected and re-enrolment failed: {err}")
+
         except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
             _LOGGER.error("Error communicating with API: %s", err)
             raise UpdateFailed(f"Error communicating with API: {err}")
+
+    async def _async_reregister(self) -> bool:
+        """Obtain a fresh installation record and token from the server.
+
+        Reuses the stored client_id, which is this installation's stable
+        identity. If the server still holds that client_id -- meaning the record
+        exists but our token is stale -- a new one is generated instead, since
+        registration will not overwrite an existing record.
+        """
+        if self.entry is None:
+            _LOGGER.error("Cannot re-enrol: coordinator has no config entry")
+            return False
+
+        data = dict(self.entry.data)
+        secret = data.get(CONF_REGISTRATION_SECRET) or None
+        client_id = data.get(CONF_CLIENT_ID) or str(uuid.uuid4())
+
+        try:
+            hostname = f"{socket.gethostname()}.local:8123"
+            name = self.hass.config.location_name or socket.gethostname()
+
+            try:
+                result = await self.api_client.register_installation(
+                    client_id=client_id,
+                    hostname=hostname,
+                    name=name,
+                    ha_version=HA_VERSION,
+                    os_info=self._get_os_info(),
+                    registration_secret=secret,
+                )
+            except ClientIdTakenError:
+                client_id = str(uuid.uuid4())
+                _LOGGER.info("Stored client_id already registered; enrolling as %s", client_id)
+                result = await self.api_client.register_installation(
+                    client_id=client_id,
+                    hostname=hostname,
+                    name=name,
+                    ha_version=HA_VERSION,
+                    os_info=self._get_os_info(),
+                    registration_secret=secret,
+                )
+        except RegistrationSecretError:
+            _LOGGER.error(
+                "Re-enrolment refused: the server requires a registration secret and "
+                "the stored one is missing or wrong. Reconfigure the integration."
+            )
+            return False
+        except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
+            _LOGGER.error("Re-enrolment failed: %s", err)
+            return False
+
+        self.installation_id = result["installation_id"]
+        self.api_client.token = result["access_token"]
+        self.config_version = 0
+
+        # Persist so the new token survives a restart.
+        self.hass.config_entries.async_update_entry(
+            self.entry,
+            data={
+                **data,
+                CONF_CLIENT_ID: client_id,
+                CONF_INSTALLATION_ID: result["installation_id"],
+                CONF_ACCESS_TOKEN: result["access_token"],
+            },
+        )
+
+        _LOGGER.info("Re-enrolled with the server as installation %s", result["installation_id"])
+        return True
 
     async def _apply_configuration(self, config_data):
         """Apply configuration from server."""
