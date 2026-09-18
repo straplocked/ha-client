@@ -140,11 +140,11 @@ installation — so the common "nothing to do" case costs no extra request on th
 {
   "client_release": {
     "version": "1.5.1",
-    "url": "https://github.com/<owner>/ha-dispatch-client/releases/download/v1.5.1/ha_dispatch_client.zip",
+    "url": "https://github.com/straplocked/ha-client/releases/download/v1.5.1/ha_dispatch_client.zip",
     "sha256": "9f2c...",
     "signature": "base64 Ed25519 signature over the raw zip bytes",
     "key_id": "hadc-2026-01",
-    "release_url": "https://github.com/<owner>/ha-dispatch-client/releases/tag/v1.5.1",
+    "release_url": "https://github.com/straplocked/ha-client/releases/tag/v1.5.1",
     "release_notes": "markdown string",
     "min_ha_version": "2024.1.0",
     "size_bytes": 48213

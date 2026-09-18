@@ -34,18 +34,18 @@ custom_components/
 {
   "domain": "ha_dispatch_client",
   "name": "HA Dispatch Client",
-  "version": "1.0.0",
-  "documentation": "https://github.com/yourusername/ha-dispatch-client",
-  "issue_tracker": "https://github.com/yourusername/ha-dispatch-client/issues",
+  "version": "1.5.0",
+  "documentation": "https://github.com/straplocked/ha-client",
+  "issue_tracker": "https://github.com/straplocked/ha-client/issues",
   "requirements": [
     "aiohttp>=3.8.0",
-    "psutil>=5.9.0"
+    "psutil>=5.9.0",
+    "cryptography>=41.0.0"
   ],
   "dependencies": [],
-  "codeowners": ["@yourusername"],
+  "codeowners": ["@straplocked"],
   "config_flow": true,
-  "iot_class": "cloud_polling",
-  "quality_scale": "silver"
+  "iot_class": "cloud_polling"
 }
 ```
 
