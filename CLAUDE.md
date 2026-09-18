@@ -5,10 +5,10 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.2.2 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.5.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
-- **Framework:** Home Assistant Custom Integration (HACS-compatible)
-- **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`
+- **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
+- **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`, `cryptography>=41.0.0`
 
 ## Architecture
 
@@ -19,11 +19,17 @@ custom_components/ha_dispatch_client/
 ├── coordinator.py    # HADispatchCoordinator - DataUpdateCoordinator (60s interval)
 ├── config_flow.py    # UI config flow - server URL input, auto-registration
 ├── sensor.py         # 3 CoordinatorEntity sensors (status, cpu_load, memory_used)
-├── const.py          # DOMAIN, config keys, API endpoints, entity/attribute keys
+├── update.py         # HADispatchUpdateEntity - client version as an HA update entity
+├── updater.py        # ClientUpdater - signed self-update (download, verify, swap, restart)
+├── health.py         # Home Assistant health signal collection
+├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
 ├── manifest.json     # Integration metadata
-├── services.yaml     # 6 service definitions with UI fields
+├── services.yaml     # 7 service definitions with UI fields
 └── strings.json      # UI text and translations
 ```
+
+Release tooling lives in `scripts/`: `release.sh` builds and signs a release
+archive, `generate_signing_key.py` creates the Ed25519 keypair.
 
 ### Key Patterns
 
@@ -32,6 +38,7 @@ custom_components/ha_dispatch_client/
 - **CoordinatorEntity sensors:** All sensors inherit from `HADispatchSensorBase(CoordinatorEntity, SensorEntity)` and read from `self.coordinator.data`
 - **Async everything:** All API calls use `aiohttp` sessions from `homeassistant.helpers.aiohttp_client`
 - **Config entry storage:** Server URL, installation_id, access_token, client_id stored in config entry data
+- **Signed self-update:** `updater.py` replaces the integration's own files and restarts HA. Releases must carry an Ed25519 signature verified against a key pinned in `const.py::RELEASE_SIGNING_KEYS` — the server never holds that key, so it can decide whether/when to offer an update but never what code runs. That dict ships **empty**, so self-update fails closed until a key is deliberately pinned. Never add a placeholder.
 
 ### API Endpoints (server-side)
 
@@ -44,8 +51,9 @@ All under `/api/v1/installations/`:
 - `POST .../{id}/alerts` - Submit alert
 - `POST .../{id}/alerts/batch` - Batch alerts
 - `POST .../{id}/alerts/{type}/resolve` - Resolve alerts by type
+- `POST .../{id}/client-update` - Report a self-update outcome (started/success/failed)
 
-### Services (6 total)
+### Services (7 total)
 
 | Service | Purpose |
 |---------|---------|
@@ -55,6 +63,7 @@ All under `/api/v1/installations/`:
 | `send_custom_metric` | Submit arbitrary metric values |
 | `submit_alert` | Full alert submission (severity, type, title, message, context) |
 | `resolve_alert` | Resolve all unresolved alerts of a given type |
+| `install_update` | Install the client release the server is offering (restarts HA) |
 
 ## Development Commands
 
@@ -76,7 +85,34 @@ export HA_PORT=22
 ./check_version.sh       # Compare local vs deployed version
 ```
 
-### Testing (manual - no automated test framework)
+### Release (signed archive for self-update + HACS)
+
+```bash
+python3 scripts/generate_signing_key.py --key-id hadc-2026-01   # once, offline
+```
+
+```bash
+./scripts/release.sh --key hadc-signing.key --key-id hadc-2026-01 --publish
+```
+
+The private signing key must never touch the Dispatch server -- that separation
+is the whole basis of the self-update trust model.
+
+### Testing
+
+Automated tests cover the pure logic (health classification, re-enrolment,
+and the whole self-update verification/validation/swap path). Home Assistant is
+not installed in the dev environment; `tests/conftest.py` stubs the symbols the
+integration imports. Add to that conftest when new HA imports appear.
+
+```bash
+python3 -m pytest tests/ -q
+```
+
+Note `api_client.py` imports `aiohttp` at module scope, so `test_reregistration.py`
+needs aiohttp importable even though the HTTP calls are faked.
+
+Everything touching a live Home Assistant is still manual:
 
 ```bash
 # Check HA logs after deployment
@@ -107,7 +143,7 @@ ssh user@ha-host 'ha core logs | grep ha_dispatch_client'
 
 ## Important Notes
 
-- **No automated tests exist.** Testing is manual via HA UI and logs.
+- Tests live in `tests/` and run under plain `pytest` with stubbed HA modules. Anything needing a live Home Assistant (the update download, restart, and boot-time confirmation) is still manual.
 - `reference_integrations/meross_lan/` is a reference codebase for learning HA patterns - not part of this integration.
 - **Caching caveat:** HA heavily caches `manifest.json` and `strings.json`. Version bumps may require deleting the old integration and reinstalling rather than overwriting. See `docs/user/deployment.md`.
 - The `VERSION` file at root and `version` in `manifest.json` must stay in sync.
@@ -122,10 +158,12 @@ All documentation is organized under `docs/` — see `docs/INDEX.md` as the mast
 | Full doc index | `docs/INDEX.md` |
 | API endpoints | `docs/technical/api-reference.md` |
 | Service schemas | `docs/technical/services.md` |
+| Remote update design | `docs/technical/self-update.md` (client built; server side outstanding) |
 | Data model | `docs/technical/data-model/README.md` |
 | Dev guide | `docs/technical/dev-guide/README.md` |
 | Quickstart | `docs/user/quickstart.md` |
 | Deployment | `docs/user/deployment.md` |
+| Updating the client | `docs/user/updating.md` |
 | Troubleshooting | `docs/user/troubleshooting.md` |
 | Doc update process | `DOC_UPDATE.md` (root) |
 | Doc changelog | `docs/DOCS_CHANGELOG.md` |

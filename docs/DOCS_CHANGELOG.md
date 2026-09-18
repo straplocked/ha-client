@@ -6,6 +6,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-17] — Self-Update Implementation (v1.5.0)
+
+### Added
+- `docs/user/updating.md` — operator guide for updating from Home Assistant, the dashboard, or SSH, including the manual recovery path and the explicit warning that there is no automatic rollback
+
+### Changed
+- `docs/technical/self-update.md` — status moved from proposed to client-implemented; phase table now reflects what shipped; `SPECIFIC_VERSION` removed from the update entity's advertised features with the reason; test coverage section rewritten to describe actual tests
+- `docs/technical/api-reference.md` — `client_version` added to register and status request bodies; `client_release` response block documented; new Endpoint 6 for `client-update` reporting
+- `docs/technical/services.md` — added `install_update`
+- `docs/user/services-guide.md` — 6 services → 7, added `install_update`, plus a note distinguishing it from `force_update`
+- `docs/user/README.md`, `docs/INDEX.md` — added the updating guide
+- `docs/leadership/roadmap.md` — client self-update, version reporting, and HACS packaging moved to Built; remaining server-side work restated as "Fleet update control"
+- `CLAUDE.md` — version, dependencies, file tree, endpoint and service lists, release commands; corrected the stale "no automated tests exist" note
+
+---
+
+## [2026-09-17] — Self-Update Design Specification
+
+### Added
+- `docs/technical/self-update.md` — design spec for remote client updates: version reporting, Home Assistant `update` entity, signed installer, dashboard-driven rollout, threat model, and phased implementation plan. Proposed, not implemented.
+
+### Changed
+- `docs/INDEX.md` — added Self-Update to the technical documentation table
+- `docs/technical/README.md` — added Self-Update to the contents table
+- `docs/leadership/roadmap.md` — added "Remote client updates" under Planned
+
+---
+
 ## [2026-03-18] — Full Documentation Restructure
 
 ### Added

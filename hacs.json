@@ -1,0 +1,7 @@
+{
+  "name": "HA Dispatch Client",
+  "filename": "ha_dispatch_client.zip",
+  "content_in_root": false,
+  "homeassistant": "2024.1.0",
+  "render_readme": true
+}

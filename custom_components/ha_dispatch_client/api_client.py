@@ -84,6 +84,7 @@ class HADispatchApiClient:
         ha_version: Optional[str] = None,
         os_info: Optional[str] = None,
         registration_secret: Optional[str] = None,
+        client_version: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Register installation with server.
 
@@ -99,6 +100,7 @@ class HADispatchApiClient:
             "name": name or hostname,
             "ha_version": ha_version,
             "os_info": os_info,
+            "client_version": client_version,
         }
 
         headers = self._get_headers()
@@ -127,16 +129,68 @@ class HADispatchApiClient:
         installation_id: str,
         ha_version: Optional[str] = None,
         os_info: Optional[str] = None,
+        client_version: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Report installation status."""
+        """Report installation status.
+
+        client_version lets the server see which client build is actually
+        running. It is also how an update is confirmed independently of the
+        client's own success report -- a version that changes on the next
+        heartbeat is proof the swap took, whatever the client claimed.
+        """
         url = f"{self.server_url}/api/v1/installations/{installation_id}/status"
         data = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "ha_version": ha_version,
             "os_info": os_info,
+            "client_version": client_version,
         }
 
         _LOGGER.debug("Reporting status to server")
+        async with self.session.post(
+            url, json=data, headers=self._get_headers()
+        ) as response:
+            await self._raise_for_status(response)
+            return await response.json()
+
+    async def report_client_update(
+        self,
+        installation_id: str,
+        status: str,
+        from_version: Optional[str] = None,
+        to_version: Optional[str] = None,
+        phase: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Report the outcome of a client self-update.
+
+        Args:
+            installation_id: Installation ID
+            status: started, success, or failed
+            from_version: Version running before the update
+            to_version: Version being installed
+            phase: Which step failed (download, verify, validate, swap, ...)
+            error: Failure detail, omitted on success
+
+        An installation that reports "started" and is never heard from again is
+        the signal that halts a fleet rollout, so this is called before the
+        swap as well as after it.
+        """
+        url = (
+            f"{self.server_url}/api/v1/installations/{installation_id}/client-update"
+        )
+        data = {
+            "status": status,
+            "from_version": from_version,
+            "to_version": to_version,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if phase:
+            data["phase"] = phase
+        if error:
+            data["error"] = error
+
+        _LOGGER.debug("Reporting client update: status=%s, phase=%s", status, phase)
         async with self.session.post(
             url, json=data, headers=self._get_headers()
         ) as response:

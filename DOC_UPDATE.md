@@ -2,11 +2,13 @@
 
 ## Run Count
 
-Total documentation update runs: **1**
+Total documentation update runs: **3**
 
-| Run | Date       | Scope            | Files Changed | Notes                    |
-|-----|------------|------------------|---------------|--------------------------|
-| 1   | 2026-03-18 | Full restructure | ~40 files     | Initial docs/ setup      |
+| Run | Date       | Scope              | Files Changed | Notes                              |
+|-----|------------|--------------------|---------------|------------------------------------|
+| 1   | 2026-03-18 | Full restructure   | ~40 files     | Initial docs/ setup                |
+| 2   | 2026-09-17 | Self-update spec   | 5 files       | New design spec + index/roadmap    |
+| 3   | 2026-09-17 | Self-update v1.5.0 | 9 files       | Shipped client; new user guide     |
 
 ---
 

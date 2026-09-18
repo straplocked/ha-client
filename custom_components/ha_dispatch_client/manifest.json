@@ -1,16 +1,16 @@
 {
   "domain": "ha_dispatch_client",
   "name": "HA Dispatch Client",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "documentation": "https://github.com/yourusername/ha-dispatch-client",
   "issue_tracker": "https://github.com/yourusername/ha-dispatch-client/issues",
   "requirements": [
     "aiohttp>=3.8.0",
-    "psutil>=5.9.0"
+    "psutil>=5.9.0",
+    "cryptography>=41.0.0"
   ],
   "dependencies": [],
   "codeowners": ["@yourusername"],
   "config_flow": true,
   "iot_class": "cloud_polling"
 }
-

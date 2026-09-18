@@ -13,6 +13,7 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 from homeassistant.const import __version__ as HA_VERSION
+from homeassistant.util import dt as dt_util
 
 from .api_client import (
     ClientIdTakenError,
@@ -24,16 +25,26 @@ from .api_client import (
 # covers both a rejected token (401) and a vanished record (404).
 from .const import (
     CONF_ACCESS_TOKEN,
+    CONF_AUTO_UPDATE,
     CONF_CLIENT_ID,
     CONF_INSTALLATION_ID,
     CONF_REGISTRATION_SECRET,
+    CONF_RESTART_AFTER_UPDATE,
+    CONF_TARGET_VERSION,
+    CONF_UPDATE_CHANNEL,
+    CONF_UPDATE_WINDOW,
+    DEFAULT_AUTO_UPDATE,
     DEFAULT_BATTERY_CRITICAL_PERCENT,
     DEFAULT_BATTERY_LOW_PERCENT,
+    DEFAULT_RESTART_AFTER_UPDATE,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_STALE_ENTITY_HOURS,
+    DEFAULT_UPDATE_CHANNEL,
     DOMAIN,
+    RELEASE_KEY,
 )
 from .health import collect_health
+from .updater import UpdateError, in_update_window, is_newer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +77,16 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         self.battery_low_percent = DEFAULT_BATTERY_LOW_PERCENT
         self.battery_critical_percent = DEFAULT_BATTERY_CRITICAL_PERCENT
 
+        # Self-update state. The updater and the version on disk are both
+        # supplied during setup, once Home Assistant's loader can be asked.
+        self.updater = None
+        self.client_version: str | None = None
+        self.update_channel = DEFAULT_UPDATE_CHANNEL
+        self.auto_update = DEFAULT_AUTO_UPDATE
+        self.target_version: str | None = None
+        self.update_window: str | None = None
+        self.restart_after_update = DEFAULT_RESTART_AFTER_UPDATE
+
     async def _async_update_data(self):
         """Fetch data from API."""
         try:
@@ -74,6 +95,7 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                 installation_id=self.installation_id,
                 ha_version=HA_VERSION,
                 os_info=self._get_os_info(),
+                client_version=self.client_version,
             )
 
             # Check for configuration updates
@@ -94,12 +116,22 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                 health=health,
             )
 
+            # A release is only present when the server considers one
+            # applicable to this installation, so the common "nothing to do"
+            # case costs no extra request.
+            release = status_data.get(RELEASE_KEY)
+            if not isinstance(release, dict):
+                release = None
+            if release:
+                self._schedule_auto_update(release)
+
             # Return combined data for sensors
             return {
                 "status": status_data.get("installation_status"),
                 "config_version": status_data.get("config_version"),
                 "metrics": metrics,
                 "health": health,
+                RELEASE_KEY: release,
             }
 
         except InstallationAuthError as err:
@@ -149,6 +181,7 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                     ha_version=HA_VERSION,
                     os_info=self._get_os_info(),
                     registration_secret=secret,
+                    client_version=self.client_version,
                 )
             except ClientIdTakenError:
                 client_id = str(uuid.uuid4())
@@ -160,6 +193,7 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                     ha_version=HA_VERSION,
                     os_info=self._get_os_info(),
                     registration_secret=secret,
+                    client_version=self.client_version,
                 )
         except RegistrationSecretError:
             _LOGGER.error(
@@ -189,6 +223,51 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Re-enrolled with the server as installation %s", result["installation_id"])
         return True
 
+    def _schedule_auto_update(self, release: dict) -> None:
+        """Start an unattended install, if everything lines up for one.
+
+        Deliberately fire-and-forget: a successful install restarts Home
+        Assistant, and that must not happen inside the coordinator's refresh.
+        """
+        if not self.auto_update or self.updater is None:
+            return
+        if self.updater.in_progress:
+            return
+
+        version = release.get("version")
+        if not version or not is_newer(version, self.client_version):
+            return
+
+        # A pinned target means exactly that version and no other -- the server
+        # should already be filtering, but an installation held back on purpose
+        # is not something to get wrong.
+        if self.target_version and str(version) != str(self.target_version):
+            _LOGGER.debug(
+                "Skipping auto-update to %s: pinned to %s", version, self.target_version
+            )
+            return
+
+        if not in_update_window(dt_util.now(), self.update_window):
+            _LOGGER.debug(
+                "Deferring auto-update to %s until the %s window",
+                version,
+                self.update_window,
+            )
+            return
+
+        _LOGGER.info("Auto-updating client from %s to %s", self.client_version, version)
+        self.hass.async_create_task(self._async_auto_update(release))
+
+    async def _async_auto_update(self, release: dict) -> None:
+        """Run an unattended install, logging rather than raising."""
+        try:
+            await self.updater.async_install(release)
+        except UpdateError as err:
+            # Already reported to the server and logged with its phase by the
+            # updater; swallowed here so a failed auto-update never surfaces as
+            # an unhandled task exception.
+            _LOGGER.error("Unattended update to %s failed: %s", release.get("version"), err)
+
     async def _apply_configuration(self, config_data):
         """Apply configuration from server."""
         try:
@@ -213,6 +292,25 @@ class HADispatchCoordinator(DataUpdateCoordinator):
             self.battery_critical_percent = int(
                 desired_state.get(
                     "battery_critical_percent", DEFAULT_BATTERY_CRITICAL_PERCENT
+                )
+            )
+
+            # Update policy. auto_update stays off unless the server explicitly
+            # turns it on for this installation -- installing code unattended
+            # is not a sensible default to inherit.
+            self.update_channel = str(
+                desired_state.get(CONF_UPDATE_CHANNEL, DEFAULT_UPDATE_CHANNEL)
+            )
+            self.auto_update = bool(
+                desired_state.get(CONF_AUTO_UPDATE, DEFAULT_AUTO_UPDATE)
+            )
+            target = desired_state.get(CONF_TARGET_VERSION)
+            self.target_version = str(target) if target else None
+            window = desired_state.get(CONF_UPDATE_WINDOW)
+            self.update_window = str(window) if window else None
+            self.restart_after_update = bool(
+                desired_state.get(
+                    CONF_RESTART_AFTER_UPDATE, DEFAULT_RESTART_AFTER_UPDATE
                 )
             )
 

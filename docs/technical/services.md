@@ -299,6 +299,58 @@ automation:
 
 ---
 
+## install_update
+
+**Full name:** `ha_dispatch_client.install_update`
+
+Install the client release the HA Dispatch server is currently offering. The
+archive is verified against a signing key pinned in `const.py` before anything
+is replaced, and Home Assistant restarts afterwards to load it.
+
+The same install is available without a service call from Settings -> Updates,
+via the `update.ha_dispatch_client_update` entity. This service exists for
+automations and for triggering an install from a script.
+
+### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `force` | boolean | No | `false` | Install even when the offered version is not newer than the installed one |
+
+### Schema (voluptuous)
+
+```python
+SERVICE_INSTALL_UPDATE_SCHEMA = vol.Schema({
+    vol.Optional("force", default=False): cv.boolean,
+})
+```
+
+### Handler behavior
+
+1. Resolves the active coordinator; aborts if self-update is unavailable
+2. Refreshes the coordinator first, so the release payload is current rather
+   than whatever the last poll happened to carry
+3. Aborts with a warning if the server is not offering a release
+4. Calls `updater.async_install()`, which downloads, verifies the digest and
+   signature, validates the archive, swaps the directory, and restarts
+
+### Example
+
+```yaml
+service: ha_dispatch_client.install_update
+```
+
+### Notes
+
+- `force` allows reinstalling the same version or moving backwards. A downgrade
+  is occasionally the right call during an incident, but never something to do
+  by accident, hence the explicit flag.
+- This restarts Home Assistant on success. See
+  [Updating the client](../user/updating.md) for the operator-facing guide and
+  [Self-Update](self-update.md) for the design.
+
+---
+
 ## Service Registration Pattern
 
 All services are registered once using the singleton pattern in `setup_services()` (called from `async_setup_entry()`). A guard check prevents duplicate registration:

@@ -28,6 +28,12 @@ venv/
 env/
 secrets.yaml
 
+# Release signing keys. A committed private key would let anyone sign a client
+# release, which is the one thing the whole self-update trust model rests on.
+*.key
+*.pem
+hadc-signing*
+
 # Testing
 .pytest_cache/
 .coverage

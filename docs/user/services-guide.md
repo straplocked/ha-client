@@ -1,6 +1,6 @@
 # Services Guide
 
-The HA Dispatch Client provides 6 services for testing connectivity, submitting metrics, managing alerts, and forcing data refreshes. This guide covers all of them with parameters, examples, and usage patterns.
+The HA Dispatch Client provides 7 services for testing connectivity, submitting metrics, managing alerts, forcing data refreshes, and installing client updates. This guide covers all of them with parameters, examples, and usage patterns.
 
 ## Service Summary
 
@@ -12,6 +12,11 @@ The HA Dispatch Client provides 6 services for testing connectivity, submitting 
 | `ha_dispatch_client.send_custom_metric` | Submit arbitrary metric values |
 | `ha_dispatch_client.submit_alert` | Full alert submission (severity, type, title, message, context) |
 | `ha_dispatch_client.resolve_alert` | Resolve all unresolved alerts of a given type |
+| `ha_dispatch_client.install_update` | Install the client release the server is offering |
+
+> `force_update` and `install_update` sound similar and do very different
+> things. `force_update` refreshes data from the server. `install_update`
+> replaces the integration's own code and restarts Home Assistant.
 
 ## Service Details
 
@@ -266,6 +271,38 @@ data:
 ```
 
 The server returns the number of alerts resolved. If no unresolved alerts of the given type exist, the call succeeds with zero resolved.
+
+---
+
+### 7. Install Client Update
+
+**Service**: `ha_dispatch_client.install_update`
+
+Install the client release the HA Dispatch server is currently offering.
+**Restarts Home Assistant on success.**
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `force` | boolean | No | Install even when the offered version is not newer (allows reinstall or downgrade) |
+
+#### Examples
+
+```yaml
+service: ha_dispatch_client.install_update
+```
+
+Most people will not need this service: the same update appears in
+**Settings → Updates** as soon as the server offers it, and can be installed
+from there. Use the service when you want an update driven by an automation or
+a script.
+
+The archive is verified against a signing key built into the client before
+anything is replaced. If verification fails, nothing is touched and the failure
+is reported to the server.
+
+See [Updating the client](updating.md) for the full guide.
 
 ---
 

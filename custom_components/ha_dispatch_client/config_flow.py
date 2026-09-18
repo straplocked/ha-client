@@ -8,6 +8,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.network import get_url, NoURLAvailableError
+from homeassistant.loader import async_get_integration
 import aiohttp
 import yarl
 
@@ -22,6 +23,20 @@ from .const import (
 from .api_client import HADispatchApiClient, RegistrationSecretError
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def _async_client_version(hass: HomeAssistant) -> str | None:
+    """Return the client version on disk, so the server knows it from enrolment.
+
+    Read from the loaded manifest rather than a constant, which keeps it honest
+    after a self-update has replaced these files.
+    """
+    try:
+        integration = await async_get_integration(hass, DOMAIN)
+    except Exception as err:  # noqa: BLE001 - the loader raises several types
+        _LOGGER.warning("Could not determine the client version: %s", err)
+        return None
+    return None if integration.version is None else str(integration.version)
 
 
 class HADispatchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -69,6 +84,7 @@ class HADispatchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     hostname=hostname,
                     name=name,
                     registration_secret=user_input.get(CONF_REGISTRATION_SECRET) or None,
+                    client_version=await _async_client_version(self.hass),
                 )
 
                 # Store configuration

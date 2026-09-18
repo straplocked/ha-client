@@ -27,7 +27,8 @@
   "hostname": "string",             // Required, max 255 chars
   "name": "string",                 // Optional, max 255 chars (defaults to hostname)
   "ha_version": "string",           // Optional, max 255 chars
-  "os_info": "string"               // Optional, max 255 chars
+  "os_info": "string",              // Optional, max 255 chars
+  "client_version": "1.5.0"         // Optional, client build on disk
 }
 ```
 
@@ -114,7 +115,8 @@ def register_installation(server_url, hostname, name=None, ha_version=None):
 {
   "timestamp": "2025-11-16T12:34:56Z",  // Required, ISO 8601 format
   "ha_version": "2025.11.0",             // Optional, updates if changed
-  "os_info": "Home Assistant OS 11.1"    // Optional, updates if changed
+  "os_info": "Home Assistant OS 11.1",   // Optional, updates if changed
+  "client_version": "1.5.0"              // Optional, client build on disk
 }
 ```
 
@@ -123,9 +125,37 @@ def register_installation(server_url, hostname, name=None, ha_version=None):
 {
   "status": "ok",
   "installation_status": "online",   // Current server-side status
-  "config_version": 1                // Current config version (check if changed)
+  "config_version": 1,               // Current config version (check if changed)
+  "client_release": { }              // Optional, see below
 }
 ```
+
+### The `client_release` block
+
+Present **only** when the server considers a client update applicable to this
+installation — so the common "nothing to do" case costs no extra request on the
+60-second poll. Omit it entirely rather than sending a null or an empty object.
+
+```json
+{
+  "client_release": {
+    "version": "1.5.1",
+    "url": "https://github.com/<owner>/ha-dispatch-client/releases/download/v1.5.1/ha_dispatch_client.zip",
+    "sha256": "9f2c...",
+    "signature": "base64 Ed25519 signature over the raw zip bytes",
+    "key_id": "hadc-2026-01",
+    "release_url": "https://github.com/<owner>/ha-dispatch-client/releases/tag/v1.5.1",
+    "release_notes": "markdown string",
+    "min_ha_version": "2024.1.0",
+    "size_bytes": 48213
+  }
+}
+```
+
+The client verifies `signature` against a public key pinned in its own
+`const.py`, so the server transports this material but is never trusted for it.
+A release the server offers with a bad or unknown signature is refused. See
+[Self-Update](self-update.md) for the full trust model.
 
 ### Error Responses
 **403 Forbidden**: Token doesn't match installation
@@ -508,8 +538,56 @@ def send_metrics_batch(server_url, installation_id, token, metrics_buffer):
 
 ---
 
+## Endpoint 6: Report Client Update
+
+**Purpose**: Report the outcome of a client self-update.
+
+**Method**: `POST`
+**Path**: `/v1/installations/{installation_id}/client-update`
+**Authentication**: Required (Bearer token)
+
+### Request Body
+```json
+{
+  "status": "started",                  // Required: started, success, or failed
+  "from_version": "1.5.0",              // Version running before the update
+  "to_version": "1.5.1",                // Version being installed
+  "timestamp": "2026-09-17T03:14:00Z",  // ISO 8601
+  "phase": "verify",                    // Only on failure: which step failed
+  "error": "signature verification failed"  // Only on failure
+}
+```
+
+`phase` is one of `preflight`, `download`, `verify`, `validate`, `swap`,
+`restart`, `confirm`. It matters for rollout decisions: a `download` failure is
+worth retrying, a `verify` failure means stop the rollout now.
+
+### Success Response (200 OK)
+```json
+{
+  "status": "ok"
+}
+```
+
+### Client Implementation Notes
+
+- `started` is sent **before** the files are swapped, deliberately. An
+  installation that reports `started` and is then never heard from again is the
+  strongest available signal that a release is bad, and it needs no cooperation
+  from a client that may have just stopped working. Wire this to auto-halt a
+  staged rollout.
+- `success` is sent on the **next** startup, once the version actually on disk
+  is confirmed to equal `to_version` — not at the end of the install.
+- The client also reports `client_version` on every status heartbeat, so the
+  server can confirm an update independently of these reports.
+- A failure to reach this endpoint never aborts an update; it is logged and
+  dropped.
+
+---
+
 ## Related Documentation
 
+- [Self-Update](self-update.md) for the update trust model, signing, and rollout design
 - [Authentication & Security](dev-guide/authentication.md) for token generation and request authentication
 - [Communication Patterns](dev-guide/communication-patterns.md) for client-server interaction flows
 - [Error Handling](dev-guide/error-handling.md) for HTTP status code handling and retry strategies

@@ -119,6 +119,16 @@
           "description": "Alert type to resolve (e.g., low_disk_space)"
         }
       }
+    },
+    "install_update": {
+      "name": "Install client update",
+      "description": "Install the client release the HA Dispatch server is currently offering. The archive is verified against a pinned signing key before anything is replaced, and Home Assistant restarts afterwards to load it.",
+      "fields": {
+        "force": {
+          "name": "Force",
+          "description": "Install even when the offered version is not newer than the installed one. Allows reinstalling or downgrading; leave off unless you mean it."
+        }
+      }
     }
   }
 }

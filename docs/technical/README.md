@@ -13,5 +13,6 @@ For the full documentation index, see [docs/INDEX.md](../INDEX.md).
 | [Services](services.md) | Complete service reference with schemas and parameters |
 | [Service Registration](service-registration.md) | Singleton registration pattern analysis |
 | [API Reference](api-reference.md) | Full API endpoint reference |
+| [Self-Update](self-update.md) | Remote client update design, signing, and rollout |
 | [Data Model](data-model/README.md) | Database schema, relationships, business rules |
 | [Dev Guide](dev-guide/README.md) | Full client development guide (12 topics) |

@@ -2,6 +2,81 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.5.0] - 2026-09-17
+
+### Added
+
+- **The client can now update itself.** Until now the only way to change the
+  version on an instance was `deploy.sh` over SSH, one host at a time, and the
+  server had no idea which version any installation was running. A fleet tool
+  that can observe every instance but ship none of them a fix is half a tool.
+
+  - `client_version` is now sent on registration and on every status heartbeat,
+    read from the manifest actually on disk rather than a constant, so it stays
+    honest after an update.
+  - A Home Assistant `update` entity surfaces available client releases at
+    **Settings → Updates**, with release notes and install progress.
+  - `updater.py` downloads, verifies, validates, and installs a release, then
+    restarts Home Assistant.
+  - New `install_update` service for driving the same install from an
+    automation.
+  - The server can push `auto_update`, `target_version`, `update_window`,
+    `update_channel`, and `restart_after_update` through the existing
+    `desired_state` channel. `auto_update` defaults to off.
+
+  **Releases must be signed.** The client verifies an Ed25519 signature against
+  a public key pinned in `const.py`; the Dispatch server never holds that key.
+  Installing an update is remote code execution on the user's machine, so the
+  server is allowed to decide *whether* and *when* to offer one, and never
+  *what code runs*. An attacker who fully owns the server can still serve
+  nothing but releases we signed.
+
+  `RELEASE_SIGNING_KEYS` ships **empty**, so self-update is inert until a key is
+  deliberately pinned — every install fails closed at verification. Shipping a
+  placeholder key nobody controls the private half of would be worse than
+  shipping none.
+
+  Before the swap, the archive is checked for path traversal, absolute paths,
+  symlink members, a wrong domain or version, a missing manifest, and runaway
+  expansion — all while the working copy is still untouched. The previous
+  version is kept as a backup outside `custom_components/`, where Home
+  Assistant's loader will not mistake it for a second integration.
+
+  **There is no automatic rollback**, and this is a known limitation rather than
+  an omission: a release that fails to import takes its own recovery code down
+  with it. Mitigations are hard pre-swap validation, a retained backup, staged
+  rollouts, and the server noticing an instance that reports `started` and then
+  goes quiet. See `docs/user/updating.md` for the manual recovery steps.
+
+- `hacs.json`, so the integration can be installed and updated through HACS. The
+  release archive is the same artifact either way.
+- `scripts/release.sh` builds and signs a release; `scripts/generate_signing_key.py`
+  creates a keypair and prints the `const.py` entry.
+- `tests/test_updater.py` — 37 tests over signature verification, archive
+  validation, and the directory swap, including the mid-swap failure that has to
+  leave a working integration behind.
+- `tests/conftest.py` — shared Home Assistant stubs. The per-module stub sets
+  had reached the point where collection order decided whether they worked.
+
+### Changed
+
+- `cryptography>=41.0.0` added to `manifest.json` requirements. It ships with
+  Home Assistant core, so this normally resolves as already-satisfied; it is
+  declared so a thin install fails loudly rather than silently. The updater
+  imports it lazily, so a missing copy means "updates do not work" rather than
+  "the integration does not load".
+
+### Known limitations
+
+- Self-update does nothing until a signing key is pinned **and** the server
+  learns to serve the `client_release` payload. The server side is designed in
+  `docs/technical/self-update.md` but not built.
+- The download path, the restart, and boot-time confirmation have no automated
+  coverage — they need a running Home Assistant. Exercise them on a canary
+  instance before enabling `auto_update` anywhere that matters.
+- HACS and self-update both write the same files. Keep `auto_update` off on
+  HACS-managed instances; pick one route per installation.
+
 ## [1.4.0] - 2026-09-17
 
 ### Fixed

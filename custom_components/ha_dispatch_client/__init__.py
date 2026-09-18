@@ -11,13 +11,21 @@ from .const import (
     CONF_SERVER_URL,
     CONF_INSTALLATION_ID,
     CONF_ACCESS_TOKEN,
+    RELEASE_KEY,
 )
 from .api_client import HADispatchApiClient
 from .coordinator import HADispatchCoordinator
+from .updater import ClientUpdater
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor"]
+PLATFORMS = ["sensor", "update"]
+
+# Set once the pending-update record has been resolved, so a second config
+# entry does not re-run the confirmation and report the same update twice.
+# Kept out of hass.data[DOMAIN], which holds coordinators keyed by entry_id and
+# is iterated as such by the service helpers and the teardown check.
+UPDATE_CONFIRMED = f"{DOMAIN}_update_confirmed"
 
 # Service schemas
 SERVICE_SEND_TEST_METRICS_SCHEMA = vol.Schema({
@@ -48,6 +56,13 @@ SERVICE_SUBMIT_ALERT_SCHEMA = vol.Schema({
 
 SERVICE_RESOLVE_ALERT_SCHEMA = vol.Schema({
     vol.Required("type"): cv.string,
+})
+
+SERVICE_INSTALL_UPDATE_SCHEMA = vol.Schema({
+    # Allows reinstalling the same version or going backwards. Off by default:
+    # a downgrade is occasionally the right call during an incident, but never
+    # something to do by accident.
+    vol.Optional("force", default=False): cv.boolean,
 })
 
 
@@ -255,6 +270,31 @@ def setup_services(hass: HomeAssistant):
         else:
             _LOGGER.info("No unresolved alerts found for type: %s", alert_type)
     
+    async def handle_install_update(call: ServiceCall):
+        """Handle install_update service call."""
+        coordinator = get_coordinator_for_service(hass)
+        if not coordinator:
+            return
+
+        if coordinator.updater is None:
+            _LOGGER.error("Self-update is unavailable on this installation")
+            return
+
+        # Refresh first: the release payload rides on the status response, so
+        # this both picks up a release offered since the last poll and avoids
+        # acting on a stale one.
+        await coordinator.async_request_refresh()
+
+        release = (coordinator.data or {}).get(RELEASE_KEY)
+        if not release:
+            _LOGGER.warning("The server is not offering an update for this installation")
+            return
+
+        _LOGGER.info("Installing client update %s on request", release.get("version"))
+        await coordinator.updater.async_install(
+            release, force=call.data.get("force", False)
+        )
+
     # Register all services
     hass.services.async_register(
         DOMAIN,
@@ -291,7 +331,13 @@ def setup_services(hass: HomeAssistant):
         handle_resolve_alert,
         schema=SERVICE_RESOLVE_ALERT_SCHEMA
     )
-    
+    hass.services.async_register(
+        DOMAIN,
+        "install_update",
+        handle_install_update,
+        schema=SERVICE_INSTALL_UPDATE_SCHEMA
+    )
+
     _LOGGER.info("HA Dispatch Client services registered successfully")
 
 
@@ -305,6 +351,7 @@ def teardown_services(hass: HomeAssistant):
         hass.services.async_remove(DOMAIN, "send_custom_metric")
         hass.services.async_remove(DOMAIN, "submit_alert")
         hass.services.async_remove(DOMAIN, "resolve_alert")
+        hass.services.async_remove(DOMAIN, "install_update")
         _LOGGER.info("HA Dispatch Client services unregistered")
 
 
@@ -326,6 +373,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Lets the coordinator persist a new token if it has to re-enrol.
         entry=entry,
     )
+
+    # Wire up self-update before the first refresh, so the very first status
+    # report already carries the version actually on disk.
+    updater = ClientUpdater(hass, coordinator)
+    coordinator.updater = updater
+    coordinator.client_version = await updater.async_installed_version()
+
+    # Resolve any update left pending by a previous run. Done before the first
+    # refresh so a failed update is reported even if the server is unreachable
+    # later in setup, and only once no matter how many entries are configured.
+    if not hass.data.get(UPDATE_CONFIRMED):
+        hass.data[UPDATE_CONFIRMED] = True
+        await updater.async_confirm_pending()
 
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()

@@ -9,6 +9,7 @@ Central hub for all project documentation. Choose your audience below.
 | Get started fast | [Quickstart Guide](user/quickstart.md) |
 | Install & configure | [Installation](user/installation.md) |
 | Deploy to HA | [Deployment Guide](user/deployment.md) |
+| Update the client | [Updating the Client](user/updating.md) |
 | Use services | [Services Guide](user/services-guide.md) |
 | Alert management | [Alerts Guide](user/alerts-guide.md) |
 | API endpoints | [API Reference](technical/api-reference.md) |
@@ -32,6 +33,7 @@ For end users installing, configuring, and operating the integration.
 | [Services Guide](user/services-guide.md) | All 6 services with examples |
 | [Alerts Guide](user/alerts-guide.md) | Alert submission, resolution, automation |
 | [Deployment](user/deployment.md) | Deploy script, versioning, caching tips |
+| [Updating the Client](user/updating.md) | Updating from HA, the dashboard, or SSH; recovery |
 | [Testing](user/testing.md) | Manual testing procedures |
 | [Troubleshooting](user/troubleshooting.md) | Common issues and solutions |
 
@@ -48,6 +50,7 @@ For developers working on or extending the integration.
 | [Services](technical/services.md) | Service schemas, handlers, and patterns |
 | [Service Registration](technical/service-registration.md) | Singleton registration pattern analysis |
 | [Alert API](technical/alert-api.md) | Alert API endpoint reference |
+| [Self-Update](technical/self-update.md) | Remote client update design, signing, and rollout (client built in 1.5.0) |
 | [Data Model](technical/data-model/README.md) | Database schema, relationships, business rules |
 | [Dev Guide](technical/dev-guide/README.md) | Full client development guide (12 topics) |
 
