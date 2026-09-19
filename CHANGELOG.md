@@ -2,6 +2,18 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.5.2] - 2026-09-19
+
+### Changed
+
+- Version bump only. This release exists to exercise the self-update path
+  end to end: 1.5.1 is the first build that pins a signing key, so it is the
+  first that can verify anything, and 1.5.2 is therefore the first release any
+  installation can actually install by itself.
+
+  There is no code change. Saying so plainly is better than inventing one —
+  the thing under test is the delivery mechanism, not the payload.
+
 ## [1.5.1] - 2026-09-19
 
 ### Added

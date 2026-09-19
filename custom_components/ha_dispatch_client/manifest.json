@@ -1,7 +1,7 @@
 {
   "domain": "ha_dispatch_client",
   "name": "HA Dispatch Client",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "documentation": "https://github.com/straplocked/ha-client",
   "issue_tracker": "https://github.com/straplocked/ha-client/issues",
   "requirements": [
