@@ -1,15 +1,19 @@
 # Client Self-Update — Design Specification
 
-**Status:** Client implemented in 1.5.0 (layers 1–3, 5). Server side (layer 4, 6) outstanding.
+**Status:** Implemented. Client in 1.5.0; server side built in the HA Dispatch repository.
 **Author:** Design spec, 2026-09-17
 **Related:** [Architecture](architecture.md) · [API Reference](api-reference.md) · [Updating the client](../user/updating.md)
 
-> **Not yet live.** The client half is built and tested, but self-update stays
-> inert until two things happen: a signing key is generated and pinned in
-> `const.py` ([§7](#7-signing-and-verification)), and the server learns to serve
-> the `client_release` payload ([§10](#10-server-side-requirements)). Until then
-> the update entity shows "up to date" and any install attempt fails closed at
-> the verification step. That is the intended behaviour, not a bug.
+> **One step remains before anything ships.** Both halves are built and tested,
+> but self-update stays inert until a signing key is generated and pinned in
+> `const.py` ([§7](#7-signing-and-verification)) and a signed release is cut.
+> Until then the update entity shows "up to date" and any install attempt fails
+> closed at the verification step. That is the intended behaviour, not a bug.
+>
+> The server's half — release mirroring, staged rollouts, halt-on-silence, and
+> the rollout console — lives in the HA Dispatch repository at
+> `docs/technical/client-updates.md`. Where that document and this one differ
+> about the server, that one is authoritative.
 
 ---
 
@@ -444,18 +448,18 @@ With GitHub releases as the artifact source, HACS support is nearly free: add `h
 
 | Phase | Deliverable | Status |
 |-------|-------------|--------|
-| 1 | `client_version` in register + status | **Done** (client side) — server column and dashboard filter outstanding |
+| 1 | `client_version` in register + status | **Done** — including the server column and "outdated" filter |
 | 2 | `release.sh`, `generate_signing_key.py`, `hacs.json` | **Done** — no key generated yet |
 | 3 | `update.py` entity | **Done** |
 | 4 | `updater.py` — download, verify, validate, swap, marker, restart, confirm | **Done** |
 | 5 | `desired_state` update keys; `auto_update` honoured by the coordinator | **Done** |
-| 6 | Server-side rollouts, canary cohorts, halt-on-silence | Outstanding |
+| 6 | Server-side rollouts, canary cohorts, halt-on-silence | **Done** — in the HA Dispatch repository |
 
 ### What is left before this can be switched on
 
 1. **Generate a signing key** and pin its public half in `RELEASE_SIGNING_KEYS`. Until then every install fails closed at verification ([§7](#7-signing-and-verification)).
 2. **Cut a signed release** with `scripts/release.sh` so there is something to install.
-3. **Build the server side** — release ingestion from the GitHub API, the `client_release` block on the status response, the `client-update` endpoint, and the `desired_state` keys ([§10](#10-server-side-requirements)).
+3. **Publish it and start a rollout** from the Dispatch dashboard. Mirroring a release from GitHub deliberately does not publish it, and publishing deliberately does not ship it.
 4. **Then** turn on `auto_update` for one canary installation, not the fleet.
 
 ### Test coverage

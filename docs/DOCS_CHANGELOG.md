@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-18] — Server Side Built
+
+### Changed
+- `docs/technical/self-update.md` — status moved to implemented; phase table updated (layer 6 done); the remaining pre-launch steps now reflect that the server exists, leaving only "generate a key, cut a release, publish, roll out". Points at the HA Dispatch repository's `docs/technical/client-updates.md` as authoritative for the server half.
+
+---
+
 ## [2026-09-17] — Self-Update Implementation (v1.5.0)
 
 ### Added
