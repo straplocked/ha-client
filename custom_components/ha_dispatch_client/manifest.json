@@ -1,7 +1,7 @@
 {
   "domain": "ha_dispatch_client",
   "name": "HA Dispatch Client",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "documentation": "https://github.com/straplocked/ha-client",
   "issue_tracker": "https://github.com/straplocked/ha-client/issues",
   "requirements": [
@@ -10,7 +10,9 @@
     "cryptography>=41.0.0"
   ],
   "dependencies": [],
-  "codeowners": ["@straplocked"],
+  "codeowners": [
+    "@straplocked"
+  ],
   "config_flow": true,
   "iot_class": "cloud_polling"
 }

@@ -61,7 +61,9 @@ API_CLIENT_UPDATE = "/api/v1/installations/{installation_id}/client-update"
 # fails verification and self-update is inert. Shipping a placeholder key that
 # nobody controls would be far worse than shipping none. Populate this from
 # scripts/generate_signing_key.py before enabling updates.
-RELEASE_SIGNING_KEYS: dict[str, str] = {}
+RELEASE_SIGNING_KEYS: dict[str, str] = {
+    "hadc-2026-01": "U5xJWwPubWX4fWLLvcCjxV4GmjC8GEkCGPDBzg99hfI=",
+}
 
 # Hosts a release archive may be downloaded from. The signature is the real
 # control -- a tampered archive fails verification wherever it came from -- so

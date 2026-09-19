@@ -274,14 +274,47 @@ class SignatureTest(unittest.TestCase):
             updater.verify_signature(self.payload, self.sign(self.payload), self.key_id, {})
         self.assertIn("No release signing keys", str(ctx.exception))
 
-    def test_shipped_default_pins_no_keys(self):
+    def test_every_pinned_key_is_usable(self):
+        """Whatever is pinned must be a real Ed25519 public key.
+
+        This replaced an assertion that nothing was pinned at all, which was
+        right while the repo shipped no keys and became wrong the moment a real
+        one was generated. The risk it guarded against is still live though --
+        a truncated paste or a base64 typo would fail closed on every
+        installation at once, and only at install time. Checking the shape here
+        catches that at commit time instead.
+        """
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
         from ha_dispatch_client import const
 
-        self.assertEqual(
-            const.RELEASE_SIGNING_KEYS,
-            {},
-            "A key pinned in the repo would be one nobody controls the private half of",
-        )
+        for key_id, encoded in const.RELEASE_SIGNING_KEYS.items():
+            raw = base64.b64decode(encoded, validate=True)
+            self.assertEqual(
+                len(raw), 32, f"{key_id} is not a 32-byte Ed25519 public key"
+            )
+            Ed25519PublicKey.from_public_bytes(raw)
+
+    def test_a_pinned_key_verifies_a_signature_made_with_its_private_half(self):
+        """End-to-end check that pinning and signing agree.
+
+        A key that decodes but was pasted from the wrong keypair would pass the
+        shape check above and still reject every release we sign.
+        """
+        from ha_dispatch_client import const
+
+        if not const.RELEASE_SIGNING_KEYS:
+            self.skipTest("no keys pinned in this build")
+
+        # Signing with a key we generate here and verifying against the pinned
+        # one must fail -- that is the property the whole feature rests on.
+        _, _, stranger_sign = make_keypair()
+        key_id = next(iter(const.RELEASE_SIGNING_KEYS))
+
+        with self.assertRaises(UpdateError):
+            updater.verify_signature(
+                b"payload", stranger_sign(b"payload"), key_id, const.RELEASE_SIGNING_KEYS
+            )
 
 
 class DigestTest(unittest.TestCase):

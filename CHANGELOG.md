@@ -2,6 +2,32 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.5.1] - 2026-09-19
+
+### Added
+
+- **A release signing key is now pinned.** `RELEASE_SIGNING_KEYS` carries
+  `hadc-2026-01`, so the client can verify releases signed by the release
+  pipeline. Until now the dict was empty and every install failed closed at
+  verification, which was the correct default but meant self-update did
+  nothing.
+
+  **This release cannot install itself.** A release is verified by the key
+  pinned in the client that is *already running*, and 1.5.0 pinned none. So
+  1.5.1 has to be deployed the old way — `deploy.sh`, HACS, or a manual copy —
+  on every installation. From 1.5.2 onwards self-update works, because by then
+  the running client holds the key.
+
+### Changed
+
+- `tests/test_updater.py` no longer asserts that no key is pinned; it asserts
+  that whatever *is* pinned is a well-formed 32-byte Ed25519 public key, and
+  that a signature from a different keypair is still rejected. The original
+  assertion was right while the repo shipped no keys and became wrong the
+  moment a real one existed, but the risk it guarded — a truncated or
+  mistyped key failing closed on the whole fleet at once, only at install
+  time — is unchanged.
+
 ## [1.5.0] - 2026-09-17
 
 ### Added
