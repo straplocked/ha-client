@@ -15,5 +15,6 @@ For the full documentation index, see [docs/INDEX.md](../INDEX.md).
 | [API Reference](api-reference.md) | Full API endpoint reference |
 | [Self-Update](self-update.md) | Remote client update design, signing, and rollout |
 | [Remote Access](remote-access.md) | Consent-gated remote access: consent surfaces, transport, local credentials |
+| [Component Inventory](component-inventory.md) | What the installation is running: sources, stable slugs, cadence, truncation |
 | [Data Model](data-model/README.md) | Database schema, relationships, business rules |
 | [Dev Guide](dev-guide/README.md) | Full client development guide (12 topics) |

@@ -690,6 +690,10 @@ class ClientUpdater:
                 f"Updated from {installed} to {version}. Restart Home Assistant to "
                 "load the new version.",
             )
+            # Nothing is going to restart, so nothing else is going to notice
+            # the new version for up to half an hour. Report it now, while the
+            # fleet's observation window still lines up with the change.
+            await self._async_report_components()
             return
 
         _LOGGER.warning("Restarting Home Assistant to load client %s", version)
@@ -733,6 +737,12 @@ class ClientUpdater:
             await self._async_report(
                 "success", release={"version": target}, installed=previous
             )
+            # This client is itself a component, so the swap just changed the
+            # inventory. Reporting here rather than waiting for the cadence is
+            # what makes the fleet attribute anything that follows to the right
+            # version -- and it runs before the first refresh, so it replaces
+            # that tick's report rather than adding to it.
+            await self._async_report_components()
             await self.hass.async_add_executor_job(prune_backups, self.backup_root)
         else:
             message = (
@@ -780,6 +790,17 @@ class ClientUpdater:
             )
         except Exception as err:  # noqa: BLE001 - never let reporting break an update
             _LOGGER.warning("Could not report update %s to the server: %s", status, err)
+
+    async def _async_report_components(self) -> None:
+        """Push a fresh inventory now. Never raises -- this is a courtesy."""
+        report = getattr(self.coordinator, "async_report_components", None)
+        if report is None:
+            return
+
+        try:
+            await report(force=True)
+        except Exception as err:  # noqa: BLE001 - never let reporting break an update
+            _LOGGER.warning("Could not report components after the update: %s", err)
 
     def _notify(self, title: str, message: str) -> None:
         """Raise a persistent notification, if the component is available."""

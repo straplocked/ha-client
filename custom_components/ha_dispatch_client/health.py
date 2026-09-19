@@ -39,7 +39,11 @@ _LOGGER = logging.getLogger(__name__)
 # Config entry states that mean the integration is not working. NOT_LOADED is
 # excluded deliberately -- it is the normal resting state for an entry the user
 # disabled on purpose, and reporting it would train people to ignore this list.
-_FAILED_ENTRY_STATES = frozenset(
+#
+# Public because components.py sets a component's `failing` flag from the same
+# fact. "Home Assistant could not set this up" needs one definition, not two
+# that can drift apart.
+FAILED_ENTRY_STATES = frozenset(
     {
         ConfigEntryState.SETUP_ERROR,
         ConfigEntryState.SETUP_RETRY,
@@ -255,7 +259,7 @@ def _collect_integrations(hass: HomeAssistant) -> tuple[int, int, list[dict[str,
 
         total += 1
 
-        if entry.state not in _FAILED_ENTRY_STATES:
+        if entry.state not in FAILED_ENTRY_STATES:
             continue
 
         failed += 1

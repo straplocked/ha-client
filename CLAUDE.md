@@ -5,7 +5,7 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.6.0 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.7.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
 - **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`, `cryptography>=41.0.0`
@@ -23,6 +23,7 @@ custom_components/ha_dispatch_client/
 ├── update.py         # HADispatchUpdateEntity - client version as an HA update entity
 ├── updater.py        # ClientUpdater - signed self-update (download, verify, swap, restart)
 ├── health.py         # Home Assistant health signal collection
+├── components.py     # Component inventory - core, OS, Supervisor, add-ons, integrations, HACS
 ├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and live session state
 ├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
 ├── repairs.py        # Approve/Deny dialog and the end-access off-switch
@@ -43,6 +44,7 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
 - **Async everything:** All API calls use `aiohttp` sessions from `homeassistant.helpers.aiohttp_client`
 - **Config entry storage:** Server URL, installation_id, access_token, client_id stored in config entry data
 - **Signed self-update:** `updater.py` replaces the integration's own files and restarts HA. Releases must carry an Ed25519 signature verified against a key pinned in `const.py::RELEASE_SIGNING_KEYS` — the server never holds that key, so it can decide whether/when to offer an update but never what code runs. That dict ships **empty**, so self-update fails closed until a key is deliberately pinned. Never add a placeholder.
+- **Component inventory is a full snapshot, never a delta:** `components.py` reports everything the installation is running on every report. The server retires anything absent -- omission *is* removal -- so an agent that sent only what changed would retire almost the whole inventory on its second report. There is deliberately no memory of the previous report in that module. Slugs must be **stable** because the server keys on `(kind, slug)`: they come from the integration domain, the Supervisor add-on slug, or the HACS repository, and **never** from a config entry title or a display name, which users rename. `failing` is set only where Home Assistant actually knows -- a config entry in a failed setup state, or an add-on Supervisor could not start; a *stopped* add-on is not a failure. Cadence is 30 minutes, **not** the 60 s metrics poll, with a forced report immediately after a self-update because the transition is what opens the fleet's observation window. A whole kind being absent is normal: most installs are Core-only. Full design: `docs/technical/component-inventory.md`.
 - **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. Full design: `docs/technical/remote-access.md`.
 
 ### API Endpoints (server-side)
@@ -56,6 +58,7 @@ All under `/api/v1/installations/`:
 - `POST .../{id}/alerts` - Submit alert
 - `POST .../{id}/alerts/batch` - Batch alerts
 - `POST .../{id}/alerts/{type}/resolve` - Resolve alerts by type
+- `POST .../{id}/components` - Report the full component inventory (snapshot, not a delta)
 - `POST .../{id}/client-update` - Report a self-update outcome (started/success/failed)
 - `GET  .../{id}/access/pending` - Remote access requests awaiting the customer
 - `POST .../{id}/access/{session}/respond` - Report grant/deny
@@ -118,14 +121,18 @@ is the whole basis of the self-update trust model.
 ### Testing
 
 Automated tests cover the pure logic (health classification, re-enrolment,
-the whole self-update verification/validation/swap path, and consent-gated
+the whole self-update verification/validation/swap path, consent-gated
 remote access -- what the customer is shown, that the decision reaching the
 server is the one they made, and that a request leaving the pending list clears
-both its notification and its Repairs issue). Home Assistant is not installed
-in the dev environment; `tests/conftest.py` stubs the symbols the integration
-imports, including recording versions of `persistent_notification` and
-`issue_registry` so tests can assert on what was actually put in front of the
-customer. Add to that conftest when new HA imports appear.
+both its notification and its Repairs issue -- and component inventory: that
+every report is a full snapshot rather than a delta, that a slug survives
+anything a user can rename, and that the inventory does not ride the 60 s
+metrics poll). Home Assistant is not installed in the dev environment;
+`tests/conftest.py` stubs the symbols the integration imports, including
+recording versions of `persistent_notification` and `issue_registry` so tests
+can assert on what was actually put in front of the customer, and Supervisor
+helpers that answer the way a Core-only install does. Add to that conftest when
+new HA imports appear.
 
 ```bash
 python3 -m pytest tests/ -q
@@ -182,6 +189,7 @@ All documentation is organized under `docs/` — see `docs/INDEX.md` as the mast
 | Service schemas | `docs/technical/services.md` |
 | Remote update design | `docs/technical/self-update.md` (client built; server side outstanding) |
 | Remote access design | `docs/technical/remote-access.md` (consent, tunnel, local credentials) |
+| Component inventory | `docs/technical/component-inventory.md` (sources, stable slugs, cadence, truncation) |
 | Data model | `docs/technical/data-model/README.md` |
 | Dev guide | `docs/technical/dev-guide/README.md` |
 | Quickstart | `docs/user/quickstart.md` |

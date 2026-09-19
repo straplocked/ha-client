@@ -2,7 +2,7 @@
 
 ## Run Count
 
-Total documentation update runs: **5**
+Total documentation update runs: **6**
 
 | Run | Date       | Scope              | Files Changed | Notes                              |
 |-----|------------|--------------------|---------------|------------------------------------|
@@ -11,6 +11,7 @@ Total documentation update runs: **5**
 | 3   | 2026-09-17 | Self-update v1.5.0 | 9 files       | Shipped client; new user guide     |
 | 4   | 2026-09-18 | Server side built  | 1 file        | self-update.md status change       |
 | 5   | 2026-09-19 | Remote access v1.6.0 | 9 files     | New technical doc; API endpoints 7-11 |
+| 6   | 2026-09-19 | Component inventory v1.7.0 | 8 files | New technical doc; API endpoint 12 |
 
 ---
 
@@ -85,6 +86,7 @@ docs/
 │   ├── alert-api.md
 │   ├── self-update.md
 │   ├── remote-access.md
+│   ├── component-inventory.md
 │   ├── data-model/
 │   │   ├── README.md
 │   │   ├── schema.md

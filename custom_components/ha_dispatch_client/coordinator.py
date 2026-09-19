@@ -24,6 +24,7 @@ from .api_client import (
 # InstallationGoneError subclasses InstallationAuthError, so the handler below
 # covers both a rejected token (401) and a vanished record (404).
 from .const import (
+    COMPONENT_REPORT_INTERVAL,
     CONF_ACCESS_TOKEN,
     CONF_AUTO_UPDATE,
     CONF_CLIENT_ID,
@@ -43,6 +44,7 @@ from .const import (
     DOMAIN,
     RELEASE_KEY,
 )
+from .components import async_collect_components
 from .health import collect_health
 from .updater import UpdateError, in_update_window, is_newer
 
@@ -81,6 +83,13 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         # built without one (the tests, and any caller predating the feature)
         # simply never polls for consent requests.
         self.remote_access = None
+
+        # Component inventory. Reported on its own slow cadence rather than on
+        # every metrics poll: versions change rarely, and the fleet's
+        # attribution window is two hours wide. None means "never reported",
+        # which is why the very first tick after a restart always sends one.
+        self.component_report_interval = COMPONENT_REPORT_INTERVAL
+        self.components_reported_at = None
 
         # Self-update state. The updater and the version on disk are both
         # supplied during setup, once Home Assistant's loader can be asked.
@@ -124,6 +133,10 @@ class HADispatchCoordinator(DataUpdateCoordinator):
             # A release is only present when the server considers one
             # applicable to this installation, so the common "nothing to do"
             # case costs no extra request.
+            # Component inventory, when it is due. Cheap on the ticks it is not
+            # due, which is 29 out of every 30 of them.
+            await self.async_report_components()
+
             release = status_data.get(RELEASE_KEY)
             if not isinstance(release, dict):
                 release = None
@@ -330,6 +343,62 @@ class HADispatchCoordinator(DataUpdateCoordinator):
 
         except (KeyError, TypeError, ValueError) as err:
             _LOGGER.error("Error applying configuration: %s", err)
+
+    async def async_report_components(self, *, force: bool = False) -> bool:
+        """Report the full component inventory, if it is due.
+
+        force skips the cadence check and is how an update reports promptly --
+        the transition is what opens the fleet's observation window, and a
+        version discovered half an hour late is attributed to half an hour of
+        unrelated events.
+
+        Returns whether a report actually went out. Never raises on a
+        collection or transport failure: the inventory is intelligence, and
+        losing one report of it must not take metrics down with it.
+        """
+        now = dt_util.utcnow()
+        if not force and not self._components_due(now):
+            return False
+
+        try:
+            components = await async_collect_components(self.hass)
+        except (AttributeError, KeyError, TypeError, ValueError) as err:
+            _LOGGER.error("Error collecting component inventory: %s", err)
+            return False
+
+        if not components:
+            # The server validates `components` as required, so an empty list
+            # is a 422 rather than "this installation runs nothing".
+            _LOGGER.debug("No components collected; skipping the inventory report")
+            return False
+
+        try:
+            await self.api_client.report_components(
+                installation_id=self.installation_id,
+                components=components,
+            )
+        except (
+            aiohttp.ClientError,
+            TimeoutError,
+            AttributeError,
+            KeyError,
+            ValueError,
+        ) as err:
+            # Left un-stamped on purpose: the next tick tries again rather than
+            # waiting out the full interval on a transport blip.
+            _LOGGER.warning("Could not report the component inventory: %s", err)
+            return False
+
+        self.components_reported_at = now
+        _LOGGER.debug("Reported %s components", len(components))
+        return True
+
+    def _components_due(self, now) -> bool:
+        """Whether enough time has passed since the last inventory report."""
+        if self.components_reported_at is None:
+            return True
+        elapsed = (now - self.components_reported_at).total_seconds()
+        return elapsed >= self.component_report_interval
 
     def _collect_health(self) -> dict | None:
         """Collect Home Assistant health signals.

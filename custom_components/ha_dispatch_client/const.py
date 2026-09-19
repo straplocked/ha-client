@@ -43,6 +43,7 @@ API_STATUS = "/api/v1/installations/{installation_id}/status"
 API_CONFIG = "/api/v1/installations/{installation_id}/config"
 API_METRICS = "/api/v1/installations/{installation_id}/metrics"
 API_METRICS_BATCH = "/api/v1/installations/{installation_id}/metrics/batch"
+API_COMPONENTS = "/api/v1/installations/{installation_id}/components"
 API_CLIENT_UPDATE = "/api/v1/installations/{installation_id}/client-update"
 API_ACCESS_PENDING = "/api/v1/installations/{installation_id}/access/pending"
 API_ACCESS_RESPOND = "/api/v1/installations/{installation_id}/access/{session_id}/respond"
@@ -51,6 +52,47 @@ API_ACCESS_POLL = "/api/v1/installations/{installation_id}/access/poll"
 API_ACCESS_EXCHANGE = (
     "/api/v1/installations/{installation_id}/access/exchanges/{request_id}/respond"
 )
+
+# --- Component inventory ----------------------------------------------------
+# Full design: docs/technical/component-inventory.md
+
+# Component kinds. These strings are a wire contract with the server -- see
+# InstallationComponent::KINDS. An unknown kind is rejected with a 422.
+COMPONENT_KIND_CORE = "core"
+COMPONENT_KIND_OS = "os"
+COMPONENT_KIND_SUPERVISOR = "supervisor"
+COMPONENT_KIND_ADDON = "addon"
+COMPONENT_KIND_INTEGRATION = "integration"
+COMPONENT_KIND_HACS = "hacs"
+
+# Slugs for the three components there is only ever one of.
+COMPONENT_SLUG_CORE = "core"
+COMPONENT_SLUG_OS = "os"
+COMPONENT_SLUG_SUPERVISOR = "supervisor"
+
+# How often the full inventory is posted. The contract asks for 15-60 minutes:
+# component versions change rarely and the fleet's attribution window is two
+# hours wide, so riding the 60 s metrics poll would cost bandwidth without
+# improving the signal. Applying an update reports immediately regardless --
+# that is what starts the observation window.
+COMPONENT_REPORT_INTERVAL = 1800
+
+# Client-side truncation cap. The server validates at 2000 per request and
+# retains 800 per report, dropping the tail. Truncating here instead means a
+# very large installation loses rows we chose to lose, in a documented order,
+# rather than whatever happened to be last in the payload.
+COMPONENT_REPORT_CAP = 750
+
+# Field lengths the server enforces. Values are trimmed here so an over-long
+# name cannot cost the whole report a 422.
+COMPONENT_SLUG_MAX = 191
+COMPONENT_NAME_MAX = 255
+COMPONENT_VERSION_MAX = 64
+
+# Supervisor add-on states that mean the add-on is genuinely broken. `stopped`
+# is deliberately absent: stopping an add-on is something people do on purpose,
+# and reporting it as a fault would attribute a deliberate act to an upgrade.
+COMPONENT_ADDON_FAILED_STATES = frozenset({"error"})
 
 # --- Consent-gated remote access -------------------------------------------
 # Full design: docs/technical/remote-access.md

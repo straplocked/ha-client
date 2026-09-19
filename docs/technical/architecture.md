@@ -70,6 +70,7 @@ custom_components/ha_dispatch_client/
 ├── update.py         # HADispatchUpdateEntity - client version as an HA update entity
 ├── updater.py        # ClientUpdater - signed self-update (download, verify, swap, restart)
 ├── health.py         # Home Assistant health signal collection
+├── components.py     # Component inventory - core, OS, Supervisor, add-ons, integrations, HACS
 ├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and session state
 ├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
 ├── repairs.py        # Approve / Deny and End-access repair flows
@@ -92,6 +93,7 @@ Async HTTP client providing methods for every server API endpoint:
 | `fetch_configuration()` | `GET .../{id}/config` | Configuration polling |
 | `submit_metrics()` | `POST .../{id}/metrics` | Single metric submission |
 | `submit_metrics_batch()` | `POST .../{id}/metrics/batch` | Batch metrics |
+| `report_components()` | `POST .../{id}/components` | Full component inventory |
 | `submit_alert()` | `POST .../{id}/alerts` | Submit single alert |
 | `submit_alerts_batch()` | `POST .../{id}/alerts/batch` | Batch alerts |
 | `resolve_alert()` | `POST .../{id}/alerts/{type}/resolve` | Resolve alerts by type |
@@ -105,9 +107,36 @@ Implements the Home Assistant `DataUpdateCoordinator` pattern. Every update cycl
 1. Reports status (heartbeat) to the server
 2. Checks for configuration updates
 3. Collects system metrics via `psutil` (CPU, memory, disk, uptime)
-4. Submits metrics to the server
+4. Submits metrics and Home Assistant health signals to the server
+5. Reports the component inventory, **if it is due** -- see below
+6. Polls for pending remote access consent requests
 
 The poll interval can be changed remotely via the server's configuration push.
+
+The component inventory deliberately does *not* ride this cadence. It goes out
+on the first tick after a restart and every 30 minutes thereafter, because
+versions change rarely and the server's attribution window is two hours wide.
+An applied update forces one immediately, since the transition is what opens
+that window. See [Component Inventory](component-inventory.md).
+
+#### `components.py`
+
+Builds the full inventory of what the installation is running: Home Assistant
+core, the OS and Supervisor where present, Supervisor add-ons, integrations
+(config entry domains plus every custom integration), and HACS downloads.
+
+Three rules, all forced by how the server reconciles a report:
+
+- **Full snapshot, never a delta.** Omission is how removal is expressed, so
+  there is deliberately no memory of the previous report in this module.
+- **Slugs are stable.** Integration domain, Supervisor add-on slug, HACS
+  repository -- never a config entry title or a display name.
+- **`failing` only where Home Assistant knows.** A config entry in a failed
+  setup state, or an add-on Supervisor could not start. A *stopped* add-on is
+  not a failure.
+
+A whole kind being absent is normal: most installations are Core-only, with no
+Supervisor, no add-ons and no HACS. Every source degrades independently.
 
 #### `config_flow.py`
 

@@ -206,6 +206,40 @@ async def _async_get_integration(hass, domain):
     raise RuntimeError("no integration available in tests unless patched")
 
 
+async def _async_get_integrations(hass, domains):
+    """No manifests unless a test supplies them.
+
+    components.py treats an unresolvable manifest as "no name, no version",
+    which is exactly what a built-in integration looks like, so this is a
+    realistic default rather than a broken one.
+    """
+    return {}
+
+
+async def _async_get_custom_components(hass):
+    return {}
+
+
+def _install_hassio(components):
+    """Supervisor helpers, answering the way a Core-only install does.
+
+    Core-only is the majority case and the one most likely to be got wrong, so
+    it is what every test gets until it says otherwise. A test simulating a
+    supervised install overrides these four.
+    """
+    module = _module("homeassistant.components.hassio")
+    components.hassio = module
+
+    _set_missing(
+        module,
+        is_hassio=lambda hass: False,
+        get_os_info=lambda hass: None,
+        get_info=lambda hass: None,
+        get_supervisor_info=lambda hass: None,
+        get_addons_info=lambda hass: None,
+    )
+
+
 def install_stubs() -> None:
     """Register every homeassistant symbol the integration imports."""
     _module("homeassistant")
@@ -238,6 +272,7 @@ def install_stubs() -> None:
 
     components = _module("homeassistant.components")
     _install_persistent_notification(components)
+    _install_hassio(components)
 
     binary_sensor = _module("homeassistant.components.binary_sensor")
     _set_missing(
@@ -277,7 +312,12 @@ def install_stubs() -> None:
     helpers.aiohttp_client = aiohttp_client
 
     loader = _module("homeassistant.loader")
-    _set_missing(loader, async_get_integration=_async_get_integration)
+    _set_missing(
+        loader,
+        async_get_integration=_async_get_integration,
+        async_get_integrations=_async_get_integrations,
+        async_get_custom_components=_async_get_custom_components,
+    )
 
     util = _module("homeassistant.util")
     dt_module = _module("homeassistant.util.dt")

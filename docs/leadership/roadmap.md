@@ -1,6 +1,6 @@
 # Roadmap
 
-## Built (v1.6.0)
+## Built (v1.7.0)
 
 The following capabilities are complete and available today.
 
@@ -18,6 +18,8 @@ The following capabilities are complete and available today.
 - **Client self-update (client side)** -- The client can install a newer version of itself and restart, driven either from the Home Assistant interface or automatically on a schedule. Releases must carry a cryptographic signature that the client checks against a key built into it, so the management server can decide when an update happens but never what software is installed. Completing the feature requires the corresponding server-side work below
 
 - **Consent-gated remote support** -- A technician can ask for access to an installation, and the homeowner is asked inside their own Home Assistant: who is asking, why, what they would be able to do, and for how long. Approving or declining takes one tap and never requires leaving Home Assistant. An approved session can be ended by the homeowner at any moment. Once approved, the client carries the technician's requests to the local system and returns the answers over a connection that is always outbound, so nothing is opened up on the customer's network
+
+- **Version inventory reporting** -- Every half hour the client reports what the installation is actually running: Home Assistant itself, the operating system and Supervisor where present, add-ons, integrations, and Community Store downloads, with anything Home Assistant reports as broken flagged as such. This fills the dashboard's Components view, which was empty for every installation until now, and it is what the fleet's update advice is calculated from. An installation that reports its inventory both contributes to that advice and receives it
 
 ## Planned
 

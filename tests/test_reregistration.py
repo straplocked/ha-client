@@ -155,6 +155,7 @@ class FakeApiClient:
         self.register_effects = list(register_effects or [])
         self.register_calls = []
         self.submitted = []
+        self.component_reports = []
 
     async def report_status(self, **kwargs):
         if self.status_effects:
@@ -179,6 +180,10 @@ class FakeApiClient:
     async def submit_metrics(self, **kwargs):
         self.submitted.append(kwargs)
         return {"status": "ok"}
+
+    async def report_components(self, **kwargs):
+        self.component_reports.append(kwargs)
+        return {"status": "ok", "recorded": len(kwargs.get("components") or [])}
 
 
 def make_coordinator(api, entry=None):

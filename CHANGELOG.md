@@ -2,6 +2,101 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.7.0] - 2026-09-19
+
+### Added
+
+- **The client reports what it is running.** The server has had a component
+  inventory endpoint, a reconciliation service, a transition ledger and an
+  update-risk scorer for some time. The client had never posted a single
+  inventory, so the dashboard's Components tab was empty for every
+  installation and the risk pipeline had nothing whatsoever to score.
+
+  Every report now carries Home Assistant core, the OS and Supervisor where
+  they exist, every Supervisor add-on, every integration with a config entry
+  plus every custom integration on disk, and everything HACS has downloaded.
+
+  A whole kind being absent is normal rather than an error -- most
+  installations are Core-only, with no Supervisor, no add-ons and no HACS --
+  so each source degrades on its own. An unavailable Supervisor helper, a HACS
+  that rearranged its internals, or a manifest that will not load costs that
+  one source and nothing else.
+
+- **`POST /api/v1/installations/{id}/components`** in the API client, driven by
+  `coordinator.async_report_components()`.
+
+### The three rules, all of which are load-bearing
+
+- **Full snapshot, never a delta.** The server retires anything absent --
+  omission *is* removal, there is no "deleted" flag. An agent that sent only
+  what changed would retire almost the entire inventory on its second report,
+  and an agent that skipped a poll would leave it permanently wrong. So
+  `components.py` keeps no memory of the previous report: there is nothing to
+  diff against, deliberately.
+
+- **Slugs are stable, because they are half a component's identity.** Every
+  one is a Home Assistant identifier the user cannot rename -- the integration
+  domain, the Supervisor add-on slug, the HACS repository. The config entry
+  *title* is used for nothing at all: it is user-editable, and an integration
+  with two entries has two of them, so slugging on it would turn one Hue
+  integration into two components and retire one of them next poll. A slug
+  that moves reads as one component being removed and another installed, which
+  corrupts both the change timeline and the risk evidence.
+
+- **`failing` is set only where Home Assistant knows.** A config entry in a
+  failed setup state, or an add-on Supervisor could not start. A *stopped*
+  add-on is explicitly not a failure: people stop add-ons on purpose, and
+  calling that a fault would blame the last upgrade for a deliberate act --
+  fleet-wide, for everybody about to install that version. The
+  failed-config-entry set is now shared with health reporting, so that
+  judgement has one definition rather than two that drift.
+
+A built-in integration ships no manifest version, so it is reported with a
+name and no version. Inventing one -- the core version, say -- would put a
+fabricated transition into the fleet's evidence.
+
+### Cadence
+
+- Reported on the first coordinator tick after a restart, then every **30
+  minutes**. Deliberately not on the 60 s metrics poll: versions change
+  rarely, the server's attribution window is two hours wide, and reporting on
+  every poll would cost bandwidth without improving the signal.
+
+- **Forced immediately after a self-update**, on both paths. The transition is
+  what opens that observation window, so a version discovered half an hour
+  late gets credited with half an hour of unrelated faults. The restart path
+  reports from `async_confirm_pending()`, which runs before the coordinator's
+  first refresh and so replaces that tick's report rather than adding to it.
+  The no-restart path (`restart_after_update: false`) reports as soon as the
+  files are swapped, since nothing else would notice for half an hour.
+
+- A report that fails to send does not stamp the clock, so the next tick
+  retries rather than waiting out the full interval on a transport blip.
+
+### Limits
+
+- Truncated to **750** entries client-side -- under the server's 800 retained
+  and far under its 2000 hard limit -- so a very large installation loses rows
+  somebody chose for it to lose. Platform first, then everything carrying a
+  version sorted by `kind:slug`, then everything without one. A versionless
+  row contributes nothing to the transition ledger, so it is the right thing
+  to lose. The sort matters as much as the bands: an unstable cut would retire
+  and reinstate the same components forever.
+
+- Over-long names and versions are trimmed rather than sent whole, so one bad
+  field cannot cost the whole report a 422.
+
+### Changed
+
+- Inventory reporting never takes anything else down with it. A collection
+  failure is logged and the report skipped; metrics and health still go out.
+- `health._FAILED_ENTRY_STATES` is now `health.FAILED_ENTRY_STATES`, shared
+  with component reporting.
+- `tests/conftest.py` gained stubs for `homeassistant.components.hassio` --
+  answering the way a Core-only installation does, because that is the
+  majority case and the one most likely to be got wrong -- and for
+  `loader.async_get_integrations` / `async_get_custom_components`.
+
 ## [1.6.0] - 2026-09-19
 
 ### Added

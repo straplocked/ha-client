@@ -782,8 +782,81 @@ Or, on failure:
 
 ---
 
+## Endpoint 12: Report Component Inventory
+
+**Purpose**: Report the full list of versions this installation is running.
+
+**Method**: `POST`
+**Path**: `/v1/installations/{installation_id}/components`
+**Authentication**: Required (Bearer token)
+
+### Request Body
+```json
+{
+  "components": [
+    { "kind": "core", "slug": "core", "name": "Home Assistant Core",
+      "version": "2026.9.1", "failing": false },
+    { "kind": "os", "slug": "os", "name": "Home Assistant OS",
+      "version": "14.2", "failing": false },
+    { "kind": "addon", "slug": "core_mosquitto", "name": "Mosquitto broker",
+      "version": "6.5.1", "failing": false },
+    { "kind": "integration", "slug": "zha", "name": "Zigbee Home Automation",
+      "failing": true },
+    { "kind": "hacs", "slug": "blakeblackshear/frigate-hass-integration",
+      "name": "Frigate", "version": "5.3.0", "failing": false }
+  ]
+}
+```
+
+`kind` is one of `core`, `os`, `supervisor`, `addon`, `integration`, `hacs` —
+a wire contract with the server's `InstallationComponent::KINDS`. An unknown
+kind is a 422. `name`, `version` and `failing` are optional.
+
+### Success Response (201 Created)
+```json
+{
+  "status": "ok",
+  "recorded": 5
+}
+```
+
+Also refreshes `last_seen_at`.
+
+### Error Responses
+
+| Status | Meaning |
+|--------|---------|
+| 401 | Token rejected |
+| 404 | No installation with this id |
+| 422 | Empty `components`, an unknown `kind`, a missing `slug`, or over 2000 entries |
+
+### Client Implementation Notes
+
+- **Full snapshot, never a delta.** The server retires anything absent —
+  omission *is* removal. An agent that sent only what changed would retire
+  almost the whole inventory on its second report.
+- **Slugs must be stable.** The server keys on `(kind, slug)`. Derive them from
+  the integration domain, the Supervisor add-on slug, or the HACS repository —
+  never from a config entry title or a display name, which users rename.
+- **Cadence is 30 minutes**, not every 60 s metrics poll. But report
+  immediately after applying an update: the transition is what opens the
+  fleet's two-hour observation window.
+- Truncate to 750 client-side, in a deliberate order, rather than letting the
+  server drop the tail of 800 or rejecting the request at 2000.
+- Set `failing` only where Home Assistant actually knows — a config entry in a
+  failed setup state, or a Supervisor add-on in state `error`. A *stopped*
+  add-on is not a failure.
+- An installation's first inventory is treated as enrolment: no transition
+  events, and day-one versions are not used as evidence.
+- Failures here are logged and dropped. This is intelligence, not operation.
+
+Full design: [Component Inventory](component-inventory.md).
+
+---
+
 ## Related Documentation
 
+- [Component Inventory](component-inventory.md) for what is reported, from where, and on what cadence
 - [Remote Access](remote-access.md) for consent, the tunnel, and the local credential model
 - [Self-Update](self-update.md) for the update trust model, signing, and rollout design
 - [Authentication & Security](dev-guide/authentication.md) for token generation and request authentication

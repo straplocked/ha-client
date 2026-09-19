@@ -2,7 +2,7 @@
 
 ## Feature Matrix
 
-The table below outlines every capability delivered in the current version (v1.6.0) of the HA Dispatch Client.
+The table below outlines every capability delivered in the current version (v1.7.0) of the HA Dispatch Client.
 
 | Capability | Description | Status |
 |------------|-------------|--------|
@@ -26,6 +26,8 @@ The table below outlines every capability delivered in the current version (v1.6
 | Remote support off-switch | While a support session is live, the homeowner can end it immediately from inside Home Assistant. Ending it closes the session on the spot. | Delivered |
 | Remote support session | Once access has been approved, the client carries the technician's individual requests to the local Home Assistant and returns the answers. The connection is always outbound, so no ports are opened on the customer's network, and read-only support sessions are technically incapable of changing anything. | Delivered |
 | Remote access request sensor | A sensor entity that turns on while somebody is waiting for an answer, so the prompt can be routed to a phone, a light, or a speaker rather than waiting to be noticed. | Delivered |
+| Version inventory reporting | Every half hour the client tells the server exactly what the installation is running -- Home Assistant itself, the operating system, add-ons, integrations, and Community Store downloads -- and flags anything Home Assistant reports as broken. This is what fills the dashboard's Components view, and it is the raw material the fleet's update advice is calculated from. | Delivered |
+| Prompt reporting after an update | When the client updates itself it reports the new inventory straight away rather than waiting for the next half-hourly cycle. Advice about whether a version is safe depends on knowing when that version was actually installed. | Delivered |
 | Secure credential storage | Server credentials (access tokens, installation identifiers) are stored using Home Assistant's built-in secure configuration storage. | Delivered |
 
 ## Summary

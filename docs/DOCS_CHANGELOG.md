@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-19] — Component Inventory (v1.7.0)
+
+### Added
+- `docs/technical/component-inventory.md` — why the inventory exists, the three rules the server's reconciliation model forces (full snapshot, stable slugs, `failing` only where Home Assistant knows), where each kind is read from and when it is legitimately absent, the cadence and both post-update paths, the truncation order, and what happens when a report fails
+
+### Changed
+- `docs/technical/api-reference.md` — new Endpoint 12 (`POST .../components`) with the implementation notes that matter: omission *is* removal, slugs must not derive from anything renameable, 30-minute cadence with a forced report after an update, and client-side truncation at 750
+- `docs/technical/architecture.md` — `components.py` added to the file tree and given its own responsibilities section; `report_components()` added to the API client table; the coordinator cycle now lists all six steps and states plainly that the inventory does not ride the 60 s cadence
+- `docs/technical/README.md`, `docs/INDEX.md` — added Component Inventory
+- `docs/leadership/capabilities.md` — version v1.6.0 → v1.7.0; two new delivered capabilities (version inventory reporting, prompt reporting after an update)
+- `docs/leadership/roadmap.md` — Built moved to v1.7.0 and gained version inventory reporting, noting that the Components view was empty for every installation until now
+- `CLAUDE.md` — version, file tree, endpoint list, key patterns, and testing note
+
+---
+
 ## [2026-09-19] — Consent-Gated Remote Access (v1.6.0)
 
 ### Added

@@ -10,6 +10,7 @@ from .const import (
     API_ACCESS_POLL,
     API_ACCESS_RESPOND,
     API_ACCESS_REVOKE,
+    API_COMPONENTS,
     ACCESS_POLL_TIMEOUT,
 )
 
@@ -269,6 +270,27 @@ class HADispatchApiClient:
             data["health"] = health
 
         _LOGGER.debug("Submitting metrics to server")
+        async with self.session.post(
+            url, json=data, headers=self._get_headers()
+        ) as response:
+            await self._raise_for_status(response)
+            return await response.json()
+
+    async def report_components(
+        self,
+        installation_id: str,
+        components: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Report the full current component inventory.
+
+        A full snapshot every time, never a delta. The server reconciles what
+        it is sent against what it holds and retires anything absent, so an
+        omitted component reads as an uninstalled one.
+        """
+        url = self.server_url + API_COMPONENTS.format(installation_id=installation_id)
+        data = {"components": components}
+
+        _LOGGER.debug("Reporting %s components to server", len(components))
         async with self.session.post(
             url, json=data, headers=self._get_headers()
         ) as response:
