@@ -1,6 +1,6 @@
 # Roadmap
 
-## Built (v1.7.0)
+## Built (v1.6.0)
 
 The following capabilities are complete and available today.
 

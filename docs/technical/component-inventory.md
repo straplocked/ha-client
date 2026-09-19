@@ -25,7 +25,7 @@ Two features read this:
 2. **The change timeline.** Correlating a fault with the transitions that
    preceded it.
 
-Before 1.7.0 the client never posted one, so the dashboard's Components tab was
+Before 1.6.0 the client never posted one, so the dashboard's Components tab was
 empty for every installation and the risk pipeline had nothing to score.
 
 ---

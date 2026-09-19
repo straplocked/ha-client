@@ -5,7 +5,7 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.7.0 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.6.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
 - **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`, `cryptography>=41.0.0`

@@ -2,9 +2,101 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
-## [1.7.0] - 2026-09-19
+## [1.6.0] - 2026-09-19
 
-### Added
+Two halves of the same gap. The server had already built consent-gated
+remote access and the component inventory pipeline; the client had no code
+for either, so requests were never surfaced to anybody and the Components
+tab was empty for every installation. Both are shipped here, together.
+
+
+### Added — consent-gated remote access
+
+- **The client finally receives consent requests.** The server has been able to
+  ask an installation for remote access for some time. The client had no code
+  for it at all -- no poll, no prompt, no way to answer -- so every request sat
+  waiting for a decision that Home Assistant was never going to ask anybody
+  for. That is why "the client never gets consent requests".
+
+  A pending request is now surfaced two ways, both inside Home Assistant:
+
+  - a **persistent notification** carrying who is asking, why, what they will
+    be able to do, and for how long;
+  - a **fixable Repairs issue** whose repair flow is a native **Approve /
+    Decline** dialog.
+
+  `scope_description` is shown verbatim. The server writes it for a homeowner
+  on purpose, and rewording it into technical language would defeat the point
+  of asking. The customer never has to leave Home Assistant to decide.
+
+  A request that leaves the pending list -- answered here, answered on the web
+  consent page, or simply expired -- has its notification *and* its Repairs
+  issue cleared on the next poll. A prompt for a request that is already dead
+  is worse than no prompt: it teaches people that these prompts mean nothing.
+
+- **An off-switch that works.** While a session is live there is a one-tap
+  **End remote access** entry in Repairs, a `revoke_access` service, and the
+  server's own consent page. A consent model without a working off-switch is
+  theatre.
+
+- **The tunnel.** Consent alone would grant a session that then does nothing,
+  so the transport half shipped with it. The client long-polls for requests the
+  server has already authorised, runs them against the local Home Assistant,
+  and posts the responses back -- concurrently, because the technician is
+  waiting on the whole batch. Every connection is outbound; no port is opened.
+
+  Local requests authenticate as a Home Assistant **system user** minted
+  through `hass.auth`, which is the mechanism Home Assistant sanctions for an
+  integration calling the local API. Which user depends on the granted scope:
+  `diagnostic` gets the read-only group, so a read-only session is
+  *technically* incapable of changing anything rather than merely promised not
+  to; `maintenance` and `full` get admin, which is what those scopes were
+  granted for. A session with no consent on record gets nothing. Both users are
+  created lazily, so an installation that only ever grants diagnostic access
+  never has an admin credential on it. On top of the server's scope check, the
+  client relays only `/api/` paths, refuses streaming endpoints, and refuses
+  responses over 2 MB.
+
+- **`binary_sensor.ha_dispatch_remote_access_requested`** -- on while somebody
+  is waiting for an answer, with the pending requests and live sessions as
+  attributes, so the prompt can be routed to a phone or a speaker instead of
+  waiting to be noticed.
+
+- Two services: `respond_to_access_request` and `revoke_access`. A service call
+  carries the calling user's id, so the audit receipt names who agreed rather
+  than saying "somebody".
+
+### Changed — consent-gated remote access
+
+- Live sessions are persisted through Home Assistant's storage helper and
+  restored on setup. Restarting Home Assistant is one of the main reasons to
+  grant *maintenance* access in the first place, so losing the session across
+  the restart would break the feature exactly when it is being used.
+
+- `tests/conftest.py` gained stubs for `persistent_notification`,
+  `issue_registry`, `repairs`, `binary_sensor`, `data_entry_flow`,
+  `entity_platform`, `network`, `CoordinatorEntity` and `dt.parse_datetime`.
+  The notification and issue stubs record what they were told, so the tests
+  assert on what the customer actually sees rather than on a call count.
+
+### Notes — consent-gated remote access
+
+- A 404 from any `/access/` path means *this server has no remote access*, not
+  that the installation has vanished. It maps to `RemoteAccessUnavailable` and
+  never to `InstallationGoneError`: the existing re-enrolment handler would
+  otherwise re-register a perfectly healthy installation once a minute, forever.
+
+- A request that disappears from the pending list between two polls was either
+  granted or declined on the web consent page, and nothing available to the
+  client tells the two apart. The tunnel runs for the window that session could
+  occupy -- the server only queues work for a genuinely active session, so
+  polling for one that is not costs an idle connection -- but no "access is
+  active" prompt is raised for it. Claiming access is live when the customer
+  may have just declined it is the same lie as leaving a dead request on
+  screen.
+
+
+### Added — component inventory
 
 - **The client reports what it is running.** The server has had a component
   inventory endpoint, a reconciliation service, a transition ledger and an
@@ -86,7 +178,7 @@ fabricated transition into the fleet's evidence.
 - Over-long names and versions are trimmed rather than sent whole, so one bad
   field cannot cost the whole report a 422.
 
-### Changed
+### Changed — component inventory
 
 - Inventory reporting never takes anything else down with it. A collection
   failure is logged and the report skipped; metrics and health still go out.
@@ -96,93 +188,6 @@ fabricated transition into the fleet's evidence.
   answering the way a Core-only installation does, because that is the
   majority case and the one most likely to be got wrong -- and for
   `loader.async_get_integrations` / `async_get_custom_components`.
-
-## [1.6.0] - 2026-09-19
-
-### Added
-
-- **The client finally receives consent requests.** The server has been able to
-  ask an installation for remote access for some time. The client had no code
-  for it at all -- no poll, no prompt, no way to answer -- so every request sat
-  waiting for a decision that Home Assistant was never going to ask anybody
-  for. That is why "the client never gets consent requests".
-
-  A pending request is now surfaced two ways, both inside Home Assistant:
-
-  - a **persistent notification** carrying who is asking, why, what they will
-    be able to do, and for how long;
-  - a **fixable Repairs issue** whose repair flow is a native **Approve /
-    Decline** dialog.
-
-  `scope_description` is shown verbatim. The server writes it for a homeowner
-  on purpose, and rewording it into technical language would defeat the point
-  of asking. The customer never has to leave Home Assistant to decide.
-
-  A request that leaves the pending list -- answered here, answered on the web
-  consent page, or simply expired -- has its notification *and* its Repairs
-  issue cleared on the next poll. A prompt for a request that is already dead
-  is worse than no prompt: it teaches people that these prompts mean nothing.
-
-- **An off-switch that works.** While a session is live there is a one-tap
-  **End remote access** entry in Repairs, a `revoke_access` service, and the
-  server's own consent page. A consent model without a working off-switch is
-  theatre.
-
-- **The tunnel.** Consent alone would grant a session that then does nothing,
-  so the transport half shipped with it. The client long-polls for requests the
-  server has already authorised, runs them against the local Home Assistant,
-  and posts the responses back -- concurrently, because the technician is
-  waiting on the whole batch. Every connection is outbound; no port is opened.
-
-  Local requests authenticate as a Home Assistant **system user** minted
-  through `hass.auth`, which is the mechanism Home Assistant sanctions for an
-  integration calling the local API. Which user depends on the granted scope:
-  `diagnostic` gets the read-only group, so a read-only session is
-  *technically* incapable of changing anything rather than merely promised not
-  to; `maintenance` and `full` get admin, which is what those scopes were
-  granted for. A session with no consent on record gets nothing. Both users are
-  created lazily, so an installation that only ever grants diagnostic access
-  never has an admin credential on it. On top of the server's scope check, the
-  client relays only `/api/` paths, refuses streaming endpoints, and refuses
-  responses over 2 MB.
-
-- **`binary_sensor.ha_dispatch_remote_access_requested`** -- on while somebody
-  is waiting for an answer, with the pending requests and live sessions as
-  attributes, so the prompt can be routed to a phone or a speaker instead of
-  waiting to be noticed.
-
-- Two services: `respond_to_access_request` and `revoke_access`. A service call
-  carries the calling user's id, so the audit receipt names who agreed rather
-  than saying "somebody".
-
-### Changed
-
-- Live sessions are persisted through Home Assistant's storage helper and
-  restored on setup. Restarting Home Assistant is one of the main reasons to
-  grant *maintenance* access in the first place, so losing the session across
-  the restart would break the feature exactly when it is being used.
-
-- `tests/conftest.py` gained stubs for `persistent_notification`,
-  `issue_registry`, `repairs`, `binary_sensor`, `data_entry_flow`,
-  `entity_platform`, `network`, `CoordinatorEntity` and `dt.parse_datetime`.
-  The notification and issue stubs record what they were told, so the tests
-  assert on what the customer actually sees rather than on a call count.
-
-### Notes
-
-- A 404 from any `/access/` path means *this server has no remote access*, not
-  that the installation has vanished. It maps to `RemoteAccessUnavailable` and
-  never to `InstallationGoneError`: the existing re-enrolment handler would
-  otherwise re-register a perfectly healthy installation once a minute, forever.
-
-- A request that disappears from the pending list between two polls was either
-  granted or declined on the web consent page, and nothing available to the
-  client tells the two apart. The tunnel runs for the window that session could
-  occupy -- the server only queues work for a genuinely active session, so
-  polling for one that is not costs an idle connection -- but no "access is
-  active" prompt is raised for it. Claiming access is live when the customer
-  may have just declined it is the same lie as leaving a dead request on
-  screen.
 
 ## [1.5.2] - 2026-09-19
 

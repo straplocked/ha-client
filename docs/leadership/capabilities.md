@@ -2,7 +2,7 @@
 
 ## Feature Matrix
 
-The table below outlines every capability delivered in the current version (v1.7.0) of the HA Dispatch Client.
+The table below outlines every capability delivered in the current version (v1.6.0) of the HA Dispatch Client.
 
 | Capability | Description | Status |
 |------------|-------------|--------|
