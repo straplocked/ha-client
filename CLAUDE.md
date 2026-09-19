@@ -144,7 +144,7 @@ ssh user@ha-host 'ha core logs | grep ha_dispatch_client'
 ## Important Notes
 
 - Tests live in `tests/` and run under plain `pytest` with stubbed HA modules. Anything needing a live Home Assistant (the update download, restart, and boot-time confirmation) is still manual.
-- `reference_integrations/meross_lan/` is a reference codebase for learning HA patterns - not part of this integration.
+- `reference_integrations/` is not committed. It holds a third-party MIT integration used purely as a reference for HA patterns; `DOWNLOAD_MEROSS_LAN.sh` fetches it on demand. Keep it out of the repo -- this is a public repository and redistributing someone else's project without its LICENSE is not ours to do.
 - **Caching caveat:** HA heavily caches `manifest.json` and `strings.json`. Version bumps may require deleting the old integration and reinstalling rather than overwriting. See `docs/user/deployment.md`.
 - The `VERSION` file at root and `version` in `manifest.json` must stay in sync.
 - The server poll interval (default 60s) can be changed remotely via the server's config push.

@@ -48,3 +48,8 @@ home-assistant_v2.db-shm
 
 # Claude Code
 .claude/
+
+# Vendored reference code, fetched on demand by DOWNLOAD_MEROSS_LAN.sh.
+# Not redistributed: it is a third party MIT project, and its LICENSE belongs
+# with it rather than buried in this repo.
+reference_integrations/
