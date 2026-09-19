@@ -1,8 +1,17 @@
 """API Client for HA Dispatch Server."""
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import aiohttp
 from datetime import datetime, timezone
+
+from .const import (
+    API_ACCESS_EXCHANGE,
+    API_ACCESS_PENDING,
+    API_ACCESS_POLL,
+    API_ACCESS_RESPOND,
+    API_ACCESS_REVOKE,
+    ACCESS_POLL_TIMEOUT,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +43,26 @@ class InstallationGoneError(InstallationAuthError):
 
 class ClientIdTakenError(Exception):
     """Raised when the server already has an installation with this client_id."""
+
+
+class RemoteAccessUnavailable(Exception):
+    """Raised when this server does not offer the remote access endpoints.
+
+    Deliberately NOT an InstallationGoneError, even though both arrive as a
+    404. A server predating remote access answers 404 for every /access/ path
+    while the installation itself is perfectly healthy, and treating that as
+    "the server has forgotten us" would re-enrol a working installation once a
+    minute, forever.
+    """
+
+
+class RemoteAccessConflict(Exception):
+    """Raised when the server refuses an access decision with a 422.
+
+    A normal outcome, not a failure: the request was already answered on the
+    web consent page, or it lapsed while the notification sat on screen. The
+    only correct response is to clear the prompt, never to retry.
+    """
 
 
 class HADispatchApiClient:
@@ -373,4 +402,145 @@ class HADispatchApiClient:
                 result.get("resolved_count")
             )
             return result
+
+    # --- Consent-gated remote access ---------------------------------------
+    #
+    # Every method here passes installation_scoped=False. A 404 on an /access/
+    # path means the server has no remote access, not that this installation
+    # has vanished -- see RemoteAccessUnavailable.
+
+    @staticmethod
+    async def _raise_for_access_status(response) -> None:
+        """Map the two answers that are not failures onto their own errors."""
+        if response.status == 404:
+            raise RemoteAccessUnavailable(
+                f"Server has no remote access endpoint at {response.url}"
+            )
+        if response.status == 422:
+            raise RemoteAccessConflict(await response.text())
+        await HADispatchApiClient._raise_for_status(
+            response, installation_scoped=False
+        )
+
+    async def fetch_pending_access(self, installation_id: str) -> Dict[str, Any]:
+        """Fetch the access requests waiting on the customer.
+
+        Returns the policy, any standing consent, and the requests themselves.
+        The request bodies are written for a homeowner; pass them through to
+        the notification unchanged.
+        """
+        url = self.server_url + API_ACCESS_PENDING.format(
+            installation_id=installation_id
+        )
+
+        async with self.session.get(url, headers=self._get_headers()) as response:
+            await self._raise_for_access_status(response)
+            return await response.json()
+
+    async def respond_to_access(
+        self,
+        installation_id: str,
+        session_id: Any,
+        decision: str,
+        note: Optional[str] = None,
+        responder: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Report what the customer decided inside Home Assistant.
+
+        decision is "grant" or "deny" and is sent verbatim. responder names the
+        Home Assistant user who acted, so the audit receipt can say who agreed
+        rather than "somebody"; it is omitted when we cannot identify them.
+
+        Raises RemoteAccessConflict if the request was already answered or has
+        lapsed.
+        """
+        url = self.server_url + API_ACCESS_RESPOND.format(
+            installation_id=installation_id, session_id=session_id
+        )
+        data: Dict[str, Any] = {"decision": decision}
+        if note:
+            data["note"] = note
+        if responder:
+            data["responder"] = responder
+
+        _LOGGER.debug("Reporting access decision %s for session %s", decision, session_id)
+        async with self.session.post(
+            url, json=data, headers=self._get_headers()
+        ) as response:
+            await self._raise_for_access_status(response)
+            return await response.json()
+
+    async def revoke_access(
+        self,
+        installation_id: str,
+        session_id: Any,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Close a live session from inside Home Assistant."""
+        url = self.server_url + API_ACCESS_REVOKE.format(
+            installation_id=installation_id, session_id=session_id
+        )
+        data: Dict[str, Any] = {}
+        if note:
+            data["note"] = note
+
+        _LOGGER.debug("Revoking access session %s", session_id)
+        async with self.session.post(
+            url, json=data, headers=self._get_headers()
+        ) as response:
+            await self._raise_for_access_status(response)
+            return await response.json()
+
+    async def poll_access(self, installation_id: str) -> List[Dict[str, Any]]:
+        """Long-poll for authorised requests to run locally.
+
+        The server holds this open for up to 25 s and returns the moment there
+        is anything to do, so this is called again immediately after it
+        returns. The client-side timeout only fires when the connection itself
+        has stalled.
+        """
+        url = self.server_url + API_ACCESS_POLL.format(
+            installation_id=installation_id
+        )
+        timeout = aiohttp.ClientTimeout(total=ACCESS_POLL_TIMEOUT)
+
+        async with self.session.get(
+            url, headers=self._get_headers(), timeout=timeout
+        ) as response:
+            await self._raise_for_access_status(response)
+            payload = await response.json()
+            return payload.get("requests") or []
+
+    async def respond_to_exchange(
+        self,
+        installation_id: str,
+        request_id: str,
+        status: Optional[int] = None,
+        headers: Optional[Dict[str, Any]] = None,
+        body: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Hand back what the local Home Assistant said, or why it could not.
+
+        An error and a response are mutually exclusive on the server side: any
+        non-empty error is recorded as a failure and the status/body ignored.
+        """
+        url = self.server_url + API_ACCESS_EXCHANGE.format(
+            installation_id=installation_id, request_id=request_id
+        )
+
+        if error:
+            data: Dict[str, Any] = {"error": error[:255]}
+        else:
+            data = {
+                "status": status if status is not None else 200,
+                "headers": headers or {},
+                "body": body,
+            }
+
+        async with self.session.post(
+            url, json=data, headers=self._get_headers()
+        ) as response:
+            await self._raise_for_access_status(response)
+            return await response.json()
 

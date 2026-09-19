@@ -129,6 +129,66 @@
           "description": "Install even when the offered version is not newer than the installed one. Allows reinstalling or downgrading; leave off unless you mean it."
         }
       }
+    },
+    "respond_to_access_request": {
+      "name": "Answer remote access request",
+      "description": "Approve or decline a pending remote access request.",
+      "fields": {
+        "session_id": {
+          "name": "Session",
+          "description": "The session id from the pending request"
+        },
+        "decision": {
+          "name": "Decision",
+          "description": "Whether to allow the access or refuse it"
+        },
+        "note": {
+          "name": "Note",
+          "description": "Optional message recorded on the audit receipt"
+        }
+      }
+    },
+    "revoke_access": {
+      "name": "End remote access",
+      "description": "End a live remote access session immediately. Leave the session blank to end every live session.",
+      "fields": {
+        "session_id": {
+          "name": "Session",
+          "description": "The session to end. Leave blank to end all of them."
+        },
+        "note": {
+          "name": "Note",
+          "description": "Optional message recorded on the audit receipt"
+        }
+      }
+    }
+  },
+  "issues": {
+    "access_request": {
+      "title": "{requested_by} is asking to access your Home Assistant",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "{requested_by} is asking to access your Home Assistant",
+            "description": "**Reason:** {reason}\n\n**What they will be able to do:** {scope_description}\n\n**For how long:** {duration_minutes} minutes.\n\nNothing happens unless you approve, and you can end the session at any time afterwards.",
+            "menu_options": {
+              "grant": "Approve",
+              "deny": "Decline"
+            }
+          }
+        }
+      }
+    },
+    "access_active": {
+      "title": "Remote access is active",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "End remote access",
+            "description": "{requested_by} can access your Home Assistant until {until} ({scope_label}).\n\nEnding this closes the session immediately."
+          }
+        }
+      }
     }
   }
 }

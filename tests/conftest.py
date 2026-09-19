@@ -66,6 +66,122 @@ class _DataUpdateCoordinator:
         self.name = name
         self.update_interval = update_interval
 
+    def async_update_listeners(self):
+        """Real coordinators push entity updates; nothing is listening here."""
+
+
+class _CoordinatorEntity:
+    def __init__(self, coordinator):
+        self.coordinator = coordinator
+
+
+class _Entity:
+    """Stand-in for the entity base classes the platforms inherit from."""
+
+
+class _RepairsFlow:
+    """Stand-in for a Home Assistant repair flow.
+
+    Returns the flow result dictionaries Home Assistant would build, so a test
+    can assert on which step a dialog landed on without a flow manager.
+    """
+
+    hass = None
+    context = None
+
+    def async_show_menu(self, *, step_id, menu_options, description_placeholders=None):
+        return {
+            "type": "menu",
+            "step_id": step_id,
+            "menu_options": menu_options,
+        }
+
+    def async_show_form(self, *, step_id, data_schema=None, **kwargs):
+        return {"type": "form", "step_id": step_id}
+
+    def async_create_entry(self, *, title=None, data=None, **kwargs):
+        return {"type": "create_entry", "title": title, "data": data}
+
+
+class _IssueSeverity:
+    CRITICAL = "critical"
+    ERROR = "error"
+    WARNING = "warning"
+
+
+def _parse_datetime(value):
+    """Home Assistant's dt_util.parse_datetime, near enough for ISO 8601."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _install_persistent_notification(components):
+    """persistent_notification, keeping a record of everything it was told.
+
+    Tests read these lists directly rather than patching, which keeps the
+    assertions about what the customer actually sees in one obvious place.
+    """
+    module = _module("homeassistant.components.persistent_notification")
+    components.persistent_notification = module
+
+    if hasattr(module, "created"):
+        return
+
+    module.created = []
+    module.dismissed = []
+
+    def async_create(hass, message, title=None, notification_id=None):
+        module.created.append(
+            {"message": message, "title": title, "notification_id": notification_id}
+        )
+
+    def async_dismiss(hass, notification_id):
+        module.dismissed.append(notification_id)
+
+    def reset():
+        module.created.clear()
+        module.dismissed.clear()
+
+    module.async_create = async_create
+    module.async_dismiss = async_dismiss
+    module.reset = reset
+
+
+def _install_issue_registry(helpers):
+    """issue_registry, likewise recording rather than registering."""
+    module = _module("homeassistant.helpers.issue_registry")
+    helpers.issue_registry = module
+
+    if hasattr(module, "created_issues"):
+        return
+
+    module.IssueSeverity = _IssueSeverity
+    module.created_issues = []
+    module.deleted_issues = []
+    module.issues = {}
+
+    def async_create_issue(hass, domain, issue_id, **kwargs):
+        entry = {"domain": domain, "issue_id": issue_id, **kwargs}
+        module.created_issues.append(entry)
+        module.issues[(domain, issue_id)] = entry
+
+    def async_delete_issue(hass, domain, issue_id):
+        module.deleted_issues.append((domain, issue_id))
+        module.issues.pop((domain, issue_id), None)
+
+    def reset():
+        module.created_issues.clear()
+        module.deleted_issues.clear()
+        module.issues.clear()
+
+    module.async_create_issue = async_create_issue
+    module.async_delete_issue = async_delete_issue
+    module.reset = reset
+
 
 class _Store:
     """In-memory stand-in for Home Assistant's JSON store."""
@@ -117,13 +233,40 @@ def install_stubs() -> None:
 
     helpers = _module("homeassistant.helpers")
 
+    data_entry_flow = _module("homeassistant.data_entry_flow")
+    _set_missing(data_entry_flow, FlowResult=dict)
+
+    components = _module("homeassistant.components")
+    _install_persistent_notification(components)
+
+    binary_sensor = _module("homeassistant.components.binary_sensor")
+    _set_missing(
+        binary_sensor, BinarySensorEntity=_Entity, BinarySensorDeviceClass=object
+    )
+    components.binary_sensor = binary_sensor
+
+    repairs = _module("homeassistant.components.repairs")
+    _set_missing(repairs, RepairsFlow=_RepairsFlow)
+    components.repairs = repairs
+
     update_coordinator = _module("homeassistant.helpers.update_coordinator")
     _set_missing(
         update_coordinator,
         UpdateFailed=_UpdateFailed,
         DataUpdateCoordinator=_DataUpdateCoordinator,
+        CoordinatorEntity=_CoordinatorEntity,
     )
     helpers.update_coordinator = update_coordinator
+
+    _install_issue_registry(helpers)
+
+    entity_platform = _module("homeassistant.helpers.entity_platform")
+    _set_missing(entity_platform, AddEntitiesCallback=object)
+    helpers.entity_platform = entity_platform
+
+    network = _module("homeassistant.helpers.network")
+    _set_missing(network, get_url=lambda hass, **kwargs: "http://127.0.0.1:8123")
+    helpers.network = network
 
     storage = _module("homeassistant.helpers.storage")
     _set_missing(storage, Store=_Store)
@@ -143,6 +286,7 @@ def install_stubs() -> None:
         utcnow=lambda: datetime.now(timezone.utc),
         # The coordinator checks update windows against local wall-clock time.
         now=lambda: datetime.now(),
+        parse_datetime=_parse_datetime,
     )
     util.dt = dt_module
 

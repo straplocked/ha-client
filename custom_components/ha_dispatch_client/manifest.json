@@ -1,7 +1,7 @@
 {
   "domain": "ha_dispatch_client",
   "name": "HA Dispatch Client",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "documentation": "https://github.com/straplocked/ha-client",
   "issue_tracker": "https://github.com/straplocked/ha-client/issues",
   "requirements": [
@@ -9,7 +9,9 @@
     "psutil>=5.9.0",
     "cryptography>=41.0.0"
   ],
-  "dependencies": [],
+  "dependencies": [
+    "repairs"
+  ],
   "codeowners": [
     "@straplocked"
   ],

@@ -1,6 +1,6 @@
 # Services Reference
 
-Complete reference for all 6 services exposed by the HA Dispatch Client integration. Services are accessible via **Developer Tools > Services** in the Home Assistant UI, and can be called from automations, scripts, and the REST API.
+Complete reference for all 9 services exposed by the HA Dispatch Client integration. Services are accessible via **Developer Tools > Services** in the Home Assistant UI, and can be called from automations, scripts, and the REST API.
 
 All services use the singleton registration pattern -- they are registered once for the domain and dynamically resolve the active coordinator at call time.
 
@@ -351,6 +351,88 @@ service: ha_dispatch_client.install_update
 
 ---
 
+## respond_to_access_request
+
+**Full name:** `ha_dispatch_client.respond_to_access_request`
+
+Approve or decline a pending remote access request. The same decision the
+Repairs dialog makes, exposed for automations that want to route the prompt
+somewhere else first.
+
+### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `session_id` | string or int | Yes | -- | The session from the pending list |
+| `decision` | string | Yes | -- | `grant` or `deny` |
+| `note` | string | No | -- | Recorded on the audit receipt |
+
+### Schema (voluptuous)
+
+```python
+SERVICE_RESPOND_TO_ACCESS_SCHEMA = vol.Schema({
+    vol.Required("session_id"): vol.Any(cv.positive_int, cv.string),
+    vol.Required("decision"): vol.In([ACCESS_DECISION_GRANT, ACCESS_DECISION_DENY]),
+    vol.Optional("note"): cv.string,
+})
+```
+
+### Handler behavior
+
+1. Finds the manager that owns the session via `async_find_manager()`
+2. Resolves the calling Home Assistant user from `call.context.user_id` and
+   sends it as `responder`, so the audit receipt names who agreed
+3. Posts the decision verbatim to `.../access/{session}/respond`
+4. Clears the notification and the Repairs issue either way
+5. On a 422 -- already answered, or lapsed -- clears the prompt and does not retry
+
+### Notes
+
+- `decision` is sent to the server unchanged. The server validates
+  `in:grant,deny` and rejects anything else with a 422.
+- Granting records the session as live and brings the request tunnel up;
+  denying does neither.
+
+---
+
+## revoke_access
+
+**Full name:** `ha_dispatch_client.revoke_access`
+
+End a live remote access session. The off-switch, for automations; the
+`access_active_<session>` Repairs issue is the same thing for people.
+
+### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `session_id` | string or int | No | all live sessions | Which session to end |
+| `note` | string | No | -- | Recorded on the audit receipt |
+
+### Schema (voluptuous)
+
+```python
+SERVICE_REVOKE_ACCESS_SCHEMA = vol.Schema({
+    vol.Optional("session_id"): vol.Any(cv.positive_int, cv.string),
+    vol.Optional("note"): cv.string,
+})
+```
+
+### Handler behavior
+
+1. Posts to `.../access/{session}/revoke` for each target
+2. Treats a 422 as already closed, because it is
+3. Drops the session, clears the "access is active" prompts, and stops the
+   tunnel once nothing is live
+
+### Notes
+
+- Omitting `session_id` ends everything, which is what somebody who wants this
+  to stop actually means.
+- See [Remote Access](remote-access.md) for the full design.
+
+---
+
 ## Service Registration Pattern
 
 All services are registered once using the singleton pattern in `setup_services()` (called from `async_setup_entry()`). A guard check prevents duplicate registration:
@@ -371,3 +453,4 @@ For detailed analysis of this pattern, see [Service Registration](service-regist
 - [Alert API](alert-api.md) -- Full Alert API endpoint reference
 - [Architecture](architecture.md) -- System architecture and data flow
 - [Service Registration](service-registration.md) -- Singleton registration pattern
+- [Remote Access](remote-access.md) -- Consent, the tunnel, and the local credential model

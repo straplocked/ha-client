@@ -2,7 +2,7 @@
 
 ## Feature Matrix
 
-The table below outlines every capability delivered in the current version (v1.2.2) of the HA Dispatch Client.
+The table below outlines every capability delivered in the current version (v1.6.0) of the HA Dispatch Client.
 
 | Capability | Description | Status |
 |------------|-------------|--------|
@@ -22,11 +22,15 @@ The table below outlines every capability delivered in the current version (v1.2
 | Processor load sensor | A sensor entity that displays the current 1-minute processor load average, updated every reporting cycle. | Delivered |
 | Memory usage sensor | A sensor entity that displays current memory usage as a percentage, updated every reporting cycle. | Delivered |
 | Graphical setup | The entire setup process is handled through the Home Assistant user interface. Users enter the server address, optionally provide a friendly name, and the rest is automatic. No configuration files need to be edited. | Delivered |
+| Consent for remote support | When a technician asks to access an installation, the request appears inside that Home Assistant as a notification and as a one-tap Approve or Decline dialog. It says who is asking, why, what they will be able to do, and for how long, in plain language. Nothing happens unless the homeowner agrees, and the prompt disappears the moment the request is answered or expires. | Delivered |
+| Remote support off-switch | While a support session is live, the homeowner can end it immediately from inside Home Assistant. Ending it closes the session on the spot. | Delivered |
+| Remote support session | Once access has been approved, the client carries the technician's individual requests to the local Home Assistant and returns the answers. The connection is always outbound, so no ports are opened on the customer's network, and read-only support sessions are technically incapable of changing anything. | Delivered |
+| Remote access request sensor | A sensor entity that turns on while somebody is waiting for an answer, so the prompt can be routed to a phone, a light, or a speaker rather than waiting to be noticed. | Delivered |
 | Secure credential storage | Server credentials (access tokens, installation identifiers) are stored using Home Assistant's built-in secure configuration storage. | Delivered |
 
 ## Summary
 
-- **6 services** for testing, monitoring, and management
-- **3 sensor entities** for at-a-glance local monitoring
+- **9 services** for testing, monitoring, management, and remote support
+- **4 entities** for at-a-glance local monitoring, including a remote access request indicator
 - **Fully automated** registration, reporting, and configuration management
 - **No manual configuration files** -- everything is set up through the user interface

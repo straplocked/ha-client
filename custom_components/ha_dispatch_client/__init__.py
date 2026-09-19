@@ -7,6 +7,8 @@ import voluptuous as vol
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    ACCESS_DECISION_DENY,
+    ACCESS_DECISION_GRANT,
     DOMAIN,
     CONF_SERVER_URL,
     CONF_INSTALLATION_ID,
@@ -15,11 +17,28 @@ from .const import (
 )
 from .api_client import HADispatchApiClient
 from .coordinator import HADispatchCoordinator
+from .remote_access import (
+    HADispatchRemoteAccess,
+    async_all_managers,
+    async_find_manager,
+)
 from .updater import ClientUpdater
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "update"]
+PLATFORMS = ["binary_sensor", "sensor", "update"]
+
+SERVICES = (
+    "send_test_metrics",
+    "trigger_alert",
+    "force_update",
+    "send_custom_metric",
+    "submit_alert",
+    "resolve_alert",
+    "install_update",
+    "respond_to_access_request",
+    "revoke_access",
+)
 
 # Set once the pending-update record has been resolved, so a second config
 # entry does not re-run the confirmation and report the same update twice.
@@ -63,6 +82,19 @@ SERVICE_INSTALL_UPDATE_SCHEMA = vol.Schema({
     # a downgrade is occasionally the right call during an incident, but never
     # something to do by accident.
     vol.Optional("force", default=False): cv.boolean,
+})
+
+SERVICE_RESPOND_TO_ACCESS_SCHEMA = vol.Schema({
+    vol.Required("session_id"): vol.Any(cv.positive_int, cv.string),
+    vol.Required("decision"): vol.In([ACCESS_DECISION_GRANT, ACCESS_DECISION_DENY]),
+    vol.Optional("note"): cv.string,
+})
+
+SERVICE_REVOKE_ACCESS_SCHEMA = vol.Schema({
+    # Omitted means every live session, which is what somebody who wants this
+    # to stop actually means.
+    vol.Optional("session_id"): vol.Any(cv.positive_int, cv.string),
+    vol.Optional("note"): cv.string,
 })
 
 
@@ -295,6 +327,62 @@ def setup_services(hass: HomeAssistant):
             release, force=call.data.get("force", False)
         )
 
+    async def _async_responder(call: ServiceCall) -> str | None:
+        """Name the Home Assistant user behind a service call.
+
+        A service call carries the calling user's id, so unlike the Repairs
+        dialog this can reliably tell the audit receipt who agreed instead of
+        leaving it to say "somebody".
+        """
+        user_id = getattr(call.context, "user_id", None)
+        if not user_id:
+            return None
+        try:
+            user = await hass.auth.async_get_user(user_id)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return None
+        return getattr(user, "name", None)
+
+    async def handle_respond_to_access_request(call: ServiceCall):
+        """Handle respond_to_access_request service call."""
+        session_id = call.data["session_id"]
+        manager = async_find_manager(hass, session_id)
+        if manager is None:
+            _LOGGER.error("No HA Dispatch installations configured")
+            return
+
+        decision = call.data["decision"]
+        _LOGGER.info("Answering access request %s with %s", session_id, decision)
+        await manager.async_respond(
+            session_id,
+            decision,
+            note=call.data.get("note"),
+            responder=await _async_responder(call),
+        )
+
+    async def handle_revoke_access(call: ServiceCall):
+        """Handle revoke_access service call."""
+        session_id = call.data.get("session_id")
+        note = call.data.get("note")
+
+        # No session named means end everything, which with more than one
+        # installation configured has to mean everything everywhere.
+        managers = (
+            [async_find_manager(hass, session_id)]
+            if session_id is not None
+            else async_all_managers(hass)
+        )
+        managers = [manager for manager in managers if manager is not None]
+
+        if not managers:
+            _LOGGER.error("No HA Dispatch installations configured")
+            return
+
+        closed = 0
+        for manager in managers:
+            closed += await manager.async_revoke(session_id, note=note)
+        _LOGGER.info("Closed %s remote access session(s)", closed)
+
     # Register all services
     hass.services.async_register(
         DOMAIN,
@@ -337,6 +425,18 @@ def setup_services(hass: HomeAssistant):
         handle_install_update,
         schema=SERVICE_INSTALL_UPDATE_SCHEMA
     )
+    hass.services.async_register(
+        DOMAIN,
+        "respond_to_access_request",
+        handle_respond_to_access_request,
+        schema=SERVICE_RESPOND_TO_ACCESS_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "revoke_access",
+        handle_revoke_access,
+        schema=SERVICE_REVOKE_ACCESS_SCHEMA
+    )
 
     _LOGGER.info("HA Dispatch Client services registered successfully")
 
@@ -345,13 +445,8 @@ def teardown_services(hass: HomeAssistant):
     """Remove services when last config entry is unloaded."""
     # Only remove services if no more coordinators exist
     if not hass.data.get(DOMAIN):
-        hass.services.async_remove(DOMAIN, "send_test_metrics")
-        hass.services.async_remove(DOMAIN, "trigger_alert")
-        hass.services.async_remove(DOMAIN, "force_update")
-        hass.services.async_remove(DOMAIN, "send_custom_metric")
-        hass.services.async_remove(DOMAIN, "submit_alert")
-        hass.services.async_remove(DOMAIN, "resolve_alert")
-        hass.services.async_remove(DOMAIN, "install_update")
+        for service in SERVICES:
+            hass.services.async_remove(DOMAIN, service)
         _LOGGER.info("HA Dispatch Client services unregistered")
 
 
@@ -387,6 +482,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[UPDATE_CONFIRMED] = True
         await updater.async_confirm_pending()
 
+    # Consent-gated remote access. Wired before the first refresh so the very
+    # first poll already surfaces anything waiting, and loaded first so a
+    # session the customer granted before a restart keeps working.
+    remote_access = HADispatchRemoteAccess(hass, coordinator)
+    coordinator.remote_access = remote_access
+    await remote_access.async_load()
+
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()
 
@@ -411,8 +513,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Remove coordinator
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
-        
+        coordinator = hass.data[DOMAIN].pop(entry.entry_id)
+
+        # Stop the tunnel. Live sessions stay on disk and stay granted -- an
+        # integration reload is not the customer withdrawing consent.
+        if getattr(coordinator, "remote_access", None) is not None:
+            await coordinator.remote_access.async_unload()
+
         # If this was the last coordinator, remove services
         teardown_services(hass)
 

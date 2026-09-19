@@ -1,6 +1,6 @@
 # Roadmap
 
-## Built (v1.5.0)
+## Built (v1.6.0)
 
 The following capabilities are complete and available today.
 
@@ -9,13 +9,15 @@ The following capabilities are complete and available today.
 - **System metrics** -- Processor, memory, disk, and uptime data collected and submitted automatically
 - **Configuration management** -- Server-pushed configuration changes are detected and applied without user intervention
 - **Alert submission and resolution** -- Full lifecycle alert support (create, describe, resolve)
-- **Seven management services** -- Testing, custom metrics, alert creation, alert resolution, on-demand refresh, and update installation
-- **Three sensor entities** -- Installation status, processor load, and memory usage visible in Home Assistant
+- **Nine management services** -- Testing, custom metrics, alert creation, alert resolution, on-demand refresh, and update installation
+- **Four entities** -- Installation status, processor load, memory usage, and a remote access request indicator, all visible in Home Assistant
 - **Graphical setup** -- No file editing required; the entire configuration is done through the Home Assistant interface
 - **Secure credential handling** -- Tokens and identifiers stored using Home Assistant's secure storage
 - **Community Store packaging** -- The client is packaged for the Home Assistant Community Store, so users outside a managed fleet can install and update it the standard way
 - **Version reporting** -- Each installation reports which client build it is running, so the server can see at a glance which are out of date
 - **Client self-update (client side)** -- The client can install a newer version of itself and restart, driven either from the Home Assistant interface or automatically on a schedule. Releases must carry a cryptographic signature that the client checks against a key built into it, so the management server can decide when an update happens but never what software is installed. Completing the feature requires the corresponding server-side work below
+
+- **Consent-gated remote support** -- A technician can ask for access to an installation, and the homeowner is asked inside their own Home Assistant: who is asking, why, what they would be able to do, and for how long. Approving or declining takes one tap and never requires leaving Home Assistant. An approved session can be ended by the homeowner at any moment. Once approved, the client carries the technician's requests to the local system and returns the answers over a connection that is always outbound, so nothing is opened up on the customer's network
 
 ## Planned
 

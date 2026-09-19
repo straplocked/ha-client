@@ -66,10 +66,17 @@ custom_components/ha_dispatch_client/
 ├── coordinator.py    # HADispatchCoordinator - DataUpdateCoordinator (60s interval)
 ├── config_flow.py    # UI config flow - server URL input, auto-registration
 ├── sensor.py         # 3 CoordinatorEntity sensors (status, cpu_load, memory_used)
-├── const.py          # DOMAIN, config keys, API endpoints, entity/attribute keys
+├── binary_sensor.py  # Pending remote access consent indicator
+├── update.py         # HADispatchUpdateEntity - client version as an HA update entity
+├── updater.py        # ClientUpdater - signed self-update (download, verify, swap, restart)
+├── health.py         # Home Assistant health signal collection
+├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and session state
+├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
+├── repairs.py        # Approve / Deny and End-access repair flows
+├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
 ├── manifest.json     # Integration metadata
-├── services.yaml     # 6 service definitions with UI fields
-└── strings.json      # UI text and translations
+├── services.yaml     # 9 service definitions with UI fields
+└── strings.json      # UI text, translations, and repair flow copy
 ```
 
 ### Component Responsibilities
@@ -124,13 +131,33 @@ Three `CoordinatorEntity` sensors that read from `self.coordinator.data`:
 
 All sensors are grouped under a single device entry.
 
+#### `binary_sensor.py`
+
+One entity, `binary_sensor.ha_dispatch_remote_access_requested`, on while
+somebody is waiting for the customer to approve remote access. The pending
+requests and any live sessions ride along as attributes, so an automation can
+route the prompt to a phone or a speaker rather than waiting to be noticed.
+
+#### `remote_access.py`, `tunnel.py`, `repairs.py`
+
+Consent-gated remote access. `remote_access.py` polls for pending requests,
+raises the notification and the fixable Repairs issue, reports the decision,
+and tracks which sessions are live. `tunnel.py` long-polls for authorised
+requests and runs them against the local REST API using a Home Assistant system
+user scoped to the session's privilege level. `repairs.py` is the Approve /
+Deny dialog and the one-tap off-switch.
+
+Neither enforces scope -- the server does that before anything is queued. See
+[Remote Access](remote-access.md).
+
 #### `__init__.py`
 
 Entry point that:
 - Creates the API client from stored config entry credentials
 - Initializes the coordinator and triggers first refresh
-- Registers 6 services using the singleton pattern
-- Forwards setup to the sensor platform
+- Registers 9 services using the singleton pattern
+- Wires the updater and the remote access manager before the first refresh
+- Forwards setup to the sensor, binary_sensor, and update platforms
 - Handles teardown on unload
 
 ---
@@ -253,7 +280,7 @@ For full API documentation, see [Alert API](alert-api.md) and [API Reference](ap
 
 ## Services
 
-The integration exposes 6 services via `Developer Tools > Services`:
+The integration exposes 9 services via `Developer Tools > Services`:
 
 | Service | Purpose |
 |---------|---------|
@@ -263,6 +290,9 @@ The integration exposes 6 services via `Developer Tools > Services`:
 | `send_custom_metric` | Submit arbitrary metric values |
 | `submit_alert` | Full alert submission (severity, type, title, message, context) |
 | `resolve_alert` | Resolve all unresolved alerts of a given type |
+| `install_update` | Install the client release the server is offering |
+| `respond_to_access_request` | Approve or decline a remote access request |
+| `revoke_access` | End a live remote access session |
 
 For complete service documentation, see [Services](services.md).
 
@@ -271,6 +301,7 @@ For complete service documentation, see [Services](services.md).
 ## Related Documentation
 
 - [Services](services.md) -- Complete service reference with schemas
+- [Remote Access](remote-access.md) -- Consent, the tunnel, and the local credential model
 - [Alert API](alert-api.md) -- Alert endpoint reference
 - [Service Registration](service-registration.md) -- Singleton pattern analysis
 - [Data Model](data-model/README.md) -- Database schema and relationships

@@ -5,7 +5,7 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.5.0 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.6.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
 - **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`, `cryptography>=41.0.0`
@@ -19,13 +19,17 @@ custom_components/ha_dispatch_client/
 ├── coordinator.py    # HADispatchCoordinator - DataUpdateCoordinator (60s interval)
 ├── config_flow.py    # UI config flow - server URL input, auto-registration
 ├── sensor.py         # 3 CoordinatorEntity sensors (status, cpu_load, memory_used)
+├── binary_sensor.py  # Pending remote access consent indicator
 ├── update.py         # HADispatchUpdateEntity - client version as an HA update entity
 ├── updater.py        # ClientUpdater - signed self-update (download, verify, swap, restart)
 ├── health.py         # Home Assistant health signal collection
+├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and live session state
+├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
+├── repairs.py        # Approve/Deny dialog and the end-access off-switch
 ├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
 ├── manifest.json     # Integration metadata
-├── services.yaml     # 7 service definitions with UI fields
-└── strings.json      # UI text and translations
+├── services.yaml     # 9 service definitions with UI fields
+└── strings.json      # UI text, translations, and repair flow copy
 ```
 
 Release tooling lives in `scripts/`: `release.sh` builds and signs a release
@@ -39,6 +43,7 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
 - **Async everything:** All API calls use `aiohttp` sessions from `homeassistant.helpers.aiohttp_client`
 - **Config entry storage:** Server URL, installation_id, access_token, client_id stored in config entry data
 - **Signed self-update:** `updater.py` replaces the integration's own files and restarts HA. Releases must carry an Ed25519 signature verified against a key pinned in `const.py::RELEASE_SIGNING_KEYS` — the server never holds that key, so it can decide whether/when to offer an update but never what code runs. That dict ships **empty**, so self-update fails closed until a key is deliberately pinned. Never add a placeholder.
+- **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. Full design: `docs/technical/remote-access.md`.
 
 ### API Endpoints (server-side)
 
@@ -52,8 +57,18 @@ All under `/api/v1/installations/`:
 - `POST .../{id}/alerts/batch` - Batch alerts
 - `POST .../{id}/alerts/{type}/resolve` - Resolve alerts by type
 - `POST .../{id}/client-update` - Report a self-update outcome (started/success/failed)
+- `GET  .../{id}/access/pending` - Remote access requests awaiting the customer
+- `POST .../{id}/access/{session}/respond` - Report grant/deny
+- `POST .../{id}/access/{session}/revoke` - End a live session
+- `GET  .../{id}/access/poll` - Long-poll for authorised requests (held up to 25s)
+- `POST .../{id}/access/exchanges/{request_id}/respond` - Return a local response
 
-### Services (7 total)
+A **404 on any `/access/` path means the server has no remote access**, not
+that this installation has vanished. It maps to `RemoteAccessUnavailable`, and
+must never map to `InstallationGoneError` -- the re-enrolment handler would
+re-register a healthy installation once a minute, forever.
+
+### Services (9 total)
 
 | Service | Purpose |
 |---------|---------|
@@ -64,6 +79,8 @@ All under `/api/v1/installations/`:
 | `submit_alert` | Full alert submission (severity, type, title, message, context) |
 | `resolve_alert` | Resolve all unresolved alerts of a given type |
 | `install_update` | Install the client release the server is offering (restarts HA) |
+| `respond_to_access_request` | Approve or decline a remote access request |
+| `revoke_access` | End a live remote access session (omit the id to end all) |
 
 ## Development Commands
 
@@ -101,9 +118,14 @@ is the whole basis of the self-update trust model.
 ### Testing
 
 Automated tests cover the pure logic (health classification, re-enrolment,
-and the whole self-update verification/validation/swap path). Home Assistant is
-not installed in the dev environment; `tests/conftest.py` stubs the symbols the
-integration imports. Add to that conftest when new HA imports appear.
+the whole self-update verification/validation/swap path, and consent-gated
+remote access -- what the customer is shown, that the decision reaching the
+server is the one they made, and that a request leaving the pending list clears
+both its notification and its Repairs issue). Home Assistant is not installed
+in the dev environment; `tests/conftest.py` stubs the symbols the integration
+imports, including recording versions of `persistent_notification` and
+`issue_registry` so tests can assert on what was actually put in front of the
+customer. Add to that conftest when new HA imports appear.
 
 ```bash
 python3 -m pytest tests/ -q
@@ -159,6 +181,7 @@ All documentation is organized under `docs/` — see `docs/INDEX.md` as the mast
 | API endpoints | `docs/technical/api-reference.md` |
 | Service schemas | `docs/technical/services.md` |
 | Remote update design | `docs/technical/self-update.md` (client built; server side outstanding) |
+| Remote access design | `docs/technical/remote-access.md` (consent, tunnel, local credentials) |
 | Data model | `docs/technical/data-model/README.md` |
 | Dev guide | `docs/technical/dev-guide/README.md` |
 | Quickstart | `docs/user/quickstart.md` |

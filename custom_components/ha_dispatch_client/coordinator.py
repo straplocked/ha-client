@@ -77,6 +77,11 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         self.battery_low_percent = DEFAULT_BATTERY_LOW_PERCENT
         self.battery_critical_percent = DEFAULT_BATTERY_CRITICAL_PERCENT
 
+        # Consent-gated remote access. Supplied during setup, so a coordinator
+        # built without one (the tests, and any caller predating the feature)
+        # simply never polls for consent requests.
+        self.remote_access = None
+
         # Self-update state. The updater and the version on disk are both
         # supplied during setup, once Home Assistant's loader can be asked.
         self.updater = None
@@ -124,6 +129,13 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                 release = None
             if release:
                 self._schedule_auto_update(release)
+
+            # Consent requests ride the same cadence -- the spec asks for
+            # 30-60 s and this already runs at 60 s. Deliberately last, and
+            # deliberately unable to raise: a customer's Home Assistant must
+            # keep reporting metrics even if remote access is broken.
+            if self.remote_access is not None:
+                await self.remote_access.async_poll_pending()
 
             # Return combined data for sensors
             return {

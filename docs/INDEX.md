@@ -13,6 +13,7 @@ Central hub for all project documentation. Choose your audience below.
 | Use services | [Services Guide](user/services-guide.md) |
 | Alert management | [Alerts Guide](user/alerts-guide.md) |
 | API endpoints | [API Reference](technical/api-reference.md) |
+| Remote access | [Remote Access](technical/remote-access.md) |
 | Architecture overview | [Architecture](technical/architecture.md) |
 | Database schema | [Data Model](technical/data-model/README.md) |
 | Development guide | [Dev Guide](technical/dev-guide/README.md) |
@@ -30,7 +31,7 @@ For end users installing, configuring, and operating the integration.
 | [Quickstart](user/quickstart.md) | 5-minute setup guide |
 | [Installation](user/installation.md) | Detailed installation and setup |
 | [Configuration](user/configuration.md) | Config flow and entity management |
-| [Services Guide](user/services-guide.md) | All 6 services with examples |
+| [Services Guide](user/services-guide.md) | All 9 services with examples |
 | [Alerts Guide](user/alerts-guide.md) | Alert submission, resolution, automation |
 | [Deployment](user/deployment.md) | Deploy script, versioning, caching tips |
 | [Updating the Client](user/updating.md) | Updating from HA, the dashboard, or SSH; recovery |
@@ -51,6 +52,7 @@ For developers working on or extending the integration.
 | [Service Registration](technical/service-registration.md) | Singleton registration pattern analysis |
 | [Alert API](technical/alert-api.md) | Alert API endpoint reference |
 | [Self-Update](technical/self-update.md) | Remote client update design, signing, and rollout (client built in 1.5.0) |
+| [Remote Access](technical/remote-access.md) | Consent-gated remote access: consent surfaces, the tunnel, and the local credential model (built in 1.6.0) |
 | [Data Model](technical/data-model/README.md) | Database schema, relationships, business rules |
 | [Dev Guide](technical/dev-guide/README.md) | Full client development guide (12 topics) |
 

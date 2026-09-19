@@ -1,6 +1,6 @@
 # Services Guide
 
-The HA Dispatch Client provides 7 services for testing connectivity, submitting metrics, managing alerts, forcing data refreshes, and installing client updates. This guide covers all of them with parameters, examples, and usage patterns.
+The HA Dispatch Client provides 9 services for testing connectivity, submitting metrics, managing alerts, forcing data refreshes, installing client updates, and answering remote support requests. This guide covers all of them with parameters, examples, and usage patterns.
 
 ## Service Summary
 
@@ -13,6 +13,8 @@ The HA Dispatch Client provides 7 services for testing connectivity, submitting 
 | `ha_dispatch_client.submit_alert` | Full alert submission (severity, type, title, message, context) |
 | `ha_dispatch_client.resolve_alert` | Resolve all unresolved alerts of a given type |
 | `ha_dispatch_client.install_update` | Install the client release the server is offering |
+| `ha_dispatch_client.respond_to_access_request` | Approve or decline a remote support request |
+| `ha_dispatch_client.revoke_access` | End a live remote support session |
 
 > `force_update` and `install_update` sound similar and do very different
 > things. `force_update` refreshes data from the server. `install_update`
@@ -303,6 +305,69 @@ anything is replaced. If verification fails, nothing is touched and the failure
 is reported to the server.
 
 See [Updating the client](updating.md) for the full guide.
+
+---
+
+### 8. Answer Remote Access Request
+
+**Service**: `ha_dispatch_client.respond_to_access_request`
+
+Approve or decline a pending remote support request.
+
+You do not normally need this service. When a technician asks for access, the
+request appears on its own in **Settings → System → Repairs** with **Approve**
+and **Decline** buttons, and as a notification. This service exists for people
+who want to route that decision through an automation first -- announcing it on
+a speaker, or requiring a code on a keypad.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | Yes | The session id from the request. Shown on the `HA Dispatch Remote Access Requested` sensor |
+| `decision` | string | Yes | `grant` or `deny` |
+| `note` | string | No | A message recorded on the audit receipt |
+
+#### Example
+
+```yaml
+service: ha_dispatch_client.respond_to_access_request
+data:
+  session_id: "41"
+  decision: grant
+  note: Go ahead, the hallway sensor is the one playing up
+```
+
+The Home Assistant user who calls the service is named on the audit receipt, so
+the record says who agreed rather than "somebody".
+
+If the request was already answered somewhere else, or has expired, the call
+succeeds quietly and the prompt comes down. Nothing is retried.
+
+---
+
+### 9. End Remote Access
+
+**Service**: `ha_dispatch_client.revoke_access`
+
+End a live remote support session immediately.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | No | The session to end. Leave it out to end every live session |
+| `note` | string | No | A message recorded on the audit receipt |
+
+#### Example
+
+```yaml
+service: ha_dispatch_client.revoke_access
+```
+
+While a session is live there is also a one-tap **End remote access** entry in
+**Settings → System → Repairs**, which does exactly the same thing. Use
+whichever is closer to hand.
 
 ---
 

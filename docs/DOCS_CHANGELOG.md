@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-09-19] — Consent-Gated Remote Access (v1.6.0)
+
+### Added
+- `docs/technical/remote-access.md` — client-side design for consent-gated remote access: the two consent surfaces, how a prompt is cleared, how live sessions are tracked (including the one judgement call, for a request answered on the web page), the transport loop, and the local credential decision with what each scope can reach
+
+### Changed
+- `docs/technical/api-reference.md` — new endpoints 7–11 (`access/pending`, `access/{session}/respond`, `access/{session}/revoke`, `access/poll`, `access/exchanges/{id}/respond`), each with the client implementation notes that matter, including the 404-is-not-a-vanished-installation trap
+- `docs/technical/architecture.md` — file tree brought current (it still listed neither `update.py`/`updater.py`/`health.py` from 1.5.0 nor the new modules), new sections for `binary_sensor.py` and the remote access modules, service count 6 → 9
+- `docs/technical/services.md` — added `respond_to_access_request` and `revoke_access`; service count 6 → 9
+- `docs/user/services-guide.md` — 7 services → 9, with the two new services written for the person using them and a pointer to the Repairs dialog as the normal route
+- `docs/INDEX.md`, `docs/technical/README.md` — added Remote Access; corrected the stale "All 6 services" label
+- `docs/leadership/capabilities.md` — version v1.2.2 → v1.6.0; four new delivered capabilities covering consent, the off-switch, the support session, and the request sensor; summary counts updated
+- `docs/leadership/roadmap.md` — Built moved to v1.6.0 and gained consent-gated remote support; service and entity counts updated
+- `CLAUDE.md` — version, file tree, service list, endpoint list, platform list, and the remote access documentation entry
+
+---
+
 ## [2026-09-18] — Server Side Built
 
 ### Changed

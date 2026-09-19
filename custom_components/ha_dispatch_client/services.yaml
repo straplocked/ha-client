@@ -179,3 +179,59 @@ install_update:
       default: false
       selector:
         boolean:
+
+respond_to_access_request:
+  name: Answer Remote Access Request
+  description: >-
+    Approve or decline a pending remote access request. The same decision the
+    Repairs dialog makes, for automations that want to route the prompt
+    somewhere else first.
+  fields:
+    session_id:
+      name: Session
+      description: >-
+        The session id from the pending request. Visible on the
+        "HA Dispatch Remote Access Requested" binary sensor.
+      required: true
+      example: 41
+      selector:
+        text:
+    decision:
+      name: Decision
+      description: Whether to allow the access or refuse it
+      required: true
+      example: grant
+      selector:
+        select:
+          options:
+            - label: Approve
+              value: grant
+            - label: Decline
+              value: deny
+    note:
+      name: Note
+      description: Optional message recorded on the audit receipt
+      example: Go ahead, the hallway sensor is the one playing up
+      selector:
+        text:
+          multiline: true
+
+revoke_access:
+  name: End Remote Access
+  description: >-
+    End a live remote access session immediately. Leave the session blank to
+    end every live session.
+  fields:
+    session_id:
+      name: Session
+      description: >-
+        The session to end. Leave blank to end all of them.
+      example: 41
+      selector:
+        text:
+    note:
+      name: Note
+      description: Optional message recorded on the audit receipt
+      selector:
+        text:
+          multiline: true

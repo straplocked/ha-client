@@ -585,8 +585,206 @@ worth retrying, a `verify` failure means stop the rollout now.
 
 ---
 
+## Endpoint 7: Pending Access Requests
+
+**Purpose**: Fetch the remote access requests waiting on the customer.
+
+**Method**: `GET`
+**Path**: `/v1/installations/{id}/access/pending`
+**Auth**: Bearer token
+
+### Success Response (200 OK)
+
+```json
+{
+  "policy": "always_ask",
+  "standing_consent_until": null,
+  "requests": [
+    {
+      "id": 41,
+      "requested_by": "Sam Rivera",
+      "scope": "maintenance",
+      "scope_label": "Diagnostics and repairs",
+      "scope_description": "Everything in read-only access, plus the ability to restart things, reload a broken device and run repairs.",
+      "reason": "Zigbee stopped after the 0.0.48 update",
+      "duration_minutes": 60,
+      "requested_at": "2026-09-18T04:28:00+00:00",
+      "expires_at": "2026-09-18T05:28:00+00:00",
+      "consent_url": "https://dispatch.example.com/access/<token>"
+    }
+  ]
+}
+```
+
+### Client Implementation Notes
+
+- Polled on the coordinator's existing cadence (60 s by default). The spec asks
+  for 30–60 s.
+- `scope_description` is written for a homeowner. Show it **verbatim**; do not
+  substitute technical wording or the `scope` slug.
+- A **404 means this server has no remote access**, not that the installation
+  has vanished. It must map to `RemoteAccessUnavailable`, never to
+  `InstallationGoneError` — the re-enrolment handler would otherwise re-register
+  a healthy installation once a minute forever.
+- Anything that leaves `requests` has its notification and Repairs issue
+  cleared, however it left.
+
+---
+
+## Endpoint 8: Answer an Access Request
+
+**Purpose**: Report what the customer decided inside Home Assistant.
+
+**Method**: `POST`
+**Path**: `/v1/installations/{id}/access/{session}/respond`
+**Auth**: Bearer token
+
+### Request Body
+
+```json
+{
+  "decision": "grant",
+  "note": "Go ahead",
+  "responder": "Alex (owner)"
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `decision` | string | yes | `grant` or `deny`, sent verbatim |
+| `note` | string | no | Recorded on the audit receipt (max 500) |
+| `responder` | string | no | Which Home Assistant user acted (max 120) |
+
+### Success Response (200 OK)
+
+```json
+{ "status": "granted", "expires_at": "2026-09-18T05:29:00+00:00" }
+```
+
+### Error Responses
+
+| Status | Meaning | Client behaviour |
+|--------|---------|------------------|
+| 422 | Already answered, or lapsed | **Not an error.** Clear the prompt, do not retry |
+| 403 | Token belongs to another installation | Log and stop |
+
+### Client Implementation Notes
+
+- `responder` lets the receipt name who agreed rather than saying "somebody".
+  Reliable from a service call (`call.context.user_id`); best-effort from a
+  Repairs dialog, and omitted rather than guessed when unknown.
+- `expires_at` from the response is what the client uses to decide how long the
+  session is live.
+
+---
+
+## Endpoint 9: Revoke Access
+
+**Purpose**: Close a live session from inside Home Assistant.
+
+**Method**: `POST`
+**Path**: `/v1/installations/{id}/access/{session}/revoke`
+**Auth**: Bearer token
+
+### Request Body
+
+```json
+{ "note": "No thanks" }
+```
+
+### Success Response (200 OK)
+
+```json
+{ "status": "revoked" }
+```
+
+### Client Implementation Notes
+
+- A 422 here means the session was already closed. Treat it as closed.
+- A consent model without a working off-switch is theatre. This is exposed
+  three ways: the `access_active_<session>` Repairs issue, the `revoke_access`
+  service, and the server's own web consent page.
+
+---
+
+## Endpoint 10: Poll for Relayed Requests
+
+**Purpose**: Long-poll for requests a technician has already been authorised to
+make.
+
+**Method**: `GET`
+**Path**: `/v1/installations/{id}/access/poll`
+**Auth**: Bearer token
+
+### Success Response (200 OK)
+
+```json
+{
+  "requests": [
+    {
+      "request_id": "0f8a...-...",
+      "session_id": 41,
+      "method": "GET",
+      "path": "/api/error_log",
+      "query": null,
+      "headers": { "accept": "text/plain" },
+      "body": null
+    }
+  ]
+}
+```
+
+### Client Implementation Notes
+
+- Held open for up to 25 s and returns as soon as there is work. Call it again
+  immediately. Only run this loop while a session is live.
+- Requests here are **already authorised** against the session's scope. Do not
+  re-check scope — but do refuse anything local configuration forbids.
+- `Cookie` and `Authorization` are stripped before they arrive. The client
+  supplies its own local Home Assistant credential; see
+  [Remote Access](remote-access.md) for which credential and why.
+
+---
+
+## Endpoint 11: Answer a Relayed Request
+
+**Purpose**: Hand back what the local Home Assistant said.
+
+**Method**: `POST`
+**Path**: `/v1/installations/{id}/access/exchanges/{request_id}/respond`
+**Auth**: Bearer token
+
+### Request Body
+
+```json
+{
+  "status": 200,
+  "headers": { "Content-Type": "text/plain" },
+  "body": "2026-09-18 04:12:33 ERROR (MainThread) [homeassistant.components.zha] ..."
+}
+```
+
+Or, on failure:
+
+```json
+{ "error": "Could not reach the local API" }
+```
+
+### Client Implementation Notes
+
+- Respond within about 30 s. After that the technician's request has already
+  been answered with a 504 and this response is discarded.
+- Run a batch concurrently — the technician is waiting on all of it.
+- Bodies cross as strings. Non-textual responses are base64 encoded and
+  labelled `Content-Transfer-Encoding: base64`.
+- An error and a response are mutually exclusive: any non-empty `error` is
+  recorded as a failure and the status/body ignored.
+
+---
+
 ## Related Documentation
 
+- [Remote Access](remote-access.md) for consent, the tunnel, and the local credential model
 - [Self-Update](self-update.md) for the update trust model, signing, and rollout design
 - [Authentication & Security](dev-guide/authentication.md) for token generation and request authentication
 - [Communication Patterns](dev-guide/communication-patterns.md) for client-server interaction flows
