@@ -22,6 +22,7 @@ from .remote_access import (
     async_all_managers,
     async_find_manager,
 )
+from .updates import HADispatchUpdates
 from .updater import ClientUpdater
 
 _LOGGER = logging.getLogger(__name__)
@@ -488,6 +489,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     remote_access = HADispatchRemoteAccess(hass, coordinator)
     coordinator.remote_access = remote_access
     await remote_access.async_load()
+
+    # Consent-gated remote updates. Loaded before the first refresh so an update
+    # left pending by a restart -- a Core or OS update reboots the box mid-run --
+    # is confirmed from what is now installed before anything else happens.
+    updates = HADispatchUpdates(hass, coordinator)
+    coordinator.updates = updates
+    await updates.async_load()
 
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()

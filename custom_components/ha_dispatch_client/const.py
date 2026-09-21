@@ -52,6 +52,10 @@ API_ACCESS_POLL = "/api/v1/installations/{installation_id}/access/poll"
 API_ACCESS_EXCHANGE = (
     "/api/v1/installations/{installation_id}/access/exchanges/{request_id}/respond"
 )
+API_UPDATES_PENDING = "/api/v1/installations/{installation_id}/updates/pending"
+API_UPDATES_REPORT = (
+    "/api/v1/installations/{installation_id}/updates/{run_id}/report"
+)
 
 # --- Component inventory ----------------------------------------------------
 # Full design: docs/technical/component-inventory.md
@@ -230,6 +234,56 @@ UPDATE_STORAGE_VERSION = 1
 
 # Release payload keys, as sent by the server on the status response.
 RELEASE_KEY = "client_release"
+
+# --- Consent-gated remote updates -------------------------------------------
+# Full design: docs/technical/remote-updates.md
+#
+# Distinct from client self-update above: this updates Home Assistant *itself*
+# -- Core, OS and add-ons -- on the homeowner's consent, whereas self-update
+# replaces this integration's own code. Both report phase by phase, and both
+# report before touching anything so a restart that never comes back is still a
+# signal.
+
+# Component kinds the server will ask us to update. A subset of the inventory
+# kinds -- integrations and HACS are not updated through this path.
+UPDATE_RUN_KIND_CORE = COMPONENT_KIND_CORE
+UPDATE_RUN_KIND_OS = COMPONENT_KIND_OS
+UPDATE_RUN_KIND_SUPERVISOR = COMPONENT_KIND_SUPERVISOR
+UPDATE_RUN_KIND_ADDON = COMPONENT_KIND_ADDON
+
+# Report statuses, as validated by the server (InstallationUpdateEvent).
+UPDATE_RUN_STATUS_STARTED = "started"
+UPDATE_RUN_STATUS_PROGRESS = "progress"
+UPDATE_RUN_STATUS_SUCCESS = "success"
+UPDATE_RUN_STATUS_FAILED = "failed"
+
+# Phases, in the order they run. A failure from `apply` onward means the
+# installation has already been changed and may need the pre-update backup.
+UPDATE_RUN_PHASE_BACKUP = "backup"
+UPDATE_RUN_PHASE_DOWNLOAD = "download"
+UPDATE_RUN_PHASE_APPLY = "apply"
+UPDATE_RUN_PHASE_RESTART = "restart"
+UPDATE_RUN_PHASE_CONFIRM = "confirm"
+
+# The update entities the Supervisor exposes for the platform itself. Add-ons
+# are updated by their own Supervisor slug, not a fixed entity id.
+UPDATE_ENTITY_CORE = "update.home_assistant_core_update"
+UPDATE_ENTITY_OS = "update.home_assistant_operating_system_update"
+UPDATE_ENTITY_SUPERVISOR = "update.home_assistant_supervisor_update"
+
+# Prefix for the name given to a pre-update backup, so it is recognisable in the
+# Supervisor's backup list and on the audit receipt.
+UPDATE_RUN_BACKUP_PREFIX = "HA Dispatch pre-update"
+
+# A run's target component, persisted across the restart a Core or OS update
+# causes -- the confirmation that the new version actually took has to survive
+# the very restart it is confirming, so it cannot live in memory.
+UPDATE_RUN_STORAGE_KEY = "ha_dispatch_client.update_run"
+UPDATE_RUN_STORAGE_VERSION = 1
+
+# How long a single relayed update phase may take against the Supervisor. A full
+# backup of a large system is slow, so this is generous.
+UPDATE_RUN_OPERATION_TIMEOUT = 1800
 
 # Entity keys
 BINARY_SENSOR_PENDING_CONSENT = "pending_consent"

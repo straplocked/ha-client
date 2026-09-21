@@ -11,6 +11,8 @@ from .const import (
     API_ACCESS_RESPOND,
     API_ACCESS_REVOKE,
     API_COMPONENTS,
+    API_UPDATES_PENDING,
+    API_UPDATES_REPORT,
     ACCESS_POLL_TIMEOUT,
 )
 
@@ -63,6 +65,16 @@ class RemoteAccessConflict(Exception):
     A normal outcome, not a failure: the request was already answered on the
     web consent page, or it lapsed while the notification sat on screen. The
     only correct response is to clear the prompt, never to retry.
+    """
+
+
+class RemoteUpdatesUnavailable(Exception):
+    """Raised when this server does not offer the remote update endpoints.
+
+    Like RemoteAccessUnavailable, and for the same reason: a server predating
+    remote updates answers 404 for every /updates/ path while the installation
+    is perfectly healthy, and treating that as "the server has forgotten us"
+    would re-enrol a working installation forever.
     """
 
 
@@ -564,5 +576,75 @@ class HADispatchApiClient:
             url, json=data, headers=self._get_headers()
         ) as response:
             await self._raise_for_access_status(response)
+            return await response.json()
+
+    # --- Consent-gated remote updates --------------------------------------
+    #
+    # A 404 on an /updates/ path means the server has no remote updates, not
+    # that this installation has vanished -- see RemoteUpdatesUnavailable.
+
+    async def fetch_pending_updates(
+        self, installation_id: str
+    ) -> List[Dict[str, Any]]:
+        """Fetch the updates the homeowner has consented to install.
+
+        Only ever returns runs the server considers ready: consent has been
+        granted and no agent has started them. An empty list is the common case.
+        """
+        url = self.server_url + API_UPDATES_PENDING.format(
+            installation_id=installation_id
+        )
+
+        async with self.session.get(url, headers=self._get_headers()) as response:
+            if response.status == 404:
+                raise RemoteUpdatesUnavailable(
+                    f"Server has no remote update endpoint at {response.url}"
+                )
+            await self._raise_for_status(response, installation_scoped=False)
+            payload = await response.json()
+            return payload.get("updates") or []
+
+    async def report_update(
+        self,
+        installation_id: str,
+        run_id: Any,
+        status: str,
+        phase: Optional[str] = None,
+        backup_reference: Optional[str] = None,
+        error: Optional[str] = None,
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Report a phase of a remote update.
+
+        Called with 'started' before anything is touched, optionally 'progress'
+        per phase, and a single 'success' or 'failed' to end the run. A backup
+        reference sent with the backup phase is what the receipt names as the
+        restore point.
+        """
+        url = self.server_url + API_UPDATES_REPORT.format(
+            installation_id=installation_id, run_id=run_id
+        )
+        data: Dict[str, Any] = {
+            "status": status,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if phase:
+            data["phase"] = phase
+        if backup_reference:
+            data["backup_reference"] = backup_reference
+        if error:
+            data["error"] = error[:2000]
+        if detail:
+            data["detail"] = detail
+
+        _LOGGER.debug("Reporting update run %s: status=%s, phase=%s", run_id, status, phase)
+        async with self.session.post(
+            url, json=data, headers=self._get_headers()
+        ) as response:
+            if response.status == 404:
+                raise RemoteUpdatesUnavailable(
+                    f"Server has no remote update endpoint at {response.url}"
+                )
+            await self._raise_for_status(response, installation_scoped=False)
             return await response.json()
 

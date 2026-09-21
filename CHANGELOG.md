@@ -2,6 +2,40 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.7.0] - 2026-09-21
+
+The other half of consent-gated remote updates. The HA Dispatch server can now
+plan a Core, OS or add-on update, gate it behind the fleet's risk verdict, and
+ask the homeowner to consent to that specific version change. The client had no
+code to carry one out. This ships it.
+
+### Added — consent-gated remote updates
+
+- **The client installs consented updates.** Once the homeowner has agreed to a
+  specific update on the consent page, the server offers the run to this agent.
+  `HADispatchUpdates` polls for it on the same cadence as remote access, takes a
+  pre-update backup, applies the update against the local Supervisor, and reports
+  every phase back — `started`, `backup`, `apply`, `confirm`.
+
+- **It reports before it touches anything.** As with a client self-update, the
+  `started` report lands before the backup or the apply. An installation that
+  reports it began a Core update and then goes silent has told us the update
+  broke it — which no failure report from a restarted box could.
+
+- **It confirms across the restart it causes.** A Core or OS update reboots Home
+  Assistant mid-run and kills this process. The run's target is persisted before
+  the apply, and on the next boot the agent confirms `success` or `failed` by
+  comparing what is now installed to what was asked for.
+
+- **Consent stays the server's to enforce.** The agent never re-checks it: a run
+  only appears once consent is granted and disappears the moment it is revoked,
+  denied or expires. There is no path here that updates Home Assistant without a
+  technician plan and a homeowner's deliberate consent.
+
+- The Supervisor calls (backup, apply) are isolated behind `SupervisorUpdater`,
+  the one seam that needs a real supervised system; the run orchestration is
+  fully covered by 17 new tests. Design in `docs/technical/remote-updates.md`.
+
 ## [1.6.0] - 2026-09-19
 
 Two halves of the same gap. The server had already built consent-gated

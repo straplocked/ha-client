@@ -84,6 +84,10 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         # simply never polls for consent requests.
         self.remote_access = None
 
+        # Consent-gated remote updates. Same arrangement: absent unless setup
+        # wires it, so a coordinator built without one never polls for updates.
+        self.updates = None
+
         # Component inventory. Reported on its own slow cadence rather than on
         # every metrics poll: versions change rarely, and the fleet's
         # attribution window is two hours wide. None means "never reported",
@@ -149,6 +153,11 @@ class HADispatchCoordinator(DataUpdateCoordinator):
             # keep reporting metrics even if remote access is broken.
             if self.remote_access is not None:
                 await self.remote_access.async_poll_pending()
+
+            # Consented updates ride the same cadence and are just as unable to
+            # raise, for the same reason.
+            if self.updates is not None:
+                await self.updates.async_poll_pending()
 
             # Return combined data for sensors
             return {
