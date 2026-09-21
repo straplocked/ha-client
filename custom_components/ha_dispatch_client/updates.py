@@ -132,41 +132,109 @@ class SupervisorUpdater:
         """Take a pre-update backup, returning a handle to it.
 
         A partial backup of just the add-on when updating one, a full backup
-        otherwise. The Supervisor names the backup by the name we pass, so that
-        name is the handle the receipt records -- the service call itself does
-        not hand back a slug.
+        otherwise. The Supervisor returns the backup's slug, which is what the
+        receipt should name -- a slug identifies the restore point even if two
+        runs picked the same name. The name is the fallback for a Supervisor
+        that answers without response data.
         """
         if kind == UPDATE_RUN_KIND_ADDON:
             service, data = "backup_partial", {"name": name, "addons": [slug]}
         else:
             service, data = "backup_full", {"name": name}
 
-        await self._call("hassio", service, data)
+        response = await self._call("hassio", service, data, want_response=True)
+
+        if isinstance(response, dict):
+            reference = response.get("slug") or response.get("backup")
+            if reference:
+                return str(reference)
+
         return name
 
     async def async_apply(self, kind: str, slug: str, target_version: Optional[str]) -> None:
-        """Install the update. May not return: a Core or OS update restarts us."""
-        if kind == UPDATE_RUN_KIND_ADDON:
-            # The add-on update service takes the Supervisor slug directly, which
-            # avoids having to resolve the add-on's update entity id.
-            await self._call("hassio", "addon_update", {"addon": slug})
-            return
+        """Install the update. May not return: a Core or OS update restarts us.
 
-        entity_id = _PLATFORM_UPDATE_ENTITIES.get(kind)
-        if entity_id is None:
-            raise UpdateExecutionError(f"Do not know how to update {kind!r}.")
+        Everything goes through `update.install`, including add-ons. The
+        Supervisor's own `hassio.addon_update` was deprecated in Home Assistant
+        2024.11 and the update entity is its documented replacement, so calling
+        it would fail outright on any recent core.
+        """
+        entity_id = self._update_entity(kind, slug)
 
+        # backup=False because the run has already taken its own named backup by
+        # this point, and the receipt names that one. Asking the update entity
+        # for a second would double the work and leave a restore point nobody
+        # recorded.
         data: Dict[str, Any] = {"entity_id": entity_id, "backup": False}
-        if target_version:
+
+        # Only Core and the OS accept a specific version; an add-on's update
+        # entity does not advertise SPECIFIC_VERSION and rejects the parameter,
+        # so an add-on run always installs whatever the Supervisor has.
+        if target_version and self._supports_specific_version(entity_id):
             data["version"] = target_version
 
         await self._call("update", "install", data)
 
-    async def _call(self, domain: str, service: str, data: Dict[str, Any]) -> None:
+    def _update_entity(self, kind: str, slug: str) -> str:
+        """The update entity that installs this component.
+
+        The platform's three are fixed. An add-on's is found by the icon its
+        update entity points at -- `/api/hassio/addons/<slug>/icon` -- which is
+        the only place the Supervisor slug appears on the entity, and is stable
+        where a friendly name a user can edit is not.
+        """
+        if kind != UPDATE_RUN_KIND_ADDON:
+            entity_id = _PLATFORM_UPDATE_ENTITIES.get(kind)
+            if entity_id is None:
+                raise UpdateExecutionError(f"Do not know how to update {kind!r}.")
+            return entity_id
+
+        needle = f"/addons/{slug}/"
+        for state in self._update_states():
+            picture = str(state.attributes.get("entity_picture") or "")
+            if needle in picture:
+                return state.entity_id
+
+        raise UpdateExecutionError(
+            f"No update entity found for add-on {slug!r}; it may not be installed."
+        )
+
+    def _supports_specific_version(self, entity_id: str) -> bool:
+        """Whether this update entity accepts a target version.
+
+        UpdateEntityFeature.SPECIFIC_VERSION is bit 2. Checked rather than
+        assumed: Core and the OS advertise it, add-ons do not, and sending the
+        parameter to something that does not support it fails the whole run.
+        """
+        for state in self._update_states():
+            if state.entity_id == entity_id:
+                try:
+                    return bool(int(state.attributes.get("supported_features") or 0) & 2)
+                except (TypeError, ValueError):
+                    return False
+        return False
+
+    def _update_states(self) -> list:
+        """Every update entity, or an empty list if they cannot be enumerated."""
+        lister = getattr(getattr(self.hass, "states", None), "async_all", None)
+        if lister is None:
+            return []
+        try:
+            return list(lister("update"))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return []
+
+    async def _call(
+        self,
+        domain: str,
+        service: str,
+        data: Dict[str, Any],
+        want_response: bool = False,
+    ) -> Any:
         """Call a blocking service, mapping any failure to UpdateExecutionError."""
         try:
-            await asyncio.wait_for(
-                self.hass.services.async_call(domain, service, data, blocking=True),
+            return await asyncio.wait_for(
+                self._invoke(domain, service, data, want_response),
                 timeout=UPDATE_RUN_OPERATION_TIMEOUT,
             )
         except UpdateExecutionError:
@@ -179,6 +247,30 @@ class SupervisorUpdater:
             raise UpdateExecutionError(
                 f"{domain}.{service} failed: {err}"
             ) from err
+
+    async def _invoke(
+        self,
+        domain: str,
+        service: str,
+        data: Dict[str, Any],
+        want_response: bool,
+    ) -> Any:
+        """Make the call, tolerating a core that will not return response data.
+
+        return_response is rejected outright by some versions and by services
+        that do not supply it, and a backup that ran is not worth failing over
+        the shape of its reply -- so the response is a bonus, never a
+        requirement.
+        """
+        if want_response:
+            try:
+                return await self.hass.services.async_call(
+                    domain, service, data, blocking=True, return_response=True
+                )
+            except (TypeError, ValueError, HomeAssistantError):
+                pass
+
+        return await self.hass.services.async_call(domain, service, data, blocking=True)
 
 
 class HADispatchUpdates:

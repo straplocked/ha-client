@@ -358,5 +358,144 @@ class PollLoopTest(unittest.TestCase):
         self.assertEqual(manager._running, set())
 
 
+# --- resolving what to actually call ----------------------------------------
+#
+# The attribute shapes below are copied from a real supervised Home Assistant
+# 2026.6.4, including the supported_features bitmasks: Core advertises
+# SPECIFIC_VERSION and an add-on does not, which is the whole reason the version
+# parameter cannot be sent unconditionally.
+
+
+class FakeState:
+    def __init__(self, entity_id, **attributes):
+        self.entity_id = entity_id
+        self.attributes = attributes
+
+
+class FakeStates:
+    def __init__(self, states):
+        self._states = states
+
+    def async_all(self, domain=None):
+        return list(self._states)
+
+
+class RecordingServices:
+    def __init__(self, response=None):
+        self.calls = []
+        self.response = response
+
+    async def async_call(self, domain, service, data, blocking=False, return_response=False):
+        self.calls.append(
+            {"domain": domain, "service": service, "data": dict(data),
+             "return_response": return_response}
+        )
+        if return_response:
+            if self.response is None:
+                raise TypeError("service does not support response data")
+            return self.response
+        return None
+
+
+def _supervised_hass(services=None):
+    hass = FakeHass()
+    hass.states = FakeStates(
+        [
+            FakeState(
+                "update.home_assistant_core_update",
+                supported_features=15,
+                entity_picture="/api/brands/integration/homeassistant/icon.png",
+            ),
+            FakeState(
+                "update.home_assistant_operating_system_update",
+                supported_features=11,
+            ),
+            FakeState(
+                "update.mosquitto_broker_update",
+                supported_features=29,
+                entity_picture="/api/hassio/addons/core_mosquitto/icon",
+            ),
+        ]
+    )
+    hass.services = services or RecordingServices()
+    return hass
+
+
+def _executor(hass):
+    return updates_mod.SupervisorUpdater(hass)
+
+
+class SupervisorCallTest(unittest.TestCase):
+    def test_add_ons_are_updated_through_the_update_entity_not_the_deprecated_service(self):
+        # hassio.addon_update was deprecated in Home Assistant 2024.11; calling
+        # it on a recent core fails outright.
+        services = RecordingServices()
+        hass = _supervised_hass(services)
+
+        _run(_executor(hass).async_apply("addon", "core_mosquitto", "7.1.1"))
+
+        self.assertEqual(len(services.calls), 1)
+        call = services.calls[0]
+        self.assertEqual((call["domain"], call["service"]), ("update", "install"))
+        self.assertEqual(call["data"]["entity_id"], "update.mosquitto_broker_update")
+
+    def test_an_add_on_is_never_sent_a_specific_version(self):
+        # Its update entity does not advertise SPECIFIC_VERSION, and sending the
+        # parameter anyway fails the run.
+        services = RecordingServices()
+        hass = _supervised_hass(services)
+
+        _run(_executor(hass).async_apply("addon", "core_mosquitto", "7.1.1"))
+
+        self.assertNotIn("version", services.calls[0]["data"])
+
+    def test_core_is_sent_the_target_version(self):
+        services = RecordingServices()
+        hass = _supervised_hass(services)
+
+        _run(_executor(hass).async_apply("core", "core", "2026.9.3"))
+
+        call = services.calls[0]
+        self.assertEqual(call["data"]["entity_id"], "update.home_assistant_core_update")
+        self.assertEqual(call["data"]["version"], "2026.9.3")
+
+    def test_the_update_entity_is_not_asked_for_a_second_backup(self):
+        services = RecordingServices()
+        hass = _supervised_hass(services)
+
+        _run(_executor(hass).async_apply("core", "core", "2026.9.3"))
+
+        self.assertIs(services.calls[0]["data"]["backup"], False)
+
+    def test_an_add_on_that_is_not_installed_fails_clearly(self):
+        hass = _supervised_hass()
+
+        with self.assertRaises(UpdateExecutionError) as caught:
+            _run(_executor(hass).async_apply("addon", "core_nonexistent", "1.0"))
+
+        self.assertIn("core_nonexistent", str(caught.exception))
+
+    def test_a_backup_reports_the_slug_the_supervisor_returned(self):
+        services = RecordingServices(response={"slug": "a1b2c3d4"})
+        hass = _supervised_hass(services)
+
+        reference = _run(_executor(hass).async_backup("addon", "core_mosquitto", "pre-update"))
+
+        self.assertEqual(reference, "a1b2c3d4")
+        self.assertEqual(services.calls[0]["service"], "backup_partial")
+        self.assertEqual(services.calls[0]["data"]["addons"], ["core_mosquitto"])
+
+    def test_a_backup_falls_back_to_its_name_without_response_data(self):
+        # Some cores refuse return_response; a backup that ran is not worth
+        # failing over the shape of its reply.
+        services = RecordingServices(response=None)
+        hass = _supervised_hass(services)
+
+        reference = _run(_executor(hass).async_backup("core", "core", "pre-update"))
+
+        self.assertEqual(reference, "pre-update")
+        self.assertEqual(services.calls[-1]["service"], "backup_full")
+
+
 if __name__ == "__main__":
     unittest.main()

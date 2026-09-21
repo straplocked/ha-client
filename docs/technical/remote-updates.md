@@ -99,14 +99,37 @@ place:
 |---|---|
 | Backup (add-on) | `hassio.backup_partial` `{name, addons: [slug]}` |
 | Backup (platform) | `hassio.backup_full` `{name}` |
-| Update (core / os / supervisor) | `update.install` on the platform update entity, `backup: false` |
-| Update (add-on) | `hassio.addon_update` `{addon: slug}` |
+| Update (everything) | `update.install` on the component's update entity, `backup: false` |
 
-> These service names are the integration seam. They are the stable, documented
-> surface today, but the Supervisor's service and entity names have moved between
-> core releases — validate them against the target Home Assistant version, and
-> adjust `SupervisorUpdater` alone if they have changed. Nothing else in the run
-> pipeline depends on them.
+**Everything installs through `update.install`, including add-ons.** The
+Supervisor's own `hassio.addon_update` was deprecated in Home Assistant 2024.11
+(core PR #127927) in favour of the update entity, so calling it on a recent core
+fails outright.
+
+Two things are resolved at run time rather than assumed, both verified against a
+real supervised 2026.6.4:
+
+- **Which entity.** The platform's three are fixed
+  (`update.home_assistant_core_update`, `..._operating_system_update`,
+  `..._supervisor_update`). An add-on's id derives from a name the user can edit,
+  so it is found by the Supervisor slug in its icon URL
+  (`/api/hassio/addons/<slug>/icon`) — the only place the slug appears on the
+  entity.
+- **Whether a version may be sent.** `UpdateEntityFeature.SPECIFIC_VERSION` is
+  bit 2 of `supported_features`. Core reports 15 and the OS 11, both of which
+  include it; an add-on reports 29, which does not. Sending `version` to an
+  entity that does not support it fails the whole run, so the bit is checked and
+  an add-on run installs whatever the Supervisor has.
+
+The backup is taken as its own named call rather than by passing `backup: true`
+to `update.install`, so the run can report the restore point's slug on the
+receipt. `hassio.backup_full` returns that slug as response data; a core that
+refuses `return_response` falls back to the backup's name.
+
+> These names remain the integration seam. Home Assistant has moved them before —
+> that is exactly how `hassio.addon_update` became a trap — so re-validate against
+> the target version, and adjust `SupervisorUpdater` alone if they have shifted.
+> Nothing else in the run pipeline depends on them.
 
 ## 6. What is deliberately not here
 

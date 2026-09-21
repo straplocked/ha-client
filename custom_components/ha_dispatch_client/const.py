@@ -265,8 +265,13 @@ UPDATE_RUN_PHASE_APPLY = "apply"
 UPDATE_RUN_PHASE_RESTART = "restart"
 UPDATE_RUN_PHASE_CONFIRM = "confirm"
 
-# The update entities the Supervisor exposes for the platform itself. Add-ons
-# are updated by their own Supervisor slug, not a fixed entity id.
+# The update entities the Supervisor exposes for the platform itself. An add-on
+# has one too, but its id is derived from a name the user can edit, so it is
+# resolved at run time from the Supervisor slug in its icon URL instead.
+#
+# Everything is installed through `update.install`: the Supervisor's own
+# `hassio.addon_update` was deprecated in Home Assistant 2024.11 in favour of
+# the update entity, and calling it on a recent core fails.
 UPDATE_ENTITY_CORE = "update.home_assistant_core_update"
 UPDATE_ENTITY_OS = "update.home_assistant_operating_system_update"
 UPDATE_ENTITY_SUPERVISOR = "update.home_assistant_supervisor_update"

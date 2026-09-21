@@ -2,6 +2,37 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.7.1] - 2026-09-21
+
+### Fixed — remote updates called a service that no longer exists
+
+Validating 1.7.0 against a real supervised Home Assistant 2026.6.4, before any
+customer ran an update through it, turned up two faults that would each have
+failed a run outright:
+
+- **Add-on updates called `hassio.addon_update`, deprecated in Home Assistant
+  2024.11** (core PR #127927) in favour of the update entity. Every add-on update
+  would have failed at the apply phase on any recent core. Add-ons now install
+  through `update.install` like everything else, with the entity resolved from
+  the Supervisor slug in its icon URL — the only place the slug appears on the
+  entity, and stable where a user-editable friendly name is not.
+
+- **The target version was sent unconditionally.** `UpdateEntityFeature.SPECIFIC_VERSION`
+  is bit 2 of `supported_features`: Core reports 15 and the OS 11, both including
+  it, but an add-on reports 29, which does not. Sending `version` to an entity
+  that does not support it fails the run, so the bit is now checked and an add-on
+  installs whatever the Supervisor has.
+
+### Changed
+
+- A backup now reports the **slug** the Supervisor returns rather than the name
+  we asked for, so the receipt names a restore point that is unambiguous even if
+  two runs chose the same name. A core that refuses `return_response` falls back
+  to the name.
+
+Seven new tests pin both call shapes against the attribute values read off a
+real 2026.6.4 system. Suite green at 141.
+
 ## [1.7.0] - 2026-09-21
 
 The other half of consent-gated remote updates. The HA Dispatch server can now
