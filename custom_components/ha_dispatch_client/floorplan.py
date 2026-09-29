@@ -21,6 +21,7 @@ matching entity exists, skip the ones that don't.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import math
@@ -598,7 +599,7 @@ class HADispatchFloorplan:
                 paths.get("plan_image_urls") or {},
                 plan_transform,
             )
-            await self._async_write_dashboard(cards)
+            went_live = await self._async_write_dashboard(cards)
         except Exception as err:  # noqa: BLE001 - always report, never crash the poll loop
             _LOGGER.error("Floorplan deploy %s failed: %s", job_id, err)
             await self._async_report(job_id, FLOORPLAN_REPORT_STATUS_FAILED, str(err))
@@ -609,7 +610,7 @@ class HADispatchFloorplan:
         await self._async_report(
             job_id, FLOORPLAN_REPORT_STATUS_DONE, "Home 3D dashboard deployed"
         )
-        self._notify_success()
+        self._notify_success(went_live)
         self._running.discard(job_id)
 
     # -- applying one job -------------------------------------------------
@@ -675,28 +676,150 @@ class HADispatchFloorplan:
 
     # -- dashboard storage ----------------------------------------------------
 
-    async def _async_write_dashboard(self, cards: List[Dict[str, Any]]) -> None:
+    async def _async_write_dashboard(self, cards: List[Dict[str, Any]]) -> bool:
         """Register (or update) the "Home 3D" storage-mode dashboard.
 
         Home Assistant's own lovelace integration keeps two things in
         storage: a small registry of every dashboard it knows about
         (.storage/lovelace_dashboards) and, for each storage-mode dashboard,
         that dashboard's own views/cards config (.storage/lovelace.<url_
-        path>). Both are themselves Store-backed, so this writes them the
-        same way the rest of this integration writes its own state --
-        directly through homeassistant.helpers.storage.Store -- rather than
-        reaching into hass.data["lovelace"]'s live in-memory collections.
+        path>). Both are themselves backed by DictStorageCollection/Store
+        objects that lovelace only *reads* at startup -- writing the files
+        directly (as this integration used to, unconditionally) leaves a
+        freshly created dashboard invisible, and a redeploy onto an
+        already-open one stale, until Home Assistant restarts.
 
-        That is a deliberate shortcut, not an oversight: Home Assistant is
-        not installed in this dev environment (see CLAUDE.md), so the exact
-        shape of those live collections cannot be verified here, and
-        guessing at unstable, version-specific internals is worse than a
-        dashboard that needs one reload to appear. Writing storage directly
-        produces a correct dashboard the next time Home Assistant (or just
-        the frontend/lovelace integration) reloads it -- which a freshly
-        booted demo container does anyway. A follow-up that can test against
-        a real running core should prefer calling the live dashboards
-        collection so an update lands without any reload at all.
+        The fix tries the live path first: reach the running
+        DashboardsCollection through the "lovelace/dashboards/list"
+        websocket handler (lovelace never puts the collection itself in
+        hass.data, only registers commands bound to it), create or update
+        our entry through it exactly as the UI would, then push the actual
+        views/cards onto the live LovelaceStorage object lovelace's own
+        change listener just created. That updates the in-memory cache and
+        fires ``lovelace_updated`` so any open frontend refreshes immediately
+        -- no restart, no reload.
+
+        If any part of that lookup fails -- a renamed attribute, a
+        restructured websocket registry, lovelace not being loaded at all --
+        this falls back to the old direct-Store-write behaviour, now also
+        making a best-effort attempt to register the frontend panel and
+        splice a live dashboard object in directly. Returns whether the
+        dashboard is visible without a restart.
+        """
+        config = build_dashboard_config(cards)
+
+        if await self._async_write_dashboard_live(config):
+            return True
+
+        return await self._async_write_dashboard_files(config)
+
+    async def _async_write_dashboard_live(self, config: Dict[str, Any]) -> bool:
+        """Register/update the dashboard through HA's live lovelace objects.
+
+        Returns True if the dashboard now reflects `config` without needing a
+        restart, False if any step of the live path was unavailable (already
+        logged at WARNING) and the caller should fall back to file writes.
+        """
+        try:
+            from homeassistant.components import websocket_api
+            from homeassistant.components.lovelace.const import LOVELACE_DATA
+        except ImportError as err:
+            _LOGGER.warning(
+                "Lovelace/websocket_api not importable (%s); writing the Home"
+                " 3D dashboard to storage directly -- a Home Assistant"
+                " restart may be needed to see it",
+                err,
+            )
+            return False
+
+        handlers = self.hass.data.get(websocket_api.DOMAIN) or {}
+        registered = handlers.get("lovelace/dashboards/list")
+        if registered is None:
+            _LOGGER.warning(
+                "Could not find the live lovelace dashboards collection (no"
+                " lovelace/dashboards/list websocket handler is registered);"
+                " writing the Home 3D dashboard to storage directly -- a Home"
+                " Assistant restart may be needed to see it"
+            )
+            return False
+
+        handler = inspect.unwrap(registered[0])
+        storage_collection = getattr(
+            getattr(handler, "__self__", None), "storage_collection", None
+        )
+        if storage_collection is None:
+            _LOGGER.warning(
+                "Could not reach the live lovelace dashboards collection from"
+                " its websocket handler; writing the Home 3D dashboard to"
+                " storage directly -- a Home Assistant restart may be needed"
+                " to see it"
+            )
+            return False
+
+        fields = {
+            "title": FLOORPLAN_DASHBOARD_TITLE,
+            "icon": FLOORPLAN_DASHBOARD_ICON,
+            "show_in_sidebar": True,
+            "require_admin": False,
+        }
+
+        existing_id = None
+        for item_id, item in storage_collection.data.items():
+            if (
+                isinstance(item, dict)
+                and item.get("url_path") == FLOORPLAN_DASHBOARD_URL_PATH
+            ):
+                existing_id = item_id
+                break
+
+        try:
+            if existing_id is None:
+                await storage_collection.async_create_item(
+                    {
+                        **fields,
+                        "url_path": FLOORPLAN_DASHBOARD_URL_PATH,
+                        "mode": "storage",
+                    }
+                )
+            else:
+                await storage_collection.async_update_item(existing_id, fields)
+        except Exception as err:  # noqa: BLE001 - any failure here falls back
+            _LOGGER.warning(
+                "Could not register the Home 3D dashboard through the live"
+                " lovelace collection (%s); writing it to storage directly --"
+                " a Home Assistant restart may be needed to see it",
+                err,
+            )
+            return False
+
+        lovelace_data = self.hass.data.get(LOVELACE_DATA)
+        live_dashboard = None
+        if lovelace_data is not None:
+            live_dashboard = getattr(lovelace_data, "dashboards", {}).get(
+                FLOORPLAN_DASHBOARD_URL_PATH
+            )
+
+        if live_dashboard is None:
+            _LOGGER.warning(
+                "Home 3D dashboard entry was registered live, but its live"
+                " config object was not found; a Home Assistant restart may"
+                " be needed to see the latest content"
+            )
+            return False
+
+        await live_dashboard.async_save(config)
+        return True
+
+    async def _async_write_dashboard_files(self, config: Dict[str, Any]) -> bool:
+        """Fallback: write the dashboard straight to storage files.
+
+        Kept for a Home Assistant version where the live lookup above no
+        longer works. Also makes a best-effort attempt to register the panel
+        and splice a live dashboard object into hass.data so the change might
+        still show up without a restart; if that best-effort attempt fails
+        too, the write is still correct -- it will just need one restart (or
+        a lovelace reload) to be picked up, same as this integration's
+        original behaviour.
         """
         registry = await _async_load_or_default(self._dashboards_store, {"items": []})
         items = list(registry.get("items") or [])
@@ -710,6 +833,7 @@ class HADispatchFloorplan:
                 entry = candidate
                 break
 
+        is_new = entry is None
         if entry is None:
             entry = {
                 "id": FLOORPLAN_DASHBOARD_URL_PATH,
@@ -729,7 +853,63 @@ class HADispatchFloorplan:
 
         registry["items"] = items
         await self._dashboards_store.async_save(registry)
-        await self._dashboard_store.async_save({"config": build_dashboard_config(cards)})
+        await self._dashboard_store.async_save({"config": config})
+
+        return await self._async_best_effort_live_panel(entry, config, is_new)
+
+    async def _async_best_effort_live_panel(
+        self, entry: Dict[str, Any], config: Dict[str, Any], is_new: bool
+    ) -> bool:
+        """Try to make the fallback-written dashboard live anyway.
+
+        Best-effort only: this runs after the storage files are already
+        correctly written, so any failure here is swallowed (at DEBUG) --
+        worst case is the pre-existing "needs a restart" behaviour, not a
+        broken deploy.
+        """
+        try:
+            from homeassistant.components import frontend
+            from homeassistant.components.lovelace import dashboard as ll_dashboard
+            from homeassistant.components.lovelace.const import LOVELACE_DATA
+        except ImportError:
+            return False
+
+        try:
+            lovelace_data = self.hass.data.get(LOVELACE_DATA)
+            if lovelace_data is None:
+                return False
+
+            live_dashboard = lovelace_data.dashboards.get(
+                FLOORPLAN_DASHBOARD_URL_PATH
+            )
+            if live_dashboard is None:
+                live_dashboard = ll_dashboard.LovelaceStorage(self.hass, entry)
+                lovelace_data.dashboards[FLOORPLAN_DASHBOARD_URL_PATH] = (
+                    live_dashboard
+                )
+
+            await live_dashboard.async_save(config)
+
+            frontend.async_register_built_in_panel(
+                self.hass,
+                "lovelace",
+                frontend_url_path=FLOORPLAN_DASHBOARD_URL_PATH,
+                sidebar_title=FLOORPLAN_DASHBOARD_TITLE,
+                sidebar_icon=FLOORPLAN_DASHBOARD_ICON,
+                show_in_sidebar=True,
+                require_admin=False,
+                config={"mode": "storage"},
+                update=not is_new,
+            )
+        except Exception as err:  # noqa: BLE001 - best-effort only
+            _LOGGER.debug(
+                "Best-effort live panel registration for the fallback Home 3D"
+                " dashboard write did not work out: %s",
+                err,
+            )
+            return False
+
+        return True
 
     async def _async_load_manifests(
         self, paths: Dict[str, Any]
@@ -783,16 +963,23 @@ class HADispatchFloorplan:
                 "Could not report floorplan deploy %s (%s): %s", job_id, status, err
             )
 
-    def _notify_success(self) -> None:
+    def _notify_success(self, went_live: bool) -> None:
         """An informational heads-up -- no approval needed, unlike consent prompts.
 
         Unlike remote_access.py's consent notifications, nothing here is
         asking the homeowner to decide anything: the deploy already happened.
+        `went_live` says whether the dashboard is already visible; if not
+        (the live lovelace lookup failed and the fallback panel splice did
+        too), the customer is told a restart is what is actually needed
+        rather than left to wonder why tapping the sidebar shows nothing.
         """
+        message = "Your installer just updated your Home 3D dashboard."
+        if not went_live:
+            message += " Restart Home Assistant to see it."
         try:
             persistent_notification.async_create(
                 self.hass,
-                "Your installer just updated your Home 3D dashboard.",
+                message,
                 title="Home 3D dashboard updated",
                 notification_id=FLOORPLAN_NOTIFICATION_ID,
             )

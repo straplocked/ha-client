@@ -504,6 +504,198 @@ class SuccessfulDeployTest(unittest.TestCase):
             self.assertEqual(len(registry["items"]), 1)
 
 
+websocket_api_mod = sys.modules["homeassistant.components.websocket_api"]
+lovelace_const_mod = sys.modules["homeassistant.components.lovelace.const"]
+lovelace_dashboard_mod = sys.modules["homeassistant.components.lovelace.dashboard"]
+frontend_mod = sys.modules["homeassistant.components.frontend"]
+
+
+class FakeDashboardsCollection:
+    """Mimics lovelace's live DashboardsCollection well enough to exercise
+    floorplan.py's create/update path, including the side effect its real
+    change listener has: a LovelaceStorage object appearing in (or being
+    updated in place within) hass.data[LOVELACE_DATA].dashboards."""
+
+    def __init__(self, hass, lovelace_data):
+        self.hass = hass
+        self.lovelace_data = lovelace_data
+        self.data = {}
+        self.create_calls = []
+        self.update_calls = []
+
+    async def async_create_item(self, data):
+        item_id = data["url_path"]
+        item = {"id": item_id, **data}
+        self.data[item_id] = item
+        self.create_calls.append(item)
+        self.lovelace_data.dashboards[item_id] = lovelace_dashboard_mod.LovelaceStorage(
+            self.hass, item
+        )
+        return item
+
+    async def async_update_item(self, item_id, updates):
+        item = dict(self.data[item_id])
+        item.update(updates)
+        self.data[item_id] = item
+        self.update_calls.append(item)
+        # Real lovelace just updates .config on the existing live object.
+        self.lovelace_data.dashboards[item_id].config = item
+        return item
+
+
+class FakeDashboardsCollectionWebsocket:
+    """Stands in for the object whose bound ws_list_item floorplan.py
+    reaches through inspect.unwrap(handler).__self__.storage_collection."""
+
+    def __init__(self, storage_collection):
+        self.storage_collection = storage_collection
+
+    def ws_list_item(self, hass, connection, msg):
+        """Never actually called by these tests -- only its __self__ is."""
+
+
+class FakeLovelaceData:
+    def __init__(self):
+        self.dashboards = {}
+
+
+def _wire_live_lovelace(hass):
+    """Register the live lovelace collection the way lovelace/__init__.py
+    does, so floorplan.py's websocket-handler lookup succeeds."""
+    lovelace_data = FakeLovelaceData()
+    storage_collection = FakeDashboardsCollection(hass, lovelace_data)
+    ws = FakeDashboardsCollectionWebsocket(storage_collection)
+    hass.data[websocket_api_mod.DOMAIN] = {
+        "lovelace/dashboards/list": (ws.ws_list_item, None),
+    }
+    hass.data[lovelace_const_mod.LOVELACE_DATA] = lovelace_data
+    return storage_collection, lovelace_data
+
+
+class LiveDashboardTest(unittest.TestCase):
+    """The fix: a deploy should register/update the dashboard through HA's
+    live lovelace objects so it appears without a restart, falling back to
+    the old direct-Store-write behaviour only if that live path is
+    unreachable."""
+
+    def test_a_new_deploy_registers_through_the_live_collection_with_no_restart_needed(self):
+        notifications.reset()
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[])
+            storage_collection, lovelace_data = _wire_live_lovelace(hass)
+
+            _run(manager._async_run(_job()))
+
+            self.assertEqual(api.reports[-1]["status"], "done")
+
+            self.assertEqual(len(storage_collection.create_calls), 1)
+            item = storage_collection.data["home-3d"]
+            self.assertEqual(item["title"], "Home 3D")
+            self.assertEqual(item["mode"], "storage")
+            self.assertTrue(item["show_in_sidebar"])
+            self.assertFalse(item["require_admin"])
+
+            live_dashboard = lovelace_data.dashboards["home-3d"]
+            self.assertEqual(len(live_dashboard.saved_configs), 1)
+            self.assertIn("views", live_dashboard.saved_configs[-1])
+
+            # The live path worked, so the old direct-Store fallback must
+            # never have run.
+            self.assertIsNone(manager._dashboards_store.data)
+            self.assertIsNone(manager._dashboard_store.data)
+
+            self.assertEqual(len(notifications.created), 1)
+            self.assertNotIn("Restart", notifications.created[0]["message"])
+
+    def test_redeploying_updates_the_live_dashboard_instead_of_creating_a_second_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[])
+            storage_collection, lovelace_data = _wire_live_lovelace(hass)
+
+            _run(manager._async_run(_job(job_id=1)))
+            _run(manager._async_run(_job(job_id=2)))
+
+            self.assertEqual(len(storage_collection.data), 1)
+            self.assertEqual(len(storage_collection.create_calls), 1)
+            self.assertEqual(len(storage_collection.update_calls), 1)
+
+            live_dashboard = lovelace_data.dashboards["home-3d"]
+            self.assertEqual(len(live_dashboard.saved_configs), 2)
+
+    def test_when_the_live_websocket_handler_is_missing_it_falls_back_and_flags_a_restart(self):
+        notifications.reset()
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[])
+            # No websocket handler, no LOVELACE_DATA at all -- the worst case.
+
+            _run(manager._async_run(_job()))
+
+            registry = manager._dashboards_store.data
+            self.assertEqual(registry["items"][0]["url_path"], "home-3d")
+            dashboard = manager._dashboard_store.data
+            self.assertIn("views", dashboard["config"])
+
+            self.assertEqual(len(notifications.created), 1)
+            self.assertIn("Restart Home Assistant to see it", notifications.created[0]["message"])
+
+    def test_when_only_the_websocket_handler_is_missing_the_fallback_still_goes_live(self):
+        # LOVELACE_DATA exists (lovelace is loaded) but, hypothetically, the
+        # lovelace/dashboards/list handler could not be found -- the
+        # best-effort panel splice in the fallback should still manage to
+        # make the dashboard visible without a restart.
+        notifications.reset()
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[])
+            lovelace_data = FakeLovelaceData()
+            hass.data[lovelace_const_mod.LOVELACE_DATA] = lovelace_data
+            frontend_mod.reset()
+
+            _run(manager._async_run(_job()))
+
+            # The old direct-Store write still happened...
+            registry = manager._dashboards_store.data
+            self.assertEqual(registry["items"][0]["url_path"], "home-3d")
+
+            # ...but so did the best-effort live splice.
+            live_dashboard = lovelace_data.dashboards["home-3d"]
+            self.assertEqual(len(live_dashboard.saved_configs), 1)
+            self.assertTrue(frontend_mod.registered_panels)
+            self.assertEqual(
+                frontend_mod.registered_panels[-1]["frontend_url_path"], "home-3d"
+            )
+
+            self.assertEqual(len(notifications.created), 1)
+            self.assertNotIn("Restart", notifications.created[0]["message"])
+
+    def test_a_storage_collection_missing_the_expected_attribute_falls_back_cleanly(self):
+        # A future Home Assistant renames or removes storage_collection off
+        # the websocket handler's __self__ -- the lookup must degrade to the
+        # file fallback rather than raising.
+        notifications.reset()
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[])
+
+            class NoCollectionWebsocket:
+                def ws_list_item(self, hass, connection, msg):
+                    pass
+
+            ws = NoCollectionWebsocket()
+            hass.data[websocket_api_mod.DOMAIN] = {
+                "lovelace/dashboards/list": (ws.ws_list_item, None),
+            }
+
+            _run(manager._async_run(_job()))
+
+            self.assertEqual(api.reports[-1]["status"], "done")
+            registry = manager._dashboards_store.data
+            self.assertEqual(registry["items"][0]["url_path"], "home-3d")
+
+
 class FailedDeployTest(unittest.TestCase):
     def test_a_download_error_is_reported_as_failed_with_no_notification(self):
         notifications.reset()
