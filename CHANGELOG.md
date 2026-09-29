@@ -2,6 +2,19 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.7.3] - 2026-09-29
+
+### Fixed — the Home 3D dashboard needed a Home Assistant restart to appear
+
+Found on the first real deploy: 1.7.2 wrote the dashboard straight into
+Lovelace's storage files, which Home Assistant only reads at startup, so the
+dashboard (and any redeploy onto it) stayed invisible until a restart. Deploys
+now create or update the dashboard through Home Assistant's live dashboards
+collection and save its content through the live dashboard, exactly as the UI
+does, so it appears in the sidebar at once and an open dashboard refreshes in
+place. If those live objects ever cannot be reached, the old storage write is
+kept as a fallback and the deploy notification says a restart is needed.
+
 ## [1.7.2] - 2026-09-29
 
 ### Added — floor plan deploy: the Home 3D dashboard
