@@ -76,34 +76,70 @@ HA_MAP = {
         {
             "entity": "thermostat.den.01",
             "domain": "climate",
+            "cls": "thermostat",
             "room": "Den",
             "floor": "1st Floor",
+            "floor_key": "Floor_1",
             "xy_ft": [-10.0, -5.0],
         },
         {
             "entity": "light_recessed.kitchen.01",
             "domain": "light",
+            "cls": "light_recessed",
             "room": "Kitchen",
             "floor": "1st Floor",
+            "floor_key": "Floor_1",
             "xy_ft": [5.0, -5.0],
         },
     ],
+}
+
+# A floor's exact feet->pixel affine transform, as build.py's
+# render_dashboard_plans/_fit_transform emits it: pixel_x = a*x+b*y+c,
+# pixel_y = d*x+e*y+f. Chosen so it is trivially checkable by hand -- 10
+# pixels per foot, centred on a 400x300 image, no rotation.
+PLAN_TRANSFORM = {
+    "Floor_1": {
+        "a": 10.0, "b": 0.0, "c": 200.0,
+        "d": 0.0, "e": -10.0, "f": 150.0,
+        "image_width_px": 400, "image_height_px": 300,
+    }
 }
 
 BACKPLATE_URL = "https://dispatch.example.com/assets/backplate.png"
 GLB_URL = "https://dispatch.example.com/assets/model.glb"
 HOTSPOTS_URL = "https://dispatch.example.com/assets/hotspots.json"
 HA_MAP_URL = "https://dispatch.example.com/assets/ha_map.json"
+PLAN_TRANSFORM_URL = "https://dispatch.example.com/assets/plan_transform.json"
+PLAN_BACKPLATE_URL = "https://dispatch.example.com/assets/plan_Floor_1.png"
 
 ASSETS = {
     BACKPLATE_URL: b"\x89PNGfakepixels",
     GLB_URL: b"glTFfakemodel",
     HOTSPOTS_URL: json.dumps(HOTSPOTS),
     HA_MAP_URL: json.dumps(HA_MAP),
+    PLAN_TRANSFORM_URL: json.dumps(PLAN_TRANSFORM),
+    PLAN_BACKPLATE_URL: b"\x89PNGfakeplanpixels",
 }
 
 
 def _job(job_id=101, **overrides):
+    job = {
+        "id": job_id,
+        "job_id": "b6b6b6b6-0000-0000-0000-000000000000",
+        "backplate_url": BACKPLATE_URL,
+        "glb_url": GLB_URL,
+        "hotspots_url": HOTSPOTS_URL,
+        "ha_map_url": HA_MAP_URL,
+        "plan_transform_url": PLAN_TRANSFORM_URL,
+        "plan_backplate_urls": {"Floor_1": PLAN_BACKPLATE_URL},
+    }
+    job.update(overrides)
+    return job
+
+
+def _legacy_job(job_id=101, **overrides):
+    """A pre-plan-transform deploy job -- the four original assets only."""
     job = {
         "id": job_id,
         "job_id": "b6b6b6b6-0000-0000-0000-000000000000",
@@ -251,14 +287,18 @@ class EntityMatchingTest(unittest.TestCase):
 class CardBuildingTest(unittest.TestCase):
     def test_room_hotspots_become_labeled_points_regardless_of_entities(self):
         hass = FakeHass(states=[])
-        card = floorplan_mod.build_picture_elements_card(hass, HOTSPOTS, {"devices": []}, "/local/x.png")
+        card = floorplan_mod.build_picture_elements_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/x.png"
+        )
 
         labels = sorted(e["title"] for e in card["elements"] if e["type"] == "icon")
         self.assertEqual(labels, ["Den", "Kitchen"])
 
     def test_a_matched_device_becomes_a_state_icon_bound_to_the_real_entity(self):
         hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
-        card = floorplan_mod.build_picture_elements_card(hass, HOTSPOTS, HA_MAP, "/local/x.png")
+        card = floorplan_mod.build_picture_elements_card(
+            hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/x.png"
+        )
 
         state_icons = [e for e in card["elements"] if e["type"] == "state-icon"]
         self.assertEqual([e["entity"] for e in state_icons], ["climate.den_thermostat"])
@@ -267,7 +307,9 @@ class CardBuildingTest(unittest.TestCase):
         # No light entities exist at all, so the kitchen light in HA_MAP has
         # nothing to bind to and must not appear as a fabricated entity id.
         hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
-        card = floorplan_mod.build_picture_elements_card(hass, HOTSPOTS, HA_MAP, "/local/x.png")
+        card = floorplan_mod.build_picture_elements_card(
+            hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/x.png"
+        )
 
         state_icon_entities = {e["entity"] for e in card["elements"] if e["type"] == "state-icon"}
         self.assertNotIn("light_recessed.kitchen.01", state_icon_entities)
@@ -276,10 +318,109 @@ class CardBuildingTest(unittest.TestCase):
     def test_the_card_references_the_local_backplate_url(self):
         hass = FakeHass(states=[])
         card = floorplan_mod.build_picture_elements_card(
-            hass, HOTSPOTS, {"devices": []}, "/local/ha_dispatch/floorplan/backplate.png"
+            hass, HOTSPOTS["Floor_1"], [], "/local/ha_dispatch/floorplan/backplate.png"
         )
         self.assertEqual(card["type"], "picture-elements")
         self.assertEqual(card["image"], "/local/ha_dispatch/floorplan/backplate.png")
+
+    def test_a_matched_device_gets_a_domain_appropriate_icon(self):
+        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
+        card = floorplan_mod.build_picture_elements_card(
+            hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/x.png"
+        )
+        state_icons = [e for e in card["elements"] if e["type"] == "state-icon"]
+        self.assertEqual(state_icons[0]["icon"], "mdi:thermostat")
+
+    def test_with_no_transform_positions_fall_back_to_the_bounding_box(self):
+        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
+        card = floorplan_mod.build_picture_elements_card(
+            hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/x.png", transform=None
+        )
+        self.assertEqual(card["aspect_ratio"], "8:5")
+        state_icon = [e for e in card["elements"] if e["type"] == "state-icon"][0]
+        # Den's centroid (-10, -5) sits left-of-centre and below-centre of
+        # the Floor_1 hotspot bounding box (x: -15..10, y: -10..0).
+        self.assertLess(float(state_icon["style"]["left"].rstrip("%")), 50.0)
+
+    def test_with_a_transform_positions_use_the_exact_affine_map(self):
+        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
+        transform = PLAN_TRANSFORM["Floor_1"]
+        card = floorplan_mod.build_picture_elements_card(
+            hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/plan.png", transform=transform
+        )
+        self.assertEqual(card["aspect_ratio"], "400:300")
+        state_icon = [e for e in card["elements"] if e["type"] == "state-icon"][0]
+        # Den's device sits at (-10, -5) ft. pixel = (10*-10+200, -10*-5+150)
+        # = (100, 200) on a 400x300 image -> (25.0%, 66.7%).
+        self.assertEqual(state_icon["style"]["left"], "25.0%")
+        self.assertEqual(state_icon["style"]["top"], "66.7%")
+
+    def test_a_second_device_in_the_same_room_is_fanned_out_not_stacked(self):
+        hass = FakeHass(
+            states=[
+                FakeState("light.den_recessed_one", "Den Recessed One"),
+                FakeState("light.den_recessed_two", "Den Recessed Two"),
+            ]
+        )
+        devices = [
+            {"entity": "light_recessed.den.01", "domain": "light", "cls": "light_recessed",
+             "room": "Den", "xy_ft": [-10.0, -5.0]},
+            {"entity": "light_recessed.den.02", "domain": "light", "cls": "light_recessed",
+             "room": "Den", "xy_ft": [-10.0, -5.0]},
+        ]
+        card = floorplan_mod.build_picture_elements_card(
+            hass, [], devices, "/local/plan.png", transform=PLAN_TRANSFORM["Floor_1"]
+        )
+        positions = {(e["style"]["left"], e["style"]["top"]) for e in card["elements"]}
+        self.assertEqual(len(positions), 2)
+
+
+class DashboardCardsTest(unittest.TestCase):
+    def test_hero_card_leads_followed_by_one_plan_card_per_floor(self):
+        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
+        cards = floorplan_mod.build_dashboard_cards(
+            hass, HOTSPOTS, HA_MAP, "/local/hero.png",
+            {"Floor_1": "/local/plan_Floor_1.png"}, PLAN_TRANSFORM,
+        )
+        self.assertEqual(cards[0], {"type": "picture", "image": "/local/hero.png"})
+        self.assertEqual(len(cards), 2)
+        self.assertEqual(cards[1]["type"], "picture-elements")
+        self.assertEqual(cards[1]["image"], "/local/plan_Floor_1.png")
+
+    def test_a_single_floor_with_no_floor_key_still_gets_its_devices(self):
+        # Mirrors a manifest predating floor_key: devices only carry the
+        # human "floor" label. With exactly one hotspots floor that is moot.
+        legacy_map = {"devices": [dict(d) for d in HA_MAP["devices"]]}
+        for d in legacy_map["devices"]:
+            d.pop("floor_key", None)
+        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
+        cards = floorplan_mod.build_dashboard_cards(
+            hass, HOTSPOTS, legacy_map, "/local/hero.png", {}, {}
+        )
+        plan_card = cards[-1]
+        state_icons = [e for e in plan_card["elements"] if e["type"] == "state-icon"]
+        self.assertEqual(len(state_icons), 1)
+
+    def test_with_no_hero_url_the_hero_card_is_omitted(self):
+        hass = FakeHass(states=[])
+        cards = floorplan_mod.build_dashboard_cards(
+            hass, HOTSPOTS, {"devices": []}, None, {"Floor_1": "/local/plan.png"}, {}
+        )
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["type"], "picture-elements")
+
+
+class DashboardConfigTest(unittest.TestCase):
+    def test_the_view_is_a_panel_with_a_single_vertical_stack(self):
+        config = floorplan_mod.build_dashboard_config(
+            [{"type": "picture", "image": "/local/hero.png"}, {"type": "picture-elements"}]
+        )
+        view = config["views"][0]
+        self.assertTrue(view["panel"])
+        self.assertEqual(view["path"], "home-3d")
+        stack = view["cards"][0]
+        self.assertEqual(stack["type"], "vertical-stack")
+        self.assertEqual(len(stack["cards"]), 2)
 
 
 # --- the full deploy pipeline -------------------------------------------------
@@ -301,6 +442,8 @@ class SuccessfulDeployTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(asset_dir, "model.glb")))
             self.assertTrue(os.path.isfile(os.path.join(asset_dir, "hotspots.json")))
             self.assertTrue(os.path.isfile(os.path.join(asset_dir, "ha_map.json")))
+            self.assertTrue(os.path.isfile(os.path.join(asset_dir, "plan_transform.json")))
+            self.assertTrue(os.path.isfile(os.path.join(asset_dir, "plan_Floor_1.png")))
 
             self.assertEqual(len(api.reports), 1)
             self.assertEqual(api.reports[0]["status"], "done")
@@ -313,15 +456,41 @@ class SuccessfulDeployTest(unittest.TestCase):
             self.assertEqual(registry["items"][0]["mode"], "storage")
 
             dashboard = manager._dashboard_store.data
-            card = dashboard["config"]["views"][0]["cards"][0]
-            self.assertEqual(card["type"], "picture-elements")
-            entities = [e["entity"] for e in card["elements"] if e["type"] == "state-icon"]
+            view = dashboard["config"]["views"][0]
+            self.assertTrue(view["panel"])
+            stack = view["cards"][0]
+            self.assertEqual(stack["type"], "vertical-stack")
+            # Hero picture card first, then the one Floor_1 plan card.
+            self.assertEqual(stack["cards"][0]["type"], "picture")
+            plan_card = stack["cards"][1]
+            self.assertEqual(plan_card["type"], "picture-elements")
+            entities = [e["entity"] for e in plan_card["elements"] if e["type"] == "state-icon"]
             self.assertEqual(entities, ["climate.den_thermostat"])
 
             self.assertEqual(len(notifications.created), 1)
             self.assertEqual(notifications.created[0]["notification_id"], const.FLOORPLAN_NOTIFICATION_ID)
 
             self.assertEqual(manager._running, set())
+
+    def test_a_legacy_job_with_no_plan_transform_still_deploys(self):
+        # An older deploy job predating exact per-floor plans: the dashboard
+        # must still come together, using the hero backplate and the old
+        # bounding-box approximation instead of failing the deploy.
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(
+                api, tmp, states=[FakeState("climate.den_thermostat", "Den Thermostat")]
+            )
+
+            _run(manager._async_run(_legacy_job()))
+
+            self.assertEqual(api.reports[-1]["status"], "done")
+            dashboard = manager._dashboard_store.data
+            stack = dashboard["config"]["views"][0]["cards"][0]
+            plan_card = stack["cards"][-1]
+            self.assertEqual(plan_card["image"], "/local/ha_dispatch/floorplan/backplate.png")
+            entities = [e["entity"] for e in plan_card["elements"] if e["type"] == "state-icon"]
+            self.assertEqual(entities, ["climate.den_thermostat"])
 
     def test_redeploying_updates_the_same_dashboard_registry_entry_not_a_second_one(self):
         with tempfile.TemporaryDirectory() as tmp:

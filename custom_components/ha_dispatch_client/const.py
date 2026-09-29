@@ -318,6 +318,14 @@ FLOORPLAN_BACKPLATE_NAME = "backplate.png"
 FLOORPLAN_GLB_NAME = "model.glb"
 FLOORPLAN_HOTSPOTS_NAME = "hotspots.json"
 FLOORPLAN_HA_MAP_NAME = "ha_map.json"
+# The exact feet->pixel affine transform for each level's top-down plan
+# backplate (see pauls-house-3d/pipeline/build.py's render_dashboard_plans).
+# Optional: an older deploy job predating this may not carry one, in which
+# case the dashboard falls back to the old bounding-box approximation.
+FLOORPLAN_PLAN_TRANSFORM_NAME = "plan_transform.json"
+# Local filename for one level's top-down plan render, keyed the same as
+# hotspots.json / plan_transform.json (e.g. "plan_Floor_1.png").
+FLOORPLAN_PLAN_BACKPLATE_NAME_FMT = "plan_{level_key}.png"
 
 # Cap on a single asset download. Generous for a GLB or a high-resolution
 # backplate; exists to bound the damage from a misbehaving or compromised
