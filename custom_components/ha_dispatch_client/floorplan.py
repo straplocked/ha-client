@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -48,6 +49,8 @@ from .const import (
     FLOORPLAN_HOTSPOTS_NAME,
     FLOORPLAN_LOCAL_URL_PREFIX,
     FLOORPLAN_NOTIFICATION_ID,
+    FLOORPLAN_PLAN_BACKPLATE_NAME_FMT,
+    FLOORPLAN_PLAN_TRANSFORM_NAME,
     FLOORPLAN_REPORT_STATUS_DONE,
     FLOORPLAN_REPORT_STATUS_FAILED,
     FLOORPLAN_STORAGE_VERSION,
@@ -175,17 +178,12 @@ def _project(
 ) -> Tuple[float, float]:
     """Map a plan-space (x, y) in feet onto (left%, top%) on the card.
 
-    ASSUMPTION -- undocumented anywhere in the render pipeline, and worth
-    flagging loudly: the backplate used as the card's background is the
-    pipeline's "hero" 3/4-perspective render (build.py's VIEWS[0], az=205
-    elev=38), not its orthographic top-down "05_plan" view. There is no exact
-    linear map from flat plan feet to a perspective image's pixels; a true
-    mapping would need the same camera projection build.py uses to place its
-    cameras, which is out of scope here. This linearly rescales the plan's
-    own bounding box to 0-100% instead. That keeps hotspots and devices
-    positioned consistently with each other and roughly with the floor
-    plan's layout, but not precisely with the perspective backplate
-    underneath -- good enough for a demo, not a finished feature.
+    Fallback only, used when a deploy job carries no plan_transform.json (an
+    older render, or a level whose exact top-down plan render did not come
+    through) -- see _project_exact for the normal path. This linearly
+    rescales the plan's own bounding box to 0-100%, which keeps points
+    consistent with each other but not precisely with whatever backplate
+    image is actually underneath.
 
     Y is flipped on the assumption that a larger plan-y is "further back" in
     a north-up plan and should read toward the top of the card. Not verified
@@ -205,98 +203,265 @@ def _project(
     return round(left, 1), round(top, 1)
 
 
+def _project_exact(x: float, y: float, transform: Dict[str, Any]) -> Tuple[float, float]:
+    """Map a plan-space (x, y) in feet onto (left%, top%) using the render
+    pipeline's own exact affine feet->pixel transform (plan_transform.json;
+    see pauls-house-3d/pipeline/build.py's _fit_transform).
+
+    pixel_x = a*x + b*y + c ; pixel_y = d*x + e*y + f -- solved pipeline-side
+    from the real top-down orthographic camera, so this lands precisely on
+    the plan backplate underneath rather than approximating it.
+    """
+    width = float(transform.get("image_width_px") or 0) or 1.0
+    height = float(transform.get("image_height_px") or 0) or 1.0
+    px = transform.get("a", 0.0) * x + transform.get("b", 0.0) * y + transform.get("c", 0.0)
+    py = transform.get("d", 0.0) * x + transform.get("e", 0.0) * y + transform.get("f", 0.0)
+    left = min(99.0, max(1.0, px / width * 100))
+    top = min(99.0, max(1.0, py / height * 100))
+    return round(left, 1), round(top, 1)
+
+
+# --- device icons -------------------------------------------------------------
+
+# Finer-grained than domain: ha_map.json's `cls` field is the render
+# pipeline's own device class (devices.py's CATALOG), invented from the
+# estimate's line-item description -- e.g. "light_recessed" and
+# "light_chandelier" are both HA domain "light" but should not look
+# identical on the plan. Checked first; `domain` is the fallback for a
+# device whose `cls` is missing (an older manifest) or not in this map.
+_ICON_BY_CLS: Dict[str, str] = {
+    "thermostat": "mdi:thermostat",
+    "camera": "mdi:cctv",
+    "motion": "mdi:motion-sensor",
+    "keypad": "mdi:dialpad",
+    "alarm_panel": "mdi:shield-home",
+    "smoke": "mdi:smoke-detector-variant",
+    "blind": "mdi:blinds",
+    "speaker": "mdi:speaker",
+    "fan": "mdi:fan",
+    "exhaust_fan": "mdi:fan",
+    "light_recessed": "mdi:lightbulb-spot",
+    "light_chandelier": "mdi:chandelier",
+    "light": "mdi:lightbulb",
+    "vent": "mdi:air-filter",
+    "garage_door": "mdi:garage",
+    "doorbell": "mdi:doorbell-video",
+}
+
+_ICON_BY_DOMAIN: Dict[str, str] = {
+    "light": "mdi:lightbulb",
+    "climate": "mdi:thermostat",
+    "camera": "mdi:cctv",
+    "lock": "mdi:lock",
+    "switch": "mdi:toggle-switch",
+    "fan": "mdi:fan",
+    "cover": "mdi:window-shutter",
+    "media_player": "mdi:speaker",
+    "alarm_control_panel": "mdi:shield-home",
+    "binary_sensor": "mdi:motion-sensor",
+    "sensor": "mdi:gauge",
+}
+
+
+def _domain_icon(device: Dict[str, Any]) -> Optional[str]:
+    """A domain-appropriate MDI icon for a device, or None to let the
+    frontend's own entity/domain default stand. Every device reaching this
+    already has a real bound entity (async_match_entity filtered out
+    anything unmatched before this is called), so this is purely cosmetic --
+    it just guarantees a light reads as a bulb and a thermostat reads as a
+    thermostat instead of whichever generic glyph that entity happens to
+    carry.
+    """
+    icon = _ICON_BY_CLS.get(str(device.get("cls") or ""))
+    if icon:
+        return icon
+    return _ICON_BY_DOMAIN.get(str(device.get("domain") or ""))
+
+
 # --- card building ----------------------------------------------------------
 
 
 def build_picture_elements_card(
     hass: HomeAssistant,
-    hotspots_by_floor: Dict[str, List[Dict[str, Any]]],
-    ha_map: Dict[str, Any],
+    rooms: List[Dict[str, Any]],
+    devices: List[Dict[str, Any]],
     image_url: str,
+    transform: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build the picture-elements card: backplate, room labels, device icons.
+    """Build one floor's picture-elements card: plan backplate, room labels,
+    device icons.
+
+    `transform`, when given, is that floor's exact plan_transform.json entry
+    -- feet map onto the backplate's own pixels exactly, because it is a real
+    top-down orthographic render of the same scene. With no transform (an
+    older deploy job, or a level whose dashboard plan render did not come
+    through) this falls back to linearly rescaling the floor's own hotspot
+    bounding box.
 
     Room hotspots have no entity behind them, so each degrades to a labeled
     point at its centroid -- an icon element with a tooltip title, coloured
     with a theme variable rather than a hard-coded hex so it reads in both
     light and dark companion-app themes. Devices use `state-icon`, which
     already reflects the bound entity's state and colour per the active
-    theme, so no extra styling is needed there.
+    theme; an explicit domain-appropriate `icon` is layered on top so every
+    device reads as its own kind of thing rather than one generic glyph.
     """
-    bounds = _bounding_box(hotspots_by_floor)
+    bounds: Optional[Tuple[float, float, float, float]] = None
+    if transform is None:
+        bounds = _bounding_box({"_": rooms})
+        if bounds is None:
+            _LOGGER.warning(
+                "Floorplan floor carried no usable coordinates; card has no elements"
+            )
+            return {"type": "picture-elements", "image": image_url,
+                    "aspect_ratio": "8:5", "elements": []}
+
+    def project(x: float, y: float) -> Tuple[float, float]:
+        if transform is not None:
+            return _project_exact(x, y, transform)
+        assert bounds is not None
+        return _project(x, y, bounds)
+
     elements: List[Dict[str, Any]] = []
 
-    if bounds is not None:
-        for rooms in hotspots_by_floor.values():
-            if not isinstance(rooms, list):
-                continue
-            for room in rooms:
-                if not isinstance(room, dict):
-                    continue
-                centroid = room.get("centroid")
-                name = room.get("name")
-                if not centroid or len(centroid) < 2 or not name:
-                    continue
-                left, top = _project(centroid[0], centroid[1], bounds)
-                elements.append(
-                    {
-                        "type": "icon",
-                        "icon": "mdi:floor-plan",
-                        "title": str(name),
-                        "style": {
-                            "top": f"{top}%",
-                            "left": f"{left}%",
-                            "color": "var(--primary-text-color)",
-                            "--mdc-icon-size": "20px",
-                        },
-                    }
-                )
+    for room in rooms:
+        if not isinstance(room, dict):
+            continue
+        centroid = room.get("centroid")
+        name = room.get("name")
+        if not centroid or len(centroid) < 2 or not name:
+            continue
+        left, top = project(centroid[0], centroid[1])
+        elements.append(
+            {
+                "type": "icon",
+                "icon": "mdi:floor-plan",
+                "title": str(name),
+                "style": {
+                    "top": f"{top}%",
+                    "left": f"{left}%",
+                    "color": "var(--primary-text-color)",
+                    "--mdc-icon-size": "20px",
+                },
+            }
+        )
 
-        for device in ha_map.get("devices") or []:
-            if not isinstance(device, dict):
-                continue
-            xy = device.get("xy_ft")
-            if not xy or len(xy) < 2:
-                continue
+    # Multiple devices in one room are anchored to the same plan label (see
+    # ha-dispatch's SKILL.md, "Anchor to the plan LABEL, not a room cell"), so
+    # without some spread every icon in a room stacks exactly on top of the
+    # first. Fan later ones out a little -- the same polar jitter build.py
+    # uses for the 3D empties -- so the first device in a room keeps its
+    # exact anchor and the rest read as separate icons.
+    room_seen: Dict[str, int] = {}
 
-            entity_id = async_match_entity(hass, device)
-            if entity_id is None:
-                _LOGGER.debug(
-                    "No matching entity for floorplan device %s in %s; skipping",
-                    device.get("entity"),
-                    device.get("room"),
-                )
-                continue
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        xy = device.get("xy_ft")
+        if not xy or len(xy) < 2:
+            continue
 
-            left, top = _project(xy[0], xy[1], bounds)
-            elements.append(
-                {
-                    "type": "state-icon",
-                    "entity": entity_id,
-                    "style": {
-                        "top": f"{top}%",
-                        "left": f"{left}%",
-                    },
-                    "tap_action": {"action": "more-info"},
-                }
+        entity_id = async_match_entity(hass, device)
+        if entity_id is None:
+            _LOGGER.debug(
+                "No matching entity for floorplan device %s in %s; skipping",
+                device.get("entity"),
+                device.get("room"),
             )
-    else:
-        _LOGGER.warning("Floorplan hotspots carried no usable coordinates; card has no elements")
+            continue
+
+        room_name = str(device.get("room") or "")
+        idx = room_seen.get(room_name, 0)
+        room_seen[room_name] = idx + 1
+        x, y = float(xy[0]), float(xy[1])
+        if idx:
+            angle, radius = 2.4 * idx, 0.8 + 0.5 * idx
+            x += math.cos(angle) * radius
+            y += math.sin(angle) * radius
+
+        left, top = project(x, y)
+        element: Dict[str, Any] = {
+            "type": "state-icon",
+            "entity": entity_id,
+            "style": {
+                "top": f"{top}%",
+                "left": f"{left}%",
+            },
+            "tap_action": {"action": "more-info"},
+        }
+        icon = _domain_icon(device)
+        if icon:
+            element["icon"] = icon
+        elements.append(element)
+
+    aspect_ratio = "8:5"
+    if transform is not None:
+        w, h = transform.get("image_width_px"), transform.get("image_height_px")
+        if w and h:
+            aspect_ratio = f"{int(w)}:{int(h)}"
 
     return {
         "type": "picture-elements",
         "image": image_url,
-        # 8:5 matches the render pipeline's 1600x1000 output (build.py's
-        # RES). A fixed ratio keeps the hotspot/device percentages meaningful
-        # and keeps the card from rendering tall and narrow on a phone-width
-        # companion-app view. Sizing is not verified on an actual tablet.
-        "aspect_ratio": "8:5",
+        "aspect_ratio": aspect_ratio,
         "elements": elements,
     }
 
 
-def build_dashboard_config(card: Dict[str, Any]) -> Dict[str, Any]:
-    """The dashboard's views/cards config, as Lovelace storage mode expects it."""
+def build_dashboard_cards(
+    hass: HomeAssistant,
+    hotspots_by_floor: Dict[str, List[Dict[str, Any]]],
+    ha_map: Dict[str, Any],
+    hero_image_url: Optional[str],
+    plan_image_urls: Dict[str, str],
+    plan_transform: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """The full stack of cards for the Home 3D view: the angled hero render
+    on top (eye candy -- no exact coordinate map), then one top-down plan
+    card per floor with the real room labels and device icons.
+
+    Devices are assigned to a floor by ha_map.json's `floor_key` (matches
+    hotspots.json's own keys exactly) when present. An older manifest that
+    predates `floor_key` only carries a human label ("1st Floor") that will
+    not match a hotspots key directly; with exactly one floor that mismatch
+    does not matter, so that case falls back to "every device belongs to the
+    one floor there is" rather than silently dropping every device.
+    """
+    devices = [d for d in (ha_map.get("devices") or []) if isinstance(d, dict)]
+    floor_keys = [k for k, v in hotspots_by_floor.items() if isinstance(v, list)]
+    single_floor = len(floor_keys) == 1
+
+    cards: List[Dict[str, Any]] = []
+    if hero_image_url:
+        cards.append({"type": "picture", "image": hero_image_url})
+
+    for key in floor_keys:
+        rooms = hotspots_by_floor.get(key) or []
+        image_url = plan_image_urls.get(key) or hero_image_url
+        if not image_url:
+            _LOGGER.warning("No backplate available for floor %s; skipping its card", key)
+            continue
+
+        floor_devices = devices if single_floor else [
+            d for d in devices if d.get("floor_key") == key
+        ]
+
+        transform = plan_transform.get(key) if isinstance(plan_transform, dict) else None
+        cards.append(
+            build_picture_elements_card(hass, rooms, floor_devices, image_url, transform)
+        )
+
+    return cards
+
+
+def build_dashboard_config(cards: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The dashboard's views/cards config, as Lovelace storage mode expects it.
+
+    One panel view -- full width, no dashboard chrome -- tablet-first: the
+    plan card(s) fill the screen instead of sharing it with sidebar/header
+    furniture. `panel: true` only ever shows a single card, so every card
+    (hero + one per floor) is wrapped in one vertical-stack.
+    """
     return {
         "title": FLOORPLAN_DASHBOARD_TITLE,
         "views": [
@@ -304,7 +469,8 @@ def build_dashboard_config(card: Dict[str, Any]) -> Dict[str, Any]:
                 "title": FLOORPLAN_DASHBOARD_TITLE,
                 "path": FLOORPLAN_DASHBOARD_URL_PATH,
                 "icon": FLOORPLAN_DASHBOARD_ICON,
-                "cards": [card],
+                "panel": True,
+                "cards": [{"type": "vertical-stack", "cards": cards}],
             }
         ],
     }
@@ -423,11 +589,16 @@ class HADispatchFloorplan:
 
         try:
             paths = await self._async_download_assets(job)
-            hotspots, ha_map = await self._async_load_manifests(paths)
-            card = build_picture_elements_card(
-                self.hass, hotspots, ha_map, paths["image_url"]
+            hotspots, ha_map, plan_transform = await self._async_load_manifests(paths)
+            cards = build_dashboard_cards(
+                self.hass,
+                hotspots,
+                ha_map,
+                paths["image_url"],
+                paths.get("plan_image_urls") or {},
+                plan_transform,
             )
-            await self._async_write_dashboard(card)
+            await self._async_write_dashboard(cards)
         except Exception as err:  # noqa: BLE001 - always report, never crash the poll loop
             _LOGGER.error("Floorplan deploy %s failed: %s", job_id, err)
             await self._async_report(job_id, FLOORPLAN_REPORT_STATUS_FAILED, str(err))
@@ -444,11 +615,18 @@ class HADispatchFloorplan:
     # -- applying one job -------------------------------------------------
 
     async def _async_download_assets(self, job: Dict[str, Any]) -> Dict[str, Any]:
-        """Download the four assets into /config/www/ha_dispatch/floorplan/."""
+        """Download this job's assets into /config/www/ha_dispatch/floorplan/.
+
+        Four are required (unchanged contract): the hero backplate, the GLB,
+        and the two manifests. Two more are optional, downloaded best-effort
+        -- an older deploy job predating exact per-floor plans simply lacks
+        them, and the dashboard falls back to the hero backplate plus a
+        bounding-box approximation rather than failing the whole deploy.
+        """
         directory = Path(self.hass.config.path(*FLOORPLAN_ASSET_DIR))
         await self.hass.async_add_executor_job(_ensure_dir, directory)
 
-        downloads = (
+        required = (
             ("backplate_url", FLOORPLAN_BACKPLATE_NAME, "backplate"),
             ("glb_url", FLOORPLAN_GLB_NAME, "glb"),
             ("hotspots_url", FLOORPLAN_HOTSPOTS_NAME, "hotspots"),
@@ -456,7 +634,7 @@ class HADispatchFloorplan:
         )
 
         paths: Dict[str, Any] = {}
-        for url_key, filename, result_key in downloads:
+        for url_key, filename, result_key in required:
             url = job.get(url_key)
             if not url:
                 raise FloorplanApplyError(f"Deploy job carried no {url_key}")
@@ -465,11 +643,39 @@ class HADispatchFloorplan:
             paths[result_key] = dest
 
         paths["image_url"] = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{FLOORPLAN_BACKPLATE_NAME}"
+
+        transform_url = job.get("plan_transform_url")
+        if transform_url:
+            dest = directory / FLOORPLAN_PLAN_TRANSFORM_NAME
+            try:
+                await self.api.download_floorplan_asset(transform_url, dest)
+                paths["plan_transform"] = dest
+            except (aiohttp.ClientError, TimeoutError, OSError) as err:
+                _LOGGER.warning("Could not download plan_transform.json: %s", err)
+
+        plan_image_urls: Dict[str, str] = {}
+        plan_backplate_urls = job.get("plan_backplate_urls")
+        if isinstance(plan_backplate_urls, dict):
+            for level_key, url in plan_backplate_urls.items():
+                if not url:
+                    continue
+                filename = FLOORPLAN_PLAN_BACKPLATE_NAME_FMT.format(level_key=level_key)
+                dest = directory / filename
+                try:
+                    await self.api.download_floorplan_asset(url, dest)
+                except (aiohttp.ClientError, TimeoutError, OSError) as err:
+                    _LOGGER.warning(
+                        "Could not download plan backplate for %s: %s", level_key, err
+                    )
+                    continue
+                plan_image_urls[level_key] = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{filename}"
+        paths["plan_image_urls"] = plan_image_urls
+
         return paths
 
     # -- dashboard storage ----------------------------------------------------
 
-    async def _async_write_dashboard(self, card: Dict[str, Any]) -> None:
+    async def _async_write_dashboard(self, cards: List[Dict[str, Any]]) -> None:
         """Register (or update) the "Home 3D" storage-mode dashboard.
 
         Home Assistant's own lovelace integration keeps two things in
@@ -523,12 +729,17 @@ class HADispatchFloorplan:
 
         registry["items"] = items
         await self._dashboards_store.async_save(registry)
-        await self._dashboard_store.async_save({"config": build_dashboard_config(card)})
+        await self._dashboard_store.async_save({"config": build_dashboard_config(cards)})
 
     async def _async_load_manifests(
         self, paths: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Read the two downloaded JSON manifests, off the event loop."""
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        """Read the downloaded JSON manifests, off the event loop.
+
+        plan_transform.json is optional (see _async_download_assets); a
+        missing or unreadable one degrades to an empty dict, which
+        build_dashboard_cards treats as "no exact transform for any floor".
+        """
         try:
             hotspots = await self.hass.async_add_executor_job(_read_json, paths["hotspots"])
             ha_map = await self.hass.async_add_executor_job(_read_json, paths["ha_map"])
@@ -540,7 +751,17 @@ class HADispatchFloorplan:
         if not isinstance(ha_map, dict):
             raise FloorplanApplyError("ha_map.json did not contain a device map")
 
-        return hotspots, ha_map
+        plan_transform: Dict[str, Any] = {}
+        transform_path = paths.get("plan_transform")
+        if transform_path is not None:
+            try:
+                loaded = await self.hass.async_add_executor_job(_read_json, transform_path)
+                if isinstance(loaded, dict):
+                    plan_transform = loaded
+            except _SOFT_ERRORS as err:
+                _LOGGER.warning("Could not read plan_transform.json: %s", err)
+
+        return hotspots, ha_map, plan_transform
 
     # -- reporting ----------------------------------------------------------
 
@@ -593,6 +814,7 @@ __all__ = [
     "HADispatchFloorplan",
     "async_all_managers",
     "async_match_entity",
+    "build_dashboard_cards",
     "build_dashboard_config",
     "build_picture_elements_card",
 ]
