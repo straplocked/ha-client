@@ -220,6 +220,69 @@ async def _async_get_custom_components(hass):
     return {}
 
 
+def _install_websocket_api(components):
+    """The websocket command registry key, for floorplan.py's live lookup.
+
+    Real Home Assistant keys hass.data[websocket_api.DOMAIN] with every
+    registered command; tests populate that dict themselves per-case, this
+    just needs DOMAIN to exist and match.
+    """
+    module = _module("homeassistant.components.websocket_api")
+    components.websocket_api = module
+    _set_missing(module, DOMAIN="websocket_api")
+
+
+def _install_lovelace(components):
+    """lovelace's LOVELACE_DATA key and a minimal LovelaceStorage stand-in.
+
+    floorplan.py reaches into these directly to update a dashboard's live
+    config without a restart; kept minimal since the real classes are
+    exercised by Home Assistant's own test suite, not ours.
+    """
+    package = _module("homeassistant.components.lovelace")
+    components.lovelace = package
+
+    const_module = _module("homeassistant.components.lovelace.const")
+    package.const = const_module
+    _set_missing(const_module, LOVELACE_DATA="lovelace_data")
+
+    dashboard_module = _module("homeassistant.components.lovelace.dashboard")
+    package.dashboard = dashboard_module
+
+    class _LovelaceStorage:
+        """Stands in for the real LovelaceStorage's config-caching Store."""
+
+        def __init__(self, hass, config):
+            self.hass = hass
+            self.config = config
+            self.saved_configs = []
+
+        async def async_save(self, config):
+            self.saved_configs.append(config)
+
+    _set_missing(dashboard_module, LovelaceStorage=_LovelaceStorage)
+
+
+def _install_frontend(components):
+    """frontend.async_register_built_in_panel, recording what it is told."""
+    module = _module("homeassistant.components.frontend")
+    components.frontend = module
+
+    if hasattr(module, "registered_panels"):
+        return
+
+    module.registered_panels = []
+
+    def async_register_built_in_panel(hass, component_name, **kwargs):
+        module.registered_panels.append({"component_name": component_name, **kwargs})
+
+    def reset():
+        module.registered_panels.clear()
+
+    module.async_register_built_in_panel = async_register_built_in_panel
+    module.reset = reset
+
+
 def _install_hassio(components):
     """Supervisor helpers, answering the way a Core-only install does.
 
@@ -273,6 +336,9 @@ def install_stubs() -> None:
     components = _module("homeassistant.components")
     _install_persistent_notification(components)
     _install_hassio(components)
+    _install_websocket_api(components)
+    _install_lovelace(components)
+    _install_frontend(components)
 
     binary_sensor = _module("homeassistant.components.binary_sensor")
     _set_missing(
