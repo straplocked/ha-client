@@ -335,7 +335,14 @@ FLOORPLAN_DASHBOARD_URL_PATH = "home-3d"
 FLOORPLAN_DASHBOARD_TITLE = "Home 3D"
 FLOORPLAN_DASHBOARD_ICON = "mdi:home-modern"
 FLOORPLAN_DASHBOARDS_STORAGE_KEY = "lovelace_dashboards"
-FLOORPLAN_DASHBOARD_STORAGE_KEY = "lovelace.home_3d"
+# Must match FLOORPLAN_DASHBOARD_URL_PATH exactly: Home Assistant's own
+# lovelace/dashboard.py formats this as CONFIG_STORAGE_KEY.format(item["id"]),
+# and the dashboard's "id" *is* its url_path ("home-3d", hyphen) -- writing
+# "lovelace.home_3d" (underscore) here left the dashboard registered with no
+# card config Home Assistant could ever find, confirmed against a real
+# throwaway core (the panel never registered at all, presumably because the
+# registry item this key is namespaced under never resolved consistently).
+FLOORPLAN_DASHBOARD_STORAGE_KEY = f"lovelace.{FLOORPLAN_DASHBOARD_URL_PATH}"
 FLOORPLAN_STORAGE_VERSION = 1
 
 FLOORPLAN_NOTIFICATION_ID = f"{DOMAIN}_floorplan"
