@@ -88,6 +88,10 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         # wires it, so a coordinator built without one never polls for updates.
         self.updates = None
 
+        # Floorplan deploy. Same arrangement again: absent unless setup wires
+        # it, so a coordinator built without one never polls for a deploy.
+        self.floorplan = None
+
         # Component inventory. Reported on its own slow cadence rather than on
         # every metrics poll: versions change rarely, and the fleet's
         # attribution window is two hours wide. None means "never reported",
@@ -158,6 +162,11 @@ class HADispatchCoordinator(DataUpdateCoordinator):
             # raise, for the same reason.
             if self.updates is not None:
                 await self.updates.async_poll_pending()
+
+            # A pending floorplan deploy rides the same cadence too, and is
+            # just as unable to raise.
+            if self.floorplan is not None:
+                await self.floorplan.async_poll_pending()
 
             # Return combined data for sensors
             return {

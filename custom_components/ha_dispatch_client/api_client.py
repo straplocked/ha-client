@@ -11,9 +11,13 @@ from .const import (
     API_ACCESS_RESPOND,
     API_ACCESS_REVOKE,
     API_COMPONENTS,
+    API_FLOORPLAN_PENDING,
+    API_FLOORPLAN_REPORT,
     API_UPDATES_PENDING,
     API_UPDATES_REPORT,
     ACCESS_POLL_TIMEOUT,
+    FLOORPLAN_DOWNLOAD_CHUNK_BYTES,
+    FLOORPLAN_MAX_ASSET_BYTES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,6 +79,15 @@ class RemoteUpdatesUnavailable(Exception):
     remote updates answers 404 for every /updates/ path while the installation
     is perfectly healthy, and treating that as "the server has forgotten us"
     would re-enrol a working installation forever.
+    """
+
+
+class FloorplanUnavailable(Exception):
+    """Raised when this server does not offer the floorplan deploy endpoints.
+
+    Like RemoteUpdatesUnavailable and RemoteAccessUnavailable, and for the
+    same reason: a server predating this feature answers 404 for every
+    /floorplan/ path while the installation itself is perfectly healthy.
     """
 
 
@@ -647,4 +660,92 @@ class HADispatchApiClient:
                 )
             await self._raise_for_status(response, installation_scoped=False)
             return await response.json()
+
+    # --- Floorplan deploy ---------------------------------------------------
+    #
+    # A 404 on a /floorplan/ path means the server has no floorplan deploy
+    # feature, not that this installation has vanished -- see
+    # FloorplanUnavailable.
+
+    async def fetch_pending_floorplan(
+        self, installation_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch the floorplan deploy job waiting for this installation.
+
+        A 204 means nothing is pending, the same convention as
+        fetch_configuration. Otherwise the body is the job itself: id,
+        job_id, and the four asset URLs.
+        """
+        url = self.server_url + API_FLOORPLAN_PENDING.format(
+            installation_id=installation_id
+        )
+
+        async with self.session.get(url, headers=self._get_headers()) as response:
+            if response.status == 404:
+                raise FloorplanUnavailable(
+                    f"Server has no floorplan deploy endpoint at {response.url}"
+                )
+            if response.status == 204:
+                return None
+            await self._raise_for_status(response, installation_scoped=False)
+            payload = await response.json()
+            return payload or None
+
+    async def report_floorplan(
+        self,
+        installation_id: str,
+        job_id: Any,
+        status: str,
+        detail: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Report the outcome of applying a floorplan deploy.
+
+        status is "done" or "failed", sent verbatim. detail is a short
+        human-readable note -- what got deployed, or why it did not.
+        """
+        url = self.server_url + API_FLOORPLAN_REPORT.format(
+            installation_id=installation_id, id=job_id
+        )
+        data: Dict[str, Any] = {"status": status}
+        if detail:
+            data["detail"] = str(detail)[:2000]
+
+        _LOGGER.debug("Reporting floorplan deploy %s: status=%s", job_id, status)
+        async with self.session.post(
+            url, json=data, headers=self._get_headers()
+        ) as response:
+            if response.status == 404:
+                raise FloorplanUnavailable(
+                    f"Server has no floorplan deploy endpoint at {response.url}"
+                )
+            await self._raise_for_status(response, installation_scoped=False)
+            return await response.json()
+
+    async def download_floorplan_asset(self, url: str, dest_path: Any) -> int:
+        """Stream one authenticated floorplan asset to a local file.
+
+        Unlike a self-update archive (updater.py), these assets live on the
+        same Dispatch server as every other v1 call, so the installation's
+        bearer token goes with the request. Streamed in fixed-size chunks
+        rather than buffered whole in memory -- a GLB or a full-resolution
+        backplate can be tens of megabytes -- and capped so a misbehaving or
+        compromised server cannot make this agent fill the disk.
+
+        Returns the number of bytes written.
+        """
+        written = 0
+        async with self.session.get(url, headers=self._get_headers()) as response:
+            await self._raise_for_status(response, installation_scoped=False)
+            with open(dest_path, "wb") as handle:
+                async for chunk in response.content.iter_chunked(
+                    FLOORPLAN_DOWNLOAD_CHUNK_BYTES
+                ):
+                    written += len(chunk)
+                    if written > FLOORPLAN_MAX_ASSET_BYTES:
+                        raise ValueError(
+                            f"Floorplan asset from {url} exceeded "
+                            f"{FLOORPLAN_MAX_ASSET_BYTES} bytes; aborted"
+                        )
+                    handle.write(chunk)
+        return written
 

@@ -17,6 +17,7 @@ from .const import (
 )
 from .api_client import HADispatchApiClient
 from .coordinator import HADispatchCoordinator
+from .floorplan import HADispatchFloorplan
 from .remote_access import (
     HADispatchRemoteAccess,
     async_all_managers,
@@ -496,6 +497,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     updates = HADispatchUpdates(hass, coordinator)
     coordinator.updates = updates
     await updates.async_load()
+
+    # Floorplan deploy: a technician's uploaded floor plan, rendered
+    # server-side into a GLB model and backplate renders, turned here into a
+    # "Home 3D" Lovelace dashboard. Same cadence as remote access and remote
+    # updates above, and just as unable to raise.
+    floorplan = HADispatchFloorplan(hass, coordinator)
+    coordinator.floorplan = floorplan
 
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()

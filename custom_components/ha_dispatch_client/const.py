@@ -56,6 +56,10 @@ API_UPDATES_PENDING = "/api/v1/installations/{installation_id}/updates/pending"
 API_UPDATES_REPORT = (
     "/api/v1/installations/{installation_id}/updates/{run_id}/report"
 )
+API_FLOORPLAN_PENDING = "/api/v1/installations/{installation_id}/floorplan/pending"
+API_FLOORPLAN_REPORT = (
+    "/api/v1/installations/{installation_id}/floorplan/{id}/report"
+)
 
 # --- Component inventory ----------------------------------------------------
 # Full design: docs/technical/component-inventory.md
@@ -289,6 +293,59 @@ UPDATE_RUN_STORAGE_VERSION = 1
 # How long a single relayed update phase may take against the Supervisor. A full
 # backup of a large system is slow, so this is generous.
 UPDATE_RUN_OPERATION_TIMEOUT = 1800
+
+# --- Floorplan deploy --------------------------------------------------------
+# A technician uploads a floor-plan sketch to HA Dispatch; a render pipeline
+# there (not this agent's concern) turns it into a GLB 3D model, backplate
+# renders, a room hotspot map, and a device-to-room placement map. This
+# agent's job is narrow: notice a pending deploy, pull the four assets down,
+# and turn them into a "Home 3D" Lovelace dashboard. Modelled on the remote
+# updates polling shape (updates.py), not tunnel.py's live relay -- a deploy
+# is a multi-step background job, not a request Dispatch is waiting on
+# synchronously.
+
+FLOORPLAN_REPORT_STATUS_DONE = "done"
+FLOORPLAN_REPORT_STATUS_FAILED = "failed"
+
+# Where the downloaded assets land, relative to the Home Assistant config
+# directory. Under www/ on purpose -- that is the one config subdirectory
+# Home Assistant serves back out over HTTP, at /local/..., which is what the
+# Lovelace card's image URLs reference.
+FLOORPLAN_ASSET_DIR = ("www", "ha_dispatch", "floorplan")
+FLOORPLAN_LOCAL_URL_PREFIX = "/local/ha_dispatch/floorplan"
+
+FLOORPLAN_BACKPLATE_NAME = "backplate.png"
+FLOORPLAN_GLB_NAME = "model.glb"
+FLOORPLAN_HOTSPOTS_NAME = "hotspots.json"
+FLOORPLAN_HA_MAP_NAME = "ha_map.json"
+
+# Cap on a single asset download. Generous for a GLB or a high-resolution
+# backplate; exists to bound the damage from a misbehaving or compromised
+# server rather than to be tuned, same spirit as the self-update archive caps
+# in updater.py.
+FLOORPLAN_MAX_ASSET_BYTES = 200 * 1024 * 1024
+FLOORPLAN_DOWNLOAD_CHUNK_BYTES = 65536
+
+# The storage-mode dashboard this agent creates or updates. Written directly
+# via homeassistant.helpers.storage.Store -- the same helper this integration
+# already uses for its own state -- rather than through hass.data["lovelace"]'s
+# live collections, whose shape cannot be verified without a real, installed
+# Home Assistant core. See floorplan.py for the reasoning.
+FLOORPLAN_DASHBOARD_URL_PATH = "home-3d"
+FLOORPLAN_DASHBOARD_TITLE = "Home 3D"
+FLOORPLAN_DASHBOARD_ICON = "mdi:home-modern"
+FLOORPLAN_DASHBOARDS_STORAGE_KEY = "lovelace_dashboards"
+# Must match FLOORPLAN_DASHBOARD_URL_PATH exactly: Home Assistant's own
+# lovelace/dashboard.py formats this as CONFIG_STORAGE_KEY.format(item["id"]),
+# and the dashboard's "id" *is* its url_path ("home-3d", hyphen) -- writing
+# "lovelace.home_3d" (underscore) here left the dashboard registered with no
+# card config Home Assistant could ever find, confirmed against a real
+# throwaway core (the panel never registered at all, presumably because the
+# registry item this key is namespaced under never resolved consistently).
+FLOORPLAN_DASHBOARD_STORAGE_KEY = f"lovelace.{FLOORPLAN_DASHBOARD_URL_PATH}"
+FLOORPLAN_STORAGE_VERSION = 1
+
+FLOORPLAN_NOTIFICATION_ID = f"{DOMAIN}_floorplan"
 
 # Entity keys
 BINARY_SENSOR_PENDING_CONSENT = "pending_consent"
