@@ -2,6 +2,23 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.7.2] - 2026-09-29
+
+### Added — floor plan deploy: the Home 3D dashboard
+
+- **`floorplan.deploy` command.** With the homeowner's enhanced permissions
+  opt-in granted on the Dispatch side, the installer can push a rendered floor
+  plan to this Home Assistant without a per-deploy prompt. The client downloads
+  the render assets into `/config/www/ha_dispatch/floorplan/` and creates or
+  updates a storage-mode **Home 3D** dashboard, then raises an informational
+  persistent notification saying what was deployed.
+- **Tablet-first layout.** One panel view: the 3D hero render on top, then a
+  top-down plan per floor. Devices are placed with the exact plan-to-pixel
+  transform the renderer writes (`plan_transform.json`), use domain-appropriate
+  icons, and are bound to real entities; devices with no matching entity are
+  skipped rather than drawn as dead glyphs. Older jobs without a transform fall
+  back to the previous approximation.
+
 ## [1.7.1] - 2026-09-21
 
 ### Fixed — remote updates called a service that no longer exists
