@@ -1,11 +1,14 @@
 """Floor-plan deploy: render pipeline output, turned into a Lovelace dashboard.
 
 A technician uploads a floor-plan sketch to HA Dispatch. A render pipeline
-there (out of scope here, and built by a different agent) turns it into a GLB
-3D model, a handful of PNG "backplate" renders, a hotspots.json describing
-each room as a polygon, and a ha_map.json placing devices in those rooms. This
-module is the last leg: notice the job, pull the four assets down, and turn
-them into a "Home 3D" Lovelace dashboard a homeowner can actually tap on.
+there (out of scope here, and built by a different agent) turns it into one
+top-down PNG plan per floor with an exact feet->pixel transform, a
+hotspots.json describing each room as a polygon, and a ha_map.json placing
+devices in those rooms. This module is the last leg: notice the job, pull
+those assets down, and turn them into a "Home 3D" Lovelace dashboard -- one
+view per floor -- a homeowner can actually tap on. The pipeline's 3D model
+and angled hero render are for the installer's preview on the Dispatch side
+and are not part of a deploy.
 
 Modelled on updates.py's polling shape, not tunnel.py's live-request relay: a
 floorplan deploy is a multi-step background job (download, write files, build
@@ -14,7 +17,8 @@ a dashboard, confirm), not a request Dispatch is waiting on synchronously.
 ha_map.json's device slugs (e.g. `thermostat.great_room.01`) are invented by
 the render pipeline from an insurance estimate line item -- they are HA-style
 slugs, not real Home Assistant entity ids. Every device is resolved against
-this installation's actual entities by a fuzzy match on domain and room name;
+this installation's actual entities by domain, then by the room name against
+the entity's name and the Area it is filed under (see async_match_entity);
 anything with no confident match is left off the dashboard rather than
 fabricated onto it, per the rule: device icons bound to real entities where a
 matching entity exists, skip the ones that don't.
@@ -45,7 +49,6 @@ from .const import (
     FLOORPLAN_DASHBOARD_TITLE,
     FLOORPLAN_DASHBOARD_URL_PATH,
     FLOORPLAN_DASHBOARDS_STORAGE_KEY,
-    FLOORPLAN_GLB_NAME,
     FLOORPLAN_HA_MAP_NAME,
     FLOORPLAN_HOTSPOTS_NAME,
     FLOORPLAN_LOCAL_URL_PREFIX,
@@ -87,7 +90,64 @@ def _tokens(text: Any) -> set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", str(text or "").lower()) if token}
 
 
-def async_match_entity(hass: HomeAssistant, device: Dict[str, Any]) -> Optional[str]:
+def area_tokens_by_entity(hass: HomeAssistant) -> Dict[str, set[str]]:
+    """Each registered entity's Area name, as word tokens, keyed by entity id.
+
+    The first real deploy (Paul's house) put no device icons on the plan at
+    all: his entities are named after the hardware ("Hue lamp 3"), not the
+    room, so a friendly-name match against the estimate's room names had
+    nothing to bite on. The Area a homeowner files an entity under is a far
+    better room signal than its name, and most installs have Areas because
+    the onboarding wizard pushes them.
+
+    An entity inherits its device's Area when it has none of its own, exactly
+    as the frontend presents it. Every registry lookup here is best-effort:
+    an older core where a helper is shaped differently, or a test host with
+    no registries at all, yields an empty map and the matcher falls back to
+    names alone -- the behaviour this integration shipped with.
+    """
+    try:
+        from homeassistant.helpers import area_registry, device_registry, entity_registry
+    except ImportError:
+        return {}
+
+    try:
+        areas = area_registry.async_get(hass)
+        devices = device_registry.async_get(hass)
+        entities = entity_registry.async_get(hass)
+    except Exception as err:  # noqa: BLE001 - best-effort signal, see docstring
+        _LOGGER.debug("Area registry unavailable for floorplan matching: %s", err)
+        return {}
+
+    def area_name(area_id: Any) -> Optional[str]:
+        if not area_id:
+            return None
+        getter = getattr(areas, "async_get_area", None)
+        area = getter(area_id) if getter is not None else None
+        return getattr(area, "name", None)
+
+    result: Dict[str, set[str]] = {}
+    try:
+        for entity_id, entry in dict(getattr(entities, "entities", {}) or {}).items():
+            name = area_name(getattr(entry, "area_id", None))
+            if name is None and getattr(entry, "device_id", None):
+                getter = getattr(devices, "async_get", None)
+                device = getter(entry.device_id) if getter is not None else None
+                name = area_name(getattr(device, "area_id", None))
+            if name:
+                result[str(entity_id)] = _tokens(name)
+    except _SOFT_ERRORS as err:
+        _LOGGER.debug("Could not read the entity registry for floorplan matching: %s", err)
+        return {}
+
+    return result
+
+
+def async_match_entity(
+    hass: HomeAssistant,
+    device: Dict[str, Any],
+    area_tokens: Optional[Dict[str, set[str]]] = None,
+) -> Optional[str]:
     """Resolve one ha_map.json device record to a real entity, or None.
 
     ha_map.json's `entity` field (e.g. `thermostat.great_room.01`) is a slug
@@ -96,23 +156,31 @@ def async_match_entity(hass: HomeAssistant, device: Dict[str, Any]) -> Optional[
     installation can actually confirm is the device's likely HA domain
     (already normalised into the `domain` field, e.g. "climate") and which
     room it is in, so matching is domain-filtered and then scored on how many
-    of the room name's words show up in a candidate's friendly name or entity
-    id.
+    of the room name's words show up in a candidate's friendly name, entity
+    id, or -- when `area_tokens` (see area_tokens_by_entity) knows it -- the
+    Area the homeowner filed it under.
 
-    Uses hass.states.async_all(), the same enumeration idiom already used
-    elsewhere in this integration (health.py's collect_health,
-    updates.py's SupervisorUpdater._update_states) rather than the entity or
-    area registries, which nothing else here touches. A confident match needs
-    at least one shared word between the room name and the candidate; with no
-    such candidate this returns None; skip the device on the dashboard, never
-    guess an entity id.
+    Two rules decide a match, in order:
+
+    1. A domain with exactly one entity in the whole house binds it
+       regardless of room. The estimate lists four thermostats; the house has
+       one `climate` entity; that entity is the thermostat, whichever room
+       the adjuster wrote it against. Room words cannot make this more
+       certain and must not be allowed to make it less.
+    2. Otherwise the candidate sharing the most words with the room name
+       wins, needing at least one. No shared word, no match: the device is
+       skipped on the dashboard, never guessed.
+
+    Candidates come from hass.states.async_all(), the enumeration idiom the
+    rest of this integration uses (health.py, updates.py). Every decision is
+    logged at INFO with its reason, because the only way to find out why a
+    real house shows no icons is to read, on that house, what each device
+    considered -- deploys are rare enough that this is not noise.
     """
+    label = f"{device.get('entity') or '?'} in {device.get('room') or '?'}"
     domain = str(device.get("domain") or "").strip()
     if not domain:
-        return None
-
-    room_tokens = _tokens(device.get("room"))
-    if not room_tokens:
+        _LOGGER.info("Floorplan device %s skipped: no domain", label)
         return None
 
     lister = getattr(getattr(hass, "states", None), "async_all", None)
@@ -125,18 +193,51 @@ def async_match_entity(hass: HomeAssistant, device: Dict[str, Any]) -> Optional[
         _LOGGER.debug("Could not enumerate %s entities: %s", domain, err)
         return None
 
+    if not candidates:
+        _LOGGER.info("Floorplan device %s skipped: no %s entities exist", label, domain)
+        return None
+
+    if len(candidates) == 1:
+        only = getattr(candidates[0], "entity_id", None)
+        _LOGGER.info(
+            "Floorplan device %s bound to %s: the only %s entity", label, only, domain
+        )
+        return only
+
+    room_tokens = _tokens(device.get("room"))
+    if not room_tokens:
+        _LOGGER.info("Floorplan device %s skipped: no room name to match on", label)
+        return None
+
+    if area_tokens is None:
+        area_tokens = area_tokens_by_entity(hass)
+
     best_entity: Optional[str] = None
     best_score = 0
+    best_via = ""
     for state in candidates:
-        candidate_tokens = _tokens(getattr(state, "name", None)) | _tokens(
-            getattr(state, "entity_id", None)
-        )
-        score = len(room_tokens & candidate_tokens)
+        entity_id = getattr(state, "entity_id", None)
+        name_tokens = _tokens(getattr(state, "name", None)) | _tokens(entity_id)
+        area = area_tokens.get(str(entity_id), set())
+        score = len(room_tokens & (name_tokens | area))
         if score > best_score:
             best_score = score
-            best_entity = getattr(state, "entity_id", None)
+            best_entity = entity_id
+            best_via = "area" if room_tokens & area else "name"
 
-    return best_entity if best_score > 0 else None
+    if best_score > 0:
+        _LOGGER.info(
+            "Floorplan device %s bound to %s: shares %d room word(s) by %s",
+            label, best_entity, best_score, best_via,
+        )
+        return best_entity
+
+    _LOGGER.info(
+        "Floorplan device %s skipped: none of %d %s entities share a room word (%s)",
+        label, len(candidates), domain,
+        ", ".join(str(getattr(s, "entity_id", "?")) for s in candidates[:8]),
+    )
+    return None
 
 
 # --- coordinate mapping ----------------------------------------------------
@@ -288,6 +389,7 @@ def build_picture_elements_card(
     devices: List[Dict[str, Any]],
     image_url: str,
     transform: Optional[Dict[str, Any]] = None,
+    area_tokens: Optional[Dict[str, set[str]]] = None,
 ) -> Dict[str, Any]:
     """Build one floor's picture-elements card: plan backplate, room labels,
     device icons.
@@ -362,13 +464,8 @@ def build_picture_elements_card(
         if not xy or len(xy) < 2:
             continue
 
-        entity_id = async_match_entity(hass, device)
+        entity_id = async_match_entity(hass, device, area_tokens)
         if entity_id is None:
-            _LOGGER.debug(
-                "No matching entity for floorplan device %s in %s; skipping",
-                device.get("entity"),
-                device.get("room"),
-            )
             continue
 
         room_name = str(device.get("room") or "")
@@ -409,17 +506,50 @@ def build_picture_elements_card(
     }
 
 
-def build_dashboard_cards(
+def _floor_title(key: str, transform: Optional[Dict[str, Any]]) -> str:
+    """A human floor name: the level name the render pipeline wrote into
+    plan_transform.json ("1st Floor"), or the key made readable ("Floor 1")
+    for a transform from before it carried one."""
+    name = (transform or {}).get("name") if isinstance(transform, dict) else None
+    if name:
+        return str(name)
+    return re.sub(r"[_\s]+", " ", str(key)).strip() or str(key)
+
+
+def _ordered_floor_keys(
+    hotspots_by_floor: Dict[str, List[Dict[str, Any]]], plan_transform: Dict[str, Any]
+) -> List[str]:
+    """Floors lowest first, by the elevation plan_transform.json carries for
+    each; a floor with no known elevation keeps hotspots.json's own order,
+    after the ones that have one."""
+    keys = [k for k, v in hotspots_by_floor.items() if isinstance(v, list)]
+
+    def sort_key(item: Tuple[int, str]) -> Tuple[int, float, int]:
+        index, key = item
+        entry = plan_transform.get(key) if isinstance(plan_transform, dict) else None
+        elev = entry.get("elev") if isinstance(entry, dict) else None
+        if isinstance(elev, (int, float)):
+            return (0, float(elev), index)
+        return (1, 0.0, index)
+
+    return [key for _, key in sorted(enumerate(keys), key=sort_key)]
+
+
+def build_dashboard_views(
     hass: HomeAssistant,
     hotspots_by_floor: Dict[str, List[Dict[str, Any]]],
     ha_map: Dict[str, Any],
-    hero_image_url: Optional[str],
     plan_image_urls: Dict[str, str],
     plan_transform: Dict[str, Any],
+    fallback_image_url: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """The full stack of cards for the Home 3D view: the angled hero render
-    on top (eye candy -- no exact coordinate map), then one top-down plan
-    card per floor with the real room labels and device icons.
+    """One Lovelace view per floor, lowest floor first: a panel view holding
+    that floor's top-down plan card with its room labels and device icons.
+
+    A floor per view is what makes the dashboard usable on the wall: the
+    homeowner taps a floor tab instead of scrolling a stack, and each plan
+    fills the screen. There is no 3D hero card any more -- see CHANGELOG
+    1.7.4; the GLB and the angled render are no longer part of a deploy.
 
     Devices are assigned to a floor by ha_map.json's `floor_key` (matches
     hotspots.json's own keys exactly) when present. An older manifest that
@@ -427,20 +557,22 @@ def build_dashboard_cards(
     not match a hotspots key directly; with exactly one floor that mismatch
     does not matter, so that case falls back to "every device belongs to the
     one floor there is" rather than silently dropping every device.
+
+    `fallback_image_url` is the legacy hero backplate, used only as a floor's
+    image when that floor has no plan render of its own (a deploy job from
+    before per-floor plans).
     """
     devices = [d for d in (ha_map.get("devices") or []) if isinstance(d, dict)]
-    floor_keys = [k for k, v in hotspots_by_floor.items() if isinstance(v, list)]
+    floor_keys = _ordered_floor_keys(hotspots_by_floor, plan_transform)
     single_floor = len(floor_keys) == 1
+    area_tokens = area_tokens_by_entity(hass)
 
-    cards: List[Dict[str, Any]] = []
-    if hero_image_url:
-        cards.append({"type": "picture", "image": hero_image_url})
-
+    views: List[Dict[str, Any]] = []
     for key in floor_keys:
         rooms = hotspots_by_floor.get(key) or []
-        image_url = plan_image_urls.get(key) or hero_image_url
+        image_url = plan_image_urls.get(key) or fallback_image_url
         if not image_url:
-            _LOGGER.warning("No backplate available for floor %s; skipping its card", key)
+            _LOGGER.warning("No backplate available for floor %s; skipping its view", key)
             continue
 
         floor_devices = devices if single_floor else [
@@ -448,32 +580,35 @@ def build_dashboard_cards(
         ]
 
         transform = plan_transform.get(key) if isinstance(plan_transform, dict) else None
-        cards.append(
-            build_picture_elements_card(hass, rooms, floor_devices, image_url, transform)
+        card = build_picture_elements_card(
+            hass, rooms, floor_devices, image_url, transform, area_tokens
+        )
+        number = len(views) + 1
+        views.append(
+            {
+                "title": _floor_title(key, transform),
+                "path": f"floor-{number}",
+                "icon": f"mdi:home-floor-{number}" if number <= 3 else "mdi:floor-plan",
+                "panel": True,
+                "cards": [card],
+            }
         )
 
-    return cards
+    return views
 
 
-def build_dashboard_config(cards: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """The dashboard's views/cards config, as Lovelace storage mode expects it.
+def build_dashboard_config(views: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The dashboard's views config, as Lovelace storage mode expects it.
 
-    One panel view -- full width, no dashboard chrome -- tablet-first: the
-    plan card(s) fill the screen instead of sharing it with sidebar/header
-    furniture. `panel: true` only ever shows a single card, so every card
-    (hero + one per floor) is wrapped in one vertical-stack.
+    Every view is a panel view -- full width, no dashboard chrome --
+    tablet-first: one plan card fills the screen instead of sharing it with
+    sidebar/header furniture. The dashboard's own url_path is unchanged, so
+    the live registration in _async_write_dashboard_live, which keys on it
+    alone, neither knows nor cares how many views are inside.
     """
     return {
         "title": FLOORPLAN_DASHBOARD_TITLE,
-        "views": [
-            {
-                "title": FLOORPLAN_DASHBOARD_TITLE,
-                "path": FLOORPLAN_DASHBOARD_URL_PATH,
-                "icon": FLOORPLAN_DASHBOARD_ICON,
-                "panel": True,
-                "cards": [{"type": "vertical-stack", "cards": cards}],
-            }
-        ],
+        "views": list(views),
     }
 
 
@@ -591,15 +726,19 @@ class HADispatchFloorplan:
         try:
             paths = await self._async_download_assets(job)
             hotspots, ha_map, plan_transform = await self._async_load_manifests(paths)
-            cards = build_dashboard_cards(
+            views = build_dashboard_views(
                 self.hass,
                 hotspots,
                 ha_map,
-                paths["image_url"],
                 paths.get("plan_image_urls") or {},
                 plan_transform,
+                fallback_image_url=paths.get("image_url"),
             )
-            went_live = await self._async_write_dashboard(cards)
+            if not views:
+                raise FloorplanApplyError(
+                    "No floor had a plan render to show; nothing to deploy"
+                )
+            went_live = await self._async_write_dashboard(views)
         except Exception as err:  # noqa: BLE001 - always report, never crash the poll loop
             _LOGGER.error("Floorplan deploy %s failed: %s", job_id, err)
             await self._async_report(job_id, FLOORPLAN_REPORT_STATUS_FAILED, str(err))
@@ -618,18 +757,22 @@ class HADispatchFloorplan:
     async def _async_download_assets(self, job: Dict[str, Any]) -> Dict[str, Any]:
         """Download this job's assets into /config/www/ha_dispatch/floorplan/.
 
-        Four are required (unchanged contract): the hero backplate, the GLB,
-        and the two manifests. Two more are optional, downloaded best-effort
-        -- an older deploy job predating exact per-floor plans simply lacks
-        them, and the dashboard falls back to the hero backplate plus a
-        bounding-box approximation rather than failing the whole deploy.
+        Two are required: the two manifests, hotspots.json and ha_map.json.
+        Everything else is downloaded best-effort and the dashboard degrades
+        without it: the per-floor plan renders and their transform are what
+        the dashboard is actually built on, and the hero backplate is kept
+        only as a floor's image of last resort for a deploy job from before
+        per-floor plans existed.
+
+        The GLB is not downloaded at all. Nothing on the dashboard ever used
+        it -- it was tens of megabytes onto the homeowner's SD card for the
+        installer's own 3D preview, which lives on the Dispatch side. The
+        server may still advertise a `glb_url`; it is ignored.
         """
         directory = Path(self.hass.config.path(*FLOORPLAN_ASSET_DIR))
         await self.hass.async_add_executor_job(_ensure_dir, directory)
 
         required = (
-            ("backplate_url", FLOORPLAN_BACKPLATE_NAME, "backplate"),
-            ("glb_url", FLOORPLAN_GLB_NAME, "glb"),
             ("hotspots_url", FLOORPLAN_HOTSPOTS_NAME, "hotspots"),
             ("ha_map_url", FLOORPLAN_HA_MAP_NAME, "ha_map"),
         )
@@ -643,7 +786,15 @@ class HADispatchFloorplan:
             await self.api.download_floorplan_asset(url, dest)
             paths[result_key] = dest
 
-        paths["image_url"] = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{FLOORPLAN_BACKPLATE_NAME}"
+        paths["image_url"] = None
+        backplate_url = job.get("backplate_url")
+        if backplate_url:
+            dest = directory / FLOORPLAN_BACKPLATE_NAME
+            try:
+                await self.api.download_floorplan_asset(backplate_url, dest)
+                paths["image_url"] = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{FLOORPLAN_BACKPLATE_NAME}"
+            except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as err:
+                _LOGGER.warning("Could not download the hero backplate: %s", err)
 
         transform_url = job.get("plan_transform_url")
         if transform_url:
@@ -676,7 +827,7 @@ class HADispatchFloorplan:
 
     # -- dashboard storage ----------------------------------------------------
 
-    async def _async_write_dashboard(self, cards: List[Dict[str, Any]]) -> bool:
+    async def _async_write_dashboard(self, views: List[Dict[str, Any]]) -> bool:
         """Register (or update) the "Home 3D" storage-mode dashboard.
 
         Home Assistant's own lovelace integration keeps two things in
@@ -706,7 +857,7 @@ class HADispatchFloorplan:
         splice a live dashboard object in directly. Returns whether the
         dashboard is visible without a restart.
         """
-        config = build_dashboard_config(cards)
+        config = build_dashboard_config(views)
 
         if await self._async_write_dashboard_live(config):
             return True
@@ -1001,7 +1152,8 @@ __all__ = [
     "HADispatchFloorplan",
     "async_all_managers",
     "async_match_entity",
-    "build_dashboard_cards",
+    "area_tokens_by_entity",
+    "build_dashboard_views",
     "build_dashboard_config",
     "build_picture_elements_card",
 ]

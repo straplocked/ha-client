@@ -1,12 +1,14 @@
 """Tests for the floorplan deploy feature.
 
 The feature these cover: a technician uploads a floor-plan sketch to HA
-Dispatch; a render pipeline there turns it into a GLB model, a backplate
-render, a room hotspot map, and a device placement map; this agent notices the
-job, downloads the four assets into /config/www/, builds a "Home 3D" Lovelace
-dashboard from them, and reports back -- resolving ha_map.json's invented
-device slugs against real entities and skipping anything with no confident
-match rather than fabricating an entity id.
+Dispatch; a render pipeline there turns it into a top-down plan render per
+floor, a room hotspot map, and a device placement map; this agent notices the
+job, downloads those assets into /config/www/, builds a "Home 3D" Lovelace
+dashboard from them -- one view per floor -- and reports back, resolving
+ha_map.json's invented device slugs against real entities and skipping
+anything with no confident match rather than fabricating an entity id. The
+pipeline's GLB model and hero render are the installer's preview on the
+Dispatch side and are never downloaded here.
 
 Home Assistant is not installed here; tests/conftest.py stubs the symbols the
 integration imports, including a recording persistent_notification and an
@@ -103,7 +105,21 @@ PLAN_TRANSFORM = {
         "a": 10.0, "b": 0.0, "c": 200.0,
         "d": 0.0, "e": -10.0, "f": 150.0,
         "image_width_px": 400, "image_height_px": 300,
+        "name": "1st Floor", "elev": 0.0,
     }
+}
+
+# Two storeys, written into hotspots.json upper floor first on purpose: the
+# dashboard orders views by elevation, not by whatever order the manifest
+# happens to be in.
+TWO_FLOOR_HOTSPOTS = {
+    "Floor_2": [{"name": "Loft", "sf": 100.0, "centroid": [0.0, 0.0],
+                 "poly_ft": [[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0]]}],
+    "Floor_1": HOTSPOTS["Floor_1"],
+}
+TWO_FLOOR_TRANSFORM = {
+    "Floor_1": dict(PLAN_TRANSFORM["Floor_1"]),
+    "Floor_2": dict(PLAN_TRANSFORM["Floor_1"], name="2nd Floor", elev=9.5),
 }
 
 BACKPLATE_URL = "https://dispatch.example.com/assets/backplate.png"
@@ -284,6 +300,130 @@ class EntityMatchingTest(unittest.TestCase):
 # --- card building -----------------------------------------------------------
 
 
+class FakeRegistryEntry:
+    def __init__(self, entity_id, area_id=None, device_id=None):
+        self.entity_id = entity_id
+        self.area_id = area_id
+        self.device_id = device_id
+
+
+class FakeRegistry:
+    """Stands in for the entity, device and area registries at once: the
+    three attributes async_get() callers reach for are all here."""
+
+    def __init__(self, entities=(), devices=None, areas=None):
+        self.entities = {e.entity_id: e for e in entities}
+        self._devices = devices or {}
+        self._areas = areas or {}
+
+    def async_get(self, device_id):
+        return self._devices.get(device_id)
+
+    def async_get_area(self, area_id):
+        return self._areas.get(area_id)
+
+
+class FakeArea:
+    def __init__(self, name):
+        self.name = name
+
+
+class FakeDevice:
+    def __init__(self, area_id):
+        self.area_id = area_id
+
+
+def _install_registries(registry):
+    """Register stub area/device/entity registry helpers for one test, all
+    returning the same FakeRegistry, and hand back the undo."""
+    names = ("area_registry", "device_registry", "entity_registry")
+    helpers = sys.modules["homeassistant.helpers"]
+    saved = {}
+    for name in names:
+        full = f"homeassistant.helpers.{name}"
+        saved[name] = (sys.modules.get(full), getattr(helpers, name, None))
+        module = types.ModuleType(full)
+        module.async_get = lambda hass, _r=registry: _r
+        sys.modules[full] = module
+        setattr(helpers, name, module)
+
+    def undo():
+        for name, (module, attr) in saved.items():
+            full = f"homeassistant.helpers.{name}"
+            if module is None:
+                sys.modules.pop(full, None)
+            else:
+                sys.modules[full] = module
+            if attr is None:
+                if hasattr(helpers, name):
+                    delattr(helpers, name)
+            else:
+                setattr(helpers, name, attr)
+
+    return undo
+
+
+class MatchingRulesTest(unittest.TestCase):
+    """The first real deploy showed no icons at all; these are the rules
+    added to put one there without ever guessing an entity id."""
+
+    def test_the_only_entity_in_a_domain_binds_regardless_of_room(self):
+        hass = FakeHass(states=[FakeState("climate.hallway", "Ecobee")])
+        device = {"entity": "thermostat.den.01", "domain": "climate", "room": "Den"}
+        self.assertEqual(floorplan_mod.async_match_entity(hass, device), "climate.hallway")
+
+    def test_with_several_candidates_a_shared_room_word_is_still_required(self):
+        hass = FakeHass(states=[FakeState("light.hue_lamp_3", "Hue lamp 3"),
+                                FakeState("light.hue_lamp_4", "Hue lamp 4")])
+        device = {"entity": "light.den.01", "domain": "light", "room": "Den"}
+        self.assertIsNone(floorplan_mod.async_match_entity(hass, device))
+
+    def test_the_area_an_entity_is_filed_under_counts_as_a_room_word(self):
+        hass = FakeHass(states=[FakeState("light.hue_lamp_3", "Hue lamp 3"),
+                                FakeState("light.hue_lamp_4", "Hue lamp 4")])
+        registry = FakeRegistry(
+            entities=[FakeRegistryEntry("light.hue_lamp_3", area_id="den"),
+                      FakeRegistryEntry("light.hue_lamp_4", area_id="kitchen")],
+            areas={"den": FakeArea("Den"), "kitchen": FakeArea("Kitchen")},
+        )
+        undo = _install_registries(registry)
+        self.addCleanup(undo)
+        device = {"entity": "light.den.01", "domain": "light", "room": "Den"}
+        self.assertEqual(floorplan_mod.async_match_entity(hass, device), "light.hue_lamp_3")
+
+    def test_an_entity_inherits_its_devices_area(self):
+        hass = FakeHass(states=[FakeState("light.hue_lamp_3", "Hue lamp 3"),
+                                FakeState("light.hue_lamp_4", "Hue lamp 4")])
+        registry = FakeRegistry(
+            entities=[FakeRegistryEntry("light.hue_lamp_3", device_id="bridge-3"),
+                      FakeRegistryEntry("light.hue_lamp_4", device_id="bridge-4")],
+            devices={"bridge-3": FakeDevice("kitchen"), "bridge-4": FakeDevice("den")},
+            areas={"den": FakeArea("Den"), "kitchen": FakeArea("Kitchen")},
+        )
+        undo = _install_registries(registry)
+        self.addCleanup(undo)
+        device = {"entity": "light.den.01", "domain": "light", "room": "Den"}
+        self.assertEqual(floorplan_mod.async_match_entity(hass, device), "light.hue_lamp_4")
+
+    def test_without_registries_name_matching_still_works_as_before(self):
+        # conftest installs no registry helpers, so this is the plain path.
+        hass = FakeHass(states=[FakeState("light.den_lamp", "Den Lamp"),
+                                FakeState("light.hue_lamp_4", "Hue lamp 4")])
+        device = {"entity": "light.den.01", "domain": "light", "room": "Den"}
+        self.assertEqual(floorplan_mod.async_match_entity(hass, device), "light.den_lamp")
+
+    def test_every_decision_is_logged_at_info_with_its_reason(self):
+        hass = FakeHass(states=[FakeState("light.hue_lamp_3", "Hue lamp 3"),
+                                FakeState("light.hue_lamp_4", "Hue lamp 4")])
+        device = {"entity": "light.den.01", "domain": "light", "room": "Den"}
+        with self.assertLogs(floorplan_mod._LOGGER, level="INFO") as captured:
+            floorplan_mod.async_match_entity(hass, device)
+        self.assertEqual(len(captured.records), 1)
+        self.assertIn("light.den.01 in Den", captured.output[0])
+        self.assertIn("skipped", captured.output[0])
+        self.assertIn("light.hue_lamp_3", captured.output[0])
+
+
 class CardBuildingTest(unittest.TestCase):
     def test_room_hotspots_become_labeled_points_regardless_of_entities(self):
         hass = FakeHass(states=[])
@@ -375,17 +515,68 @@ class CardBuildingTest(unittest.TestCase):
         self.assertEqual(len(positions), 2)
 
 
-class DashboardCardsTest(unittest.TestCase):
-    def test_hero_card_leads_followed_by_one_plan_card_per_floor(self):
+class DashboardViewsTest(unittest.TestCase):
+    def test_one_panel_view_per_floor_holding_only_that_floors_plan_card(self):
         hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
-        cards = floorplan_mod.build_dashboard_cards(
-            hass, HOTSPOTS, HA_MAP, "/local/hero.png",
-            {"Floor_1": "/local/plan_Floor_1.png"}, PLAN_TRANSFORM,
+        views = floorplan_mod.build_dashboard_views(
+            hass, HOTSPOTS, HA_MAP, {"Floor_1": "/local/plan_Floor_1.png"}, PLAN_TRANSFORM,
         )
-        self.assertEqual(cards[0], {"type": "picture", "image": "/local/hero.png"})
-        self.assertEqual(len(cards), 2)
-        self.assertEqual(cards[1]["type"], "picture-elements")
-        self.assertEqual(cards[1]["image"], "/local/plan_Floor_1.png")
+        self.assertEqual(len(views), 1)
+        view = views[0]
+        self.assertTrue(view["panel"])
+        self.assertEqual(view["title"], "1st Floor")
+        self.assertEqual(view["path"], "floor-1")
+        self.assertEqual(len(view["cards"]), 1)
+        self.assertEqual(view["cards"][0]["type"], "picture-elements")
+        self.assertEqual(view["cards"][0]["image"], "/local/plan_Floor_1.png")
+        self.assertNotIn("vertical-stack", json.dumps(views))
+        self.assertNotIn('"picture"', json.dumps(views))
+
+    def test_floors_are_ordered_lowest_first_whatever_the_manifest_order(self):
+        hass = FakeHass(states=[])
+        views = floorplan_mod.build_dashboard_views(
+            hass, TWO_FLOOR_HOTSPOTS, {"devices": []},
+            {"Floor_1": "/local/plan_Floor_1.png", "Floor_2": "/local/plan_Floor_2.png"},
+            TWO_FLOOR_TRANSFORM,
+        )
+        self.assertEqual([v["title"] for v in views], ["1st Floor", "2nd Floor"])
+        self.assertEqual([v["path"] for v in views], ["floor-1", "floor-2"])
+        self.assertEqual([v["cards"][0]["image"] for v in views],
+                         ["/local/plan_Floor_1.png", "/local/plan_Floor_2.png"])
+        # Paths are unique within the dashboard; the dashboard url_path is
+        # not one of them -- that stays on the dashboard itself.
+        self.assertEqual(len({v["path"] for v in views}), 2)
+        self.assertNotIn("home-3d", [v["path"] for v in views])
+
+    def test_a_transform_without_a_level_name_gets_a_readable_title_from_the_key(self):
+        hass = FakeHass(states=[])
+        nameless = {k: {kk: vv for kk, vv in v.items() if kk != "name"}
+                    for k, v in PLAN_TRANSFORM.items()}
+        views = floorplan_mod.build_dashboard_views(
+            hass, HOTSPOTS, {"devices": []}, {"Floor_1": "/local/plan.png"}, nameless,
+        )
+        self.assertEqual(views[0]["title"], "Floor 1")
+
+    def test_devices_land_on_their_own_floors_view(self):
+        # Two lights, so neither is "the only light" and both have to earn
+        # their floor by room word.
+        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat"),
+                                FakeState("light.kitchen_spot", "Kitchen Spot"),
+                                FakeState("light.loft_lamp", "Loft Lamp")])
+        ha_map = {"devices": HA_MAP["devices"] + [{
+            "entity": "light.loft.01", "domain": "light", "cls": "light",
+            "room": "Loft", "floor": "2nd Floor", "floor_key": "Floor_2",
+            "xy_ft": [0.0, 0.0],
+        }]}
+        views = floorplan_mod.build_dashboard_views(
+            hass, TWO_FLOOR_HOTSPOTS, ha_map,
+            {"Floor_1": "/local/plan_Floor_1.png", "Floor_2": "/local/plan_Floor_2.png"},
+            TWO_FLOOR_TRANSFORM,
+        )
+        bound = {v["title"]: [e["entity"] for e in v["cards"][0]["elements"]
+                              if e["type"] == "state-icon"] for v in views}
+        self.assertEqual(bound, {"1st Floor": ["climate.den_thermostat", "light.kitchen_spot"],
+                                 "2nd Floor": ["light.loft_lamp"]})
 
     def test_a_single_floor_with_no_floor_key_still_gets_its_devices(self):
         # Mirrors a manifest predating floor_key: devices only carry the
@@ -394,33 +585,37 @@ class DashboardCardsTest(unittest.TestCase):
         for d in legacy_map["devices"]:
             d.pop("floor_key", None)
         hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
-        cards = floorplan_mod.build_dashboard_cards(
-            hass, HOTSPOTS, legacy_map, "/local/hero.png", {}, {}
+        views = floorplan_mod.build_dashboard_views(
+            hass, HOTSPOTS, legacy_map, {}, {}, fallback_image_url="/local/hero.png"
         )
-        plan_card = cards[-1]
+        plan_card = views[-1]["cards"][0]
         state_icons = [e for e in plan_card["elements"] if e["type"] == "state-icon"]
         self.assertEqual(len(state_icons), 1)
 
-    def test_with_no_hero_url_the_hero_card_is_omitted(self):
+    def test_a_floor_with_no_plan_render_falls_back_to_the_legacy_hero_image(self):
         hass = FakeHass(states=[])
-        cards = floorplan_mod.build_dashboard_cards(
-            hass, HOTSPOTS, {"devices": []}, None, {"Floor_1": "/local/plan.png"}, {}
+        views = floorplan_mod.build_dashboard_views(
+            hass, HOTSPOTS, {"devices": []}, {}, {}, fallback_image_url="/local/hero.png"
         )
-        self.assertEqual(len(cards), 1)
-        self.assertEqual(cards[0]["type"], "picture-elements")
+        self.assertEqual(len(views), 1)
+        self.assertEqual(views[0]["cards"][0]["image"], "/local/hero.png")
+
+    def test_a_floor_with_no_image_at_all_is_left_out(self):
+        hass = FakeHass(states=[])
+        views = floorplan_mod.build_dashboard_views(
+            hass, TWO_FLOOR_HOTSPOTS, {"devices": []},
+            {"Floor_1": "/local/plan_Floor_1.png"}, TWO_FLOOR_TRANSFORM,
+        )
+        self.assertEqual([v["title"] for v in views], ["1st Floor"])
 
 
 class DashboardConfigTest(unittest.TestCase):
-    def test_the_view_is_a_panel_with_a_single_vertical_stack(self):
-        config = floorplan_mod.build_dashboard_config(
-            [{"type": "picture", "image": "/local/hero.png"}, {"type": "picture-elements"}]
-        )
-        view = config["views"][0]
-        self.assertTrue(view["panel"])
-        self.assertEqual(view["path"], "home-3d")
-        stack = view["cards"][0]
-        self.assertEqual(stack["type"], "vertical-stack")
-        self.assertEqual(len(stack["cards"]), 2)
+    def test_the_views_are_carried_as_given_under_the_dashboard_title(self):
+        views = [{"title": "1st Floor", "path": "floor-1", "panel": True, "cards": [{}]},
+                 {"title": "2nd Floor", "path": "floor-2", "panel": True, "cards": [{}]}]
+        config = floorplan_mod.build_dashboard_config(views)
+        self.assertEqual(config["title"], "Home 3D")
+        self.assertEqual(config["views"], views)
 
 
 # --- the full deploy pipeline -------------------------------------------------
@@ -439,7 +634,8 @@ class SuccessfulDeployTest(unittest.TestCase):
 
             asset_dir = os.path.join(tmp, "www", "ha_dispatch", "floorplan")
             self.assertTrue(os.path.isfile(os.path.join(asset_dir, "backplate.png")))
-            self.assertTrue(os.path.isfile(os.path.join(asset_dir, "model.glb")))
+            # The GLB is offered by the server and deliberately never fetched.
+            self.assertFalse(os.path.exists(os.path.join(asset_dir, "model.glb")))
             self.assertTrue(os.path.isfile(os.path.join(asset_dir, "hotspots.json")))
             self.assertTrue(os.path.isfile(os.path.join(asset_dir, "ha_map.json")))
             self.assertTrue(os.path.isfile(os.path.join(asset_dir, "plan_transform.json")))
@@ -456,14 +652,16 @@ class SuccessfulDeployTest(unittest.TestCase):
             self.assertEqual(registry["items"][0]["mode"], "storage")
 
             dashboard = manager._dashboard_store.data
-            view = dashboard["config"]["views"][0]
+            views = dashboard["config"]["views"]
+            self.assertEqual(len(views), 1)
+            view = views[0]
             self.assertTrue(view["panel"])
-            stack = view["cards"][0]
-            self.assertEqual(stack["type"], "vertical-stack")
-            # Hero picture card first, then the one Floor_1 plan card.
-            self.assertEqual(stack["cards"][0]["type"], "picture")
-            plan_card = stack["cards"][1]
+            self.assertEqual(view["title"], "1st Floor")
+            # One card per view: that floor's plan, nothing stacked above it.
+            self.assertEqual(len(view["cards"]), 1)
+            plan_card = view["cards"][0]
             self.assertEqual(plan_card["type"], "picture-elements")
+            self.assertEqual(plan_card["image"], "/local/ha_dispatch/floorplan/plan_Floor_1.png")
             entities = [e["entity"] for e in plan_card["elements"] if e["type"] == "state-icon"]
             self.assertEqual(entities, ["climate.den_thermostat"])
 
@@ -486,8 +684,7 @@ class SuccessfulDeployTest(unittest.TestCase):
 
             self.assertEqual(api.reports[-1]["status"], "done")
             dashboard = manager._dashboard_store.data
-            stack = dashboard["config"]["views"][0]["cards"][0]
-            plan_card = stack["cards"][-1]
+            plan_card = dashboard["config"]["views"][0]["cards"][0]
             self.assertEqual(plan_card["image"], "/local/ha_dispatch/floorplan/backplate.png")
             entities = [e["entity"] for e in plan_card["elements"] if e["type"] == "state-icon"]
             self.assertEqual(entities, ["climate.den_thermostat"])
@@ -502,6 +699,43 @@ class SuccessfulDeployTest(unittest.TestCase):
 
             registry = manager._dashboards_store.data
             self.assertEqual(len(registry["items"]), 1)
+
+    def test_a_job_with_neither_glb_nor_hero_render_deploys_on_the_plan_renders_alone(self):
+        # What the render pipeline produces for a dashboard job now: no GLB,
+        # no angled hero, just the per-floor plans and manifests.
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[])
+
+            _run(manager._async_run(_job(glb_url=None, backplate_url=None)))
+
+            self.assertEqual(api.reports[-1]["status"], "done")
+            asset_dir = os.path.join(tmp, "www", "ha_dispatch", "floorplan")
+            self.assertFalse(os.path.exists(os.path.join(asset_dir, "backplate.png")))
+            plan_card = manager._dashboard_store.data["config"]["views"][0]["cards"][0]
+            self.assertEqual(plan_card["image"], "/local/ha_dispatch/floorplan/plan_Floor_1.png")
+
+    def test_a_hero_render_that_fails_to_download_does_not_fail_the_deploy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(
+                assets=ASSETS,
+                download_errors={BACKPLATE_URL: aiohttp.ClientError("connection reset")},
+            )
+            manager, hass = _manager(api, tmp, states=[])
+
+            _run(manager._async_run(_job()))
+
+            self.assertEqual(api.reports[-1]["status"], "done")
+
+    def test_a_job_with_no_floor_image_of_any_kind_is_reported_as_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[])
+
+            _run(manager._async_run(_legacy_job(backplate_url=None, glb_url=None)))
+
+            self.assertEqual(api.reports[-1]["status"], "failed")
+            self.assertIn("plan render", api.reports[-1]["detail"])
 
 
 websocket_api_mod = sys.modules["homeassistant.components.websocket_api"]
@@ -702,7 +936,7 @@ class FailedDeployTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             api = FakeApi(
                 assets=ASSETS,
-                download_errors={GLB_URL: aiohttp.ClientError("connection reset")},
+                download_errors={HOTSPOTS_URL: aiohttp.ClientError("connection reset")},
             )
             manager, hass = _manager(api, tmp, states=[])
 
@@ -720,12 +954,12 @@ class FailedDeployTest(unittest.TestCase):
             manager, hass = _manager(api, tmp, states=[])
 
             incomplete = _job()
-            del incomplete["glb_url"]
+            del incomplete["hotspots_url"]
 
             _run(manager._async_run(incomplete))
 
             self.assertEqual(api.reports[-1]["status"], "failed")
-            self.assertIn("glb_url", api.reports[-1]["detail"])
+            self.assertIn("hotspots_url", api.reports[-1]["detail"])
 
     def test_a_malformed_manifest_is_reported_as_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -742,7 +976,7 @@ class FailedDeployTest(unittest.TestCase):
     def test_no_notification_ever_fires_on_a_failed_deploy(self):
         notifications.reset()
         with tempfile.TemporaryDirectory() as tmp:
-            api = FakeApi(assets={}, download_errors={BACKPLATE_URL: ValueError("boom")})
+            api = FakeApi(assets={}, download_errors={HOTSPOTS_URL: ValueError("boom")})
             manager, hass = _manager(api, tmp, states=[])
 
             _run(manager._async_run(_job()))

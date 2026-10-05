@@ -298,7 +298,7 @@ UPDATE_RUN_OPERATION_TIMEOUT = 1800
 # A technician uploads a floor-plan sketch to HA Dispatch; a render pipeline
 # there (not this agent's concern) turns it into a GLB 3D model, backplate
 # renders, a room hotspot map, and a device-to-room placement map. This
-# agent's job is narrow: notice a pending deploy, pull the four assets down,
+# agent's job is narrow: notice a pending deploy, pull the plan assets down,
 # and turn them into a "Home 3D" Lovelace dashboard. Modelled on the remote
 # updates polling shape (updates.py), not tunnel.py's live relay -- a deploy
 # is a multi-step background job, not a request Dispatch is waiting on
@@ -314,8 +314,10 @@ FLOORPLAN_REPORT_STATUS_FAILED = "failed"
 FLOORPLAN_ASSET_DIR = ("www", "ha_dispatch", "floorplan")
 FLOORPLAN_LOCAL_URL_PREFIX = "/local/ha_dispatch/floorplan"
 
+# The legacy hero render. Only ever used now as a floor's image of last
+# resort for a deploy job from before per-floor plan renders; the GLB model
+# that used to sit beside it is no longer downloaded at all.
 FLOORPLAN_BACKPLATE_NAME = "backplate.png"
-FLOORPLAN_GLB_NAME = "model.glb"
 FLOORPLAN_HOTSPOTS_NAME = "hotspots.json"
 FLOORPLAN_HA_MAP_NAME = "ha_map.json"
 # The exact feet->pixel affine transform for each level's top-down plan
@@ -327,11 +329,11 @@ FLOORPLAN_PLAN_TRANSFORM_NAME = "plan_transform.json"
 # hotspots.json / plan_transform.json (e.g. "plan_Floor_1.png").
 FLOORPLAN_PLAN_BACKPLATE_NAME_FMT = "plan_{level_key}.png"
 
-# Cap on a single asset download. Generous for a GLB or a high-resolution
-# backplate; exists to bound the damage from a misbehaving or compromised
-# server rather than to be tuned, same spirit as the self-update archive caps
-# in updater.py.
-FLOORPLAN_MAX_ASSET_BYTES = 200 * 1024 * 1024
+# Cap on a single asset download. Generous for a high-resolution plan
+# render (the GLB this was originally sized for is no longer fetched); exists
+# to bound the damage from a misbehaving or compromised server rather than
+# to be tuned, same spirit as the self-update archive caps in updater.py.
+FLOORPLAN_MAX_ASSET_BYTES = 50 * 1024 * 1024
 FLOORPLAN_DOWNLOAD_CHUNK_BYTES = 65536
 
 # The storage-mode dashboard this agent creates or updates. Written directly
