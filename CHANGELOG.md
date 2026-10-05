@@ -2,6 +2,39 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.7.4] - 2026-10-05
+
+### Changed — the Home 3D dashboard is one view per floor, and no longer carries the 3D model
+
+What the first real deploy taught: a homeowner on a wall tablet wants to tap
+a floor, not scroll a stack, and the 3D model was tens of megabytes onto
+their SD card for a card nobody looked at.
+
+- **One Lovelace view per floor.** Each floor is its own panel view, titled
+  with the level name the renderer now writes into `plan_transform.json`
+  ("1st Floor"), ordered lowest floor first by elevation. The dashboard's
+  `url_path` is unchanged, so the live registration path from 1.7.3 is
+  untouched.
+- **The GLB is never downloaded and the angled hero render is no longer
+  required.** Only `hotspots.json` and `ha_map.json` are required; the
+  per-floor plan renders are what the dashboard is built on. The hero render
+  is still fetched best-effort as a floor's image of last resort for a job
+  from before per-floor plans existed. `FLOORPLAN_MAX_ASSET_BYTES` shrinks
+  from 200 MB to 50 MB accordingly.
+
+### Fixed — a real house showed no device icons at all
+
+`ha_map.json`'s devices are named after insurance-estimate rooms; the house's
+entities are named after hardware ("Hue lamp 3"), so nothing matched. Three
+changes, none of which ever guesses an entity id:
+
+- A domain with exactly one entity in the whole house binds it regardless of
+  room — the one `climate` entity *is* the thermostat.
+- The Area an entity (or its device) is filed under now counts as a room
+  word alongside its name and entity id.
+- Every match decision is logged at INFO with its reason, so the next deploy
+  that shows nothing can be read off that house's log instead of guessed at.
+
 ## [1.7.3] - 2026-09-29
 
 ### Fixed — the Home 3D dashboard needed a Home Assistant restart to appear
