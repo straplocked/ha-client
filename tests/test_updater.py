@@ -510,3 +510,172 @@ class PruneBackupsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- keeping HACS's record honest --------------------------------------------
+
+
+class FakeRepositoryData:
+    def __init__(self, installed=True, installed_version="v1.5.1", last_version="v1.7.2",
+                 domain="ha_dispatch_client", full_name="straplocked/ha-client"):
+        self.installed = installed
+        self.installed_version = installed_version
+        self.last_version = last_version
+        self.domain = domain
+        self.full_name = full_name
+        self.id = "1234"
+
+
+class FakeRepository:
+    def __init__(self, data):
+        self.data = data
+
+
+class FakeHacsRepositories:
+    def __init__(self, by_name=None, downloaded=()):
+        self._by_name = by_name or {}
+        self.list_downloaded = list(downloaded)
+
+    def get_by_full_name(self, full_name):
+        return self._by_name.get(full_name.lower())
+
+
+class FakeHacsData:
+    def __init__(self):
+        self.writes = []
+
+    async def async_write(self, force=False):
+        self.writes.append(force)
+
+
+class FakeHacs:
+    def __init__(self, repositories):
+        self.repositories = repositories
+        self.data = FakeHacsData()
+        self.dispatched = []
+
+    def async_dispatch(self, signal, data=None):
+        self.dispatched.append((signal, data))
+
+
+class _HacsHass:
+    def __init__(self, hacs=None):
+        self.data = {} if hacs is None else {"hacs": hacs}
+        self.config = types.SimpleNamespace(path=lambda *parts: os.path.join("/tmp", *parts))
+
+
+class _Coordinator:
+    installation_id = "inst-1"
+    api_client = None
+
+
+def _hacs_with(repo_data, by_name=True):
+    repository = FakeRepository(repo_data)
+    repositories = FakeHacsRepositories(
+        by_name={"straplocked/ha-client": repository} if by_name else {},
+        downloaded=[repository] if repo_data.installed else [],
+    )
+    return FakeHacs(repositories)
+
+
+def _run(coro):
+    import asyncio
+    return asyncio.new_event_loop().run_until_complete(coro)
+
+
+class HacsSyncTest(unittest.TestCase):
+    """HACS recorded the version it downloaded; the self-updater has moved
+    the files since. These pin down how HACS is told, and when it is not."""
+
+    def test_no_hacs_means_nothing_to_do(self):
+        client = updater.ClientUpdater(_HacsHass(), _Coordinator())
+        self.assertFalse(_run(client.async_sync_hacs("1.7.5")))
+
+    def test_a_drifted_record_is_brought_up_to_date_persisted_and_announced(self):
+        data = FakeRepositoryData(installed_version="v1.5.1", last_version="v1.7.2")
+        hacs = _hacs_with(data)
+        client = updater.ClientUpdater(_HacsHass(hacs), _Coordinator())
+
+        self.assertTrue(_run(client.async_sync_hacs("1.7.5")))
+
+        self.assertEqual(data.installed_version, "v1.7.5")
+        # HACS's "latest" was older than what is now running; left as it was
+        # it would present a downgrade as an update until HACS next fetched.
+        self.assertEqual(data.last_version, "v1.7.5")
+        self.assertEqual(hacs.data.writes, [True])
+        self.assertEqual(hacs.dispatched[0][0], "hacs_dispatch_repository")
+        self.assertEqual(hacs.dispatched[0][1]["repository"], "straplocked/ha-client")
+
+    def test_a_record_that_is_already_right_is_left_alone(self):
+        data = FakeRepositoryData(installed_version="v1.7.5", last_version="v1.7.5")
+        hacs = _hacs_with(data)
+        client = updater.ClientUpdater(_HacsHass(hacs), _Coordinator())
+
+        self.assertFalse(_run(client.async_sync_hacs("1.7.5")))
+        self.assertEqual(hacs.data.writes, [])
+        self.assertEqual(hacs.dispatched, [])
+
+    def test_a_genuinely_newer_github_release_is_not_hidden(self):
+        data = FakeRepositoryData(installed_version="v1.5.1", last_version="v1.8.0")
+        client = updater.ClientUpdater(_HacsHass(_hacs_with(data)), _Coordinator())
+
+        _run(client.async_sync_hacs("1.7.5"))
+
+        self.assertEqual(data.installed_version, "v1.7.5")
+        self.assertEqual(data.last_version, "v1.8.0")
+
+    def test_the_tag_prefix_follows_what_hacs_already_uses(self):
+        data = FakeRepositoryData(installed_version="1.5.1", last_version="1.7.2")
+        client = updater.ClientUpdater(_HacsHass(_hacs_with(data)), _Coordinator())
+
+        _run(client.async_sync_hacs("1.7.5"))
+
+        self.assertEqual(data.installed_version, "1.7.5")
+
+    def test_a_fork_under_another_name_is_found_by_domain(self):
+        data = FakeRepositoryData(full_name="someone/ha-client-fork")
+        client = updater.ClientUpdater(
+            _HacsHass(_hacs_with(data, by_name=False)), _Coordinator()
+        )
+
+        self.assertTrue(_run(client.async_sync_hacs("1.7.5")))
+        self.assertEqual(data.installed_version, "v1.7.5")
+
+    def test_a_repository_hacs_knows_but_never_downloaded_is_not_hacs_to_version(self):
+        data = FakeRepositoryData(installed=False)
+        hacs = _hacs_with(data)
+        client = updater.ClientUpdater(_HacsHass(hacs), _Coordinator())
+
+        self.assertFalse(_run(client.async_sync_hacs("1.7.5")))
+        self.assertEqual(data.installed_version, "v1.5.1")
+
+    def test_a_hacs_shaped_differently_is_a_no_op_not_a_crash(self):
+        hacs = types.SimpleNamespace(repositories=None, data=None)
+        client = updater.ClientUpdater(_HacsHass(hacs), _Coordinator())
+
+        self.assertFalse(_run(client.async_sync_hacs("1.7.5")))
+
+    def test_a_failing_hacs_save_still_leaves_the_live_record_updated(self):
+        data = FakeRepositoryData()
+        hacs = _hacs_with(data)
+
+        async def boom(force=False):
+            raise OSError("disk full")
+
+        hacs.data.async_write = boom
+        client = updater.ClientUpdater(_HacsHass(hacs), _Coordinator())
+
+        self.assertTrue(_run(client.async_sync_hacs("1.7.5")))
+        self.assertEqual(data.installed_version, "v1.7.5")
+
+    def test_without_a_version_given_the_one_on_disk_is_used(self):
+        data = FakeRepositoryData()
+        client = updater.ClientUpdater(_HacsHass(_hacs_with(data)), _Coordinator())
+
+        async def on_disk():
+            return "1.7.5"
+
+        client.async_installed_version = on_disk
+
+        self.assertTrue(_run(client.async_sync_hacs()))
+        self.assertEqual(data.installed_version, "v1.7.5")

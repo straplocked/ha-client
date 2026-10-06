@@ -226,6 +226,14 @@ UPDATE_DISK_HEADROOM_FACTOR = 5
 # there containing a manifest.json as an integration, so a backup copy parked
 # there would be a second integration claiming this domain.
 UPDATE_WORK_DIR = ".ha_dispatch_client"
+# Where HACS keeps its live state (hass.data[HACS_DOMAIN]) and the repository
+# it knows this integration as. Used only to keep HACS's record of the
+# installed version honest after a self-update -- see
+# ClientUpdater.async_sync_hacs. A fork that renames the repository still
+# gets found, by domain, among HACS's downloaded repositories.
+HACS_DOMAIN = "hacs"
+HACS_REPOSITORY_FULL_NAME = "straplocked/ha-client"
+HACS_REPOSITORY_SIGNAL = "hacs_dispatch_repository"
 UPDATE_BACKUP_SUBDIR = "backups"
 UPDATE_STAGING_SUBDIR = "staging"
 UPDATE_BACKUP_KEEP = 2

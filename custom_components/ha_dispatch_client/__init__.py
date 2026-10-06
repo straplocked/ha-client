@@ -483,6 +483,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.data.get(UPDATE_CONFIRMED):
         hass.data[UPDATE_CONFIRMED] = True
         await updater.async_confirm_pending()
+        # HACS, if it installed this integration, last recorded whatever
+        # version it downloaded; every self-update since has moved the files
+        # without telling it. Said once per start-up, never raises.
+        await updater.async_sync_hacs(coordinator.client_version)
 
     # Consent-gated remote access. Wired before the first refresh so the very
     # first poll already surfaces anything waiting, and loaded first so a

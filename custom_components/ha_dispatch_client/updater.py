@@ -33,6 +33,9 @@ from homeassistant.loader import async_get_integration
 
 from .const import (
     DOMAIN,
+    HACS_DOMAIN,
+    HACS_REPOSITORY_FULL_NAME,
+    HACS_REPOSITORY_SIGNAL,
     RELEASE_ALLOWED_HOSTS,
     RELEASE_SIGNING_KEYS,
     UPDATE_BACKUP_KEEP,
@@ -561,6 +564,8 @@ class ClientUpdater:
             installed,
             version,
         )
+        # Before the restart, so HACS's own save of the new record lands.
+        await self.async_sync_hacs(str(version))
         self._set_progress(True, 95.0)
         await self._async_finish(release, installed, str(version))
 
@@ -710,6 +715,119 @@ class ClientUpdater:
                 f"failed: {err}. Restart Home Assistant to load the new version.",
             )
             _LOGGER.error("Automatic restart after update failed: %s", err)
+
+    # -- HACS bookkeeping
+
+    async def async_sync_hacs(self, version: Optional[str] = None) -> bool:
+        """Tell HACS which version is on disk, if HACS manages this integration.
+
+        An installation set up through HACS has two things that believe they
+        own custom_components/ha_dispatch_client: HACS, which recorded the
+        version it downloaded, and this updater, which has swapped the files
+        several times since. HACS never re-reads the files. So after the first
+        self-update its update entity reports the version it installed months
+        ago as "installed" and offers an "update" to whichever GitHub release
+        it last saw -- and taking that offer overwrites a signed release with
+        HACS's own unsigned download of an older one.
+
+        Called after every swap (before the restart, so HACS's save lands) and
+        once at every start-up, for an installation that drifted before this
+        existed. It sets `installed_version`, and `last_version` when HACS's
+        idea of "latest" is older than what is now running -- HACS replaces
+        the latter with the truth on its next fetch; this only stops the
+        entity claiming a downgrade is an update in the meantime.
+
+        Strictly best-effort, and strictly through HACS's live objects, never
+        its storage files (HACS would overwrite an edit there on its next
+        save). No HACS, a HACS that does not manage this integration, or a
+        HACS shaped differently from the one this was written against all
+        mean "nothing to do", at DEBUG. Returns whether anything changed.
+        """
+        hacs = (getattr(self.hass, "data", None) or {}).get(HACS_DOMAIN)
+        if hacs is None:
+            _LOGGER.debug("HACS is not loaded; nothing to sync")
+            return False
+
+        if version is None:
+            version = await self.async_installed_version()
+        if not version:
+            return False
+
+        try:
+            repository = self._hacs_repository(hacs)
+            if repository is None:
+                _LOGGER.debug("HACS does not manage %s; nothing to sync", DOMAIN)
+                return False
+
+            data = repository.data
+            current = data.installed_version
+            latest = getattr(data, "last_version", None)
+
+            # HACS records release tags as GitHub names them, so an
+            # installation downloaded from a "v1.5.1" release must be told it
+            # is on "v1.7.5", not "1.7.5", or HACS reads the two as different.
+            prefix = "v" if any(str(x).startswith("v") for x in (current, latest) if x) else ""
+            target = f"{prefix}{version}"
+
+            changes: Dict[str, str] = {}
+            if str(current or "") != target:
+                changes["installed_version"] = target
+            if latest and is_newer(str(version), str(latest).lstrip("v")):
+                changes["last_version"] = target
+
+            if not changes:
+                return False
+
+            for field, value in changes.items():
+                setattr(data, field, value)
+        except Exception as err:  # noqa: BLE001 - HACS internals; never break an update
+            _LOGGER.debug("Could not read HACS's record of this integration: %s", err)
+            return False
+
+        _LOGGER.info(
+            "HACS recorded this integration at %s; told it %s is installed",
+            current, target,
+        )
+
+        try:
+            await hacs.data.async_write(force=True)
+        except Exception as err:  # noqa: BLE001 - best-effort
+            _LOGGER.warning("Could not persist the HACS record: %s", err)
+
+        try:
+            hacs.async_dispatch(
+                HACS_REPOSITORY_SIGNAL,
+                {"id": str(getattr(data, "id", "")), "repository": getattr(data, "full_name", None)},
+            )
+        except Exception as err:  # noqa: BLE001 - best-effort
+            _LOGGER.debug("Could not nudge HACS's entities: %s", err)
+
+        return True
+
+    @staticmethod
+    def _hacs_repository(hacs: Any) -> Any:
+        """HACS's downloaded repository for this integration, or None.
+
+        By full name first; failing that, by domain among everything HACS
+        has downloaded, so a fork under another name is still found. Only a
+        repository HACS believes it *downloaded* counts -- one it merely
+        knows about is not HACS's to keep a version for.
+        """
+        repositories = getattr(hacs, "repositories", None)
+        if repositories is None:
+            return None
+
+        lookup = getattr(repositories, "get_by_full_name", None)
+        repository = lookup(HACS_REPOSITORY_FULL_NAME) if lookup is not None else None
+        if repository is not None and getattr(repository.data, "installed", False):
+            return repository
+
+        for candidate in getattr(repositories, "list_downloaded", None) or []:
+            data = getattr(candidate, "data", None)
+            if getattr(data, "domain", None) == DOMAIN and getattr(data, "installed", False):
+                return candidate
+
+        return None
 
     # -- boot-time confirmation
 
