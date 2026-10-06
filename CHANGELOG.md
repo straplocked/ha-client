@@ -2,6 +2,26 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.7.5] - 2026-10-06
+
+### Fixed — HACS no longer offers to "update" a self-updated install to an older release
+
+An installation set up through HACS has two things that believe they own
+`custom_components/ha_dispatch_client`: HACS, which recorded the version it
+downloaded, and this integration's signed self-updater, which has replaced the
+files several times since. HACS never re-reads the files, so on the first real
+house it showed v1.5.1 installed with an "update" to v1.7.2 while 1.7.4 was
+actually running — and taking that offer would have overwritten a signed
+release with HACS's own download of an older one.
+
+The updater now tells HACS what is on disk, through HACS's live repository
+record (never its storage files): after every swap, before the restart, and
+once at every start-up for an installation that drifted before this existed.
+HACS's "latest" is also corrected when it is older than what is running, until
+HACS next fetches the truth. Strictly best-effort: no HACS, a HACS that does
+not manage this integration, or a HACS shaped differently all mean nothing
+happens. A fork under another repository name is still found, by domain.
+
 ## [1.7.4] - 2026-10-05
 
 ### Changed — the Home 3D dashboard is one view per floor, and no longer carries the 3D model
