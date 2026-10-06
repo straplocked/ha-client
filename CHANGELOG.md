@@ -2,6 +2,21 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.7.6] - 2026-10-06
+
+### Added — the deploy report says what happened to every device
+
+The first real deploy put no device icons on the plan, and the only way to
+learn why was a log on a house nobody could reach. Now the matcher records a
+decision for every device in the estimate — bound to which entity and by
+which rule, or skipped and why (`no_shared_word`, `no_entities`, `unplaced`,
+`no_floor`, …) — together with up to ten of the entity ids the house actually
+has in that domain. The list rides along with the `done` report to Dispatch
+and is shown on the installer's Floor plan tab, so "why no icons" is answered
+from the screen, under the permission the homeowner already gave for the
+deploy itself. Across a report, the candidate lists amount to the house's
+entity list, which is the input the matching rules have been waiting on.
+
 ## [1.7.5] - 2026-10-06
 
 ### Fixed — HACS no longer offers to "update" a self-updated install to an older release
