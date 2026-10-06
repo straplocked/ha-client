@@ -192,8 +192,10 @@ class FakeApi:
             raise self._pending_error
         return self._pending
 
-    async def report_floorplan(self, installation_id, job_id, status, detail=None):
-        self.reports.append({"job_id": job_id, "status": status, "detail": detail})
+    async def report_floorplan(self, installation_id, job_id, status, detail=None, devices=None):
+        self.reports.append(
+            {"job_id": job_id, "status": status, "detail": detail, "devices": devices}
+        )
         return {"status": "ok"}
 
     async def download_floorplan_asset(self, url, dest_path):
@@ -424,6 +426,85 @@ class MatchingRulesTest(unittest.TestCase):
         self.assertIn("light.hue_lamp_3", captured.output[0])
 
 
+class DecisionRecordTest(unittest.TestCase):
+    """What the deploy report carries back: one record per device, bound or
+    skipped with its reason, and the entities the house had in that domain."""
+
+    def _decide(self, states, device):
+        decisions = []
+        bound = floorplan_mod.async_match_entity(FakeHass(states=states), device, None, decisions)
+        self.assertEqual(len(decisions), 1)
+        return bound, decisions[0]
+
+    def test_a_bound_device_records_the_entity_and_how_it_was_chosen(self):
+        bound, record = self._decide(
+            [FakeState("light.den_lamp", "Den Lamp"), FakeState("light.hue_4", "Hue 4")],
+            {"entity": "light.den.01", "domain": "light", "room": "Den",
+             "floor_key": "Floor_1", "cls": "light", "source_line": "Light fixture - Den"},
+        )
+        self.assertEqual(bound, "light.den_lamp")
+        self.assertEqual(record["bound"], "light.den_lamp")
+        self.assertEqual(record["reason"], "room_word")
+        self.assertEqual(record["via"], "name")
+        self.assertEqual(record["label"], "Light fixture - Den")
+        self.assertEqual(record["floor"], "Floor_1")
+        self.assertEqual(sorted(record["candidates"]), ["light.den_lamp", "light.hue_4"])
+
+    def test_the_only_entity_rule_is_named_as_the_reason(self):
+        _, record = self._decide(
+            [FakeState("climate.hallway", "Ecobee")],
+            {"entity": "thermostat.den.01", "domain": "climate", "room": "Den"},
+        )
+        self.assertEqual(record["bound"], "climate.hallway")
+        self.assertEqual(record["reason"], "only_entity")
+
+    def test_a_skipped_device_records_why_and_what_the_house_had_instead(self):
+        _, record = self._decide(
+            [FakeState("light.hue_3", "Hue lamp 3"), FakeState("light.hue_4", "Hue lamp 4")],
+            {"entity": "light.den.01", "domain": "light", "room": "Den"},
+        )
+        self.assertIsNone(record["bound"])
+        self.assertEqual(record["reason"], "no_shared_word")
+        # Across a report, these candidate lists are the house's entity list.
+        self.assertEqual(sorted(record["candidates"]), ["light.hue_3", "light.hue_4"])
+
+    def test_a_domain_the_house_does_not_have_is_its_own_reason(self):
+        _, record = self._decide(
+            [FakeState("light.hue_3", "Hue lamp 3")],
+            {"entity": "camera.porch.01", "domain": "camera", "room": "Porch"},
+        )
+        self.assertEqual(record["reason"], "no_entities")
+        self.assertEqual(record["candidates"], [])
+
+    def test_candidates_are_capped(self):
+        states = [FakeState(f"sensor.s{i}", f"Sensor {i}") for i in range(40)]
+        _, record = self._decide(
+            states, {"entity": "sensor.den.01", "domain": "sensor", "room": "Den"}
+        )
+        self.assertEqual(len(record["candidates"]), 10)
+
+    def test_a_device_with_no_position_and_a_device_on_no_floor_are_accounted_for(self):
+        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
+        ha_map = {"devices": HA_MAP["devices"] + [
+            {"entity": "light.loft.01", "domain": "light", "room": "Loft",
+             "floor_key": "Floor_1"},                                  # no xy_ft
+            {"entity": "light.attic.01", "domain": "light", "room": "Attic",
+             "floor_key": "Attic", "xy_ft": [0.0, 0.0]},                # no such floor
+        ]}
+        decisions = []
+        floorplan_mod.build_dashboard_views(
+            hass, TWO_FLOOR_HOTSPOTS, ha_map,
+            {"Floor_1": "/local/plan_Floor_1.png", "Floor_2": "/local/plan_Floor_2.png"},
+            TWO_FLOOR_TRANSFORM, decisions=decisions,
+        )
+        by_entity = {d["entity"]: d["reason"] for d in decisions}
+        self.assertEqual(by_entity["light.loft.01"], "unplaced")
+        self.assertEqual(by_entity["light.attic.01"], "no_floor")
+        self.assertEqual(by_entity["thermostat.den.01"], "only_entity")
+        # Every device the estimate listed is in the report exactly once.
+        self.assertEqual(len(decisions), len(ha_map["devices"]))
+
+
 class CardBuildingTest(unittest.TestCase):
     def test_room_hotspots_become_labeled_points_regardless_of_entities(self):
         hass = FakeHass(states=[])
@@ -644,6 +725,14 @@ class SuccessfulDeployTest(unittest.TestCase):
             self.assertEqual(len(api.reports), 1)
             self.assertEqual(api.reports[0]["status"], "done")
             self.assertEqual(api.reports[0]["job_id"], "101")
+            # The report says what happened to each device, and the summary
+            # line says it in one sentence for the audit trail.
+            devices = api.reports[0]["devices"]
+            self.assertEqual(
+                {d["entity"]: d["bound"] for d in devices},
+                {"thermostat.den.01": "climate.den_thermostat", "light_recessed.kitchen.01": None},
+            )
+            self.assertIn("1 of 2 devices placed", api.reports[0]["detail"])
 
             registry = manager._dashboards_store.data
             self.assertEqual(len(registry["items"]), 1)
@@ -945,6 +1034,7 @@ class FailedDeployTest(unittest.TestCase):
             self.assertEqual(len(api.reports), 1)
             self.assertEqual(api.reports[0]["status"], "failed")
             self.assertIn("connection reset", api.reports[0]["detail"])
+            self.assertIsNone(api.reports[0]["devices"])
             self.assertEqual(notifications.created, [])
             self.assertEqual(manager._running, set())
 

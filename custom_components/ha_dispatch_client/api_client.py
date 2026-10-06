@@ -697,11 +697,15 @@ class HADispatchApiClient:
         job_id: Any,
         status: str,
         detail: Optional[str] = None,
+        devices: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Report the outcome of applying a floorplan deploy.
 
         status is "done" or "failed", sent verbatim. detail is a short
-        human-readable note -- what got deployed, or why it did not.
+        human-readable note -- what got deployed, or why it did not. devices
+        is the dashboard's per-device match record (floorplan.py's _decide),
+        one entry per device in the estimate, so the server can show which
+        were placed and why the rest were not.
         """
         url = self.server_url + API_FLOORPLAN_REPORT.format(
             installation_id=installation_id, id=job_id
@@ -709,6 +713,8 @@ class HADispatchApiClient:
         data: Dict[str, Any] = {"status": status}
         if detail:
             data["detail"] = str(detail)[:2000]
+        if devices is not None:
+            data["devices"] = list(devices)
 
         _LOGGER.debug("Reporting floorplan deploy %s: status=%s", job_id, status)
         async with self.session.post(

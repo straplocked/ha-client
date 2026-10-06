@@ -143,10 +143,55 @@ def area_tokens_by_entity(hass: HomeAssistant) -> Dict[str, set[str]]:
     return result
 
 
+# How many candidate entity ids a decision record keeps. Enough to tell the
+# installer what the house actually has in that domain; bounded so a house
+# with two hundred sensors does not turn one report into a dump.
+_DECISION_CANDIDATES = 10
+
+
+def _decide(
+    decisions: Optional[List[Dict[str, Any]]],
+    device: Dict[str, Any],
+    bound: Optional[str],
+    reason: str,
+    *,
+    via: Optional[str] = None,
+    candidates: Any = (),
+) -> Optional[str]:
+    """Record one device's match outcome, and hand `bound` straight back.
+
+    The record is what the deploy report carries to Dispatch, so that "why
+    does the plan show no icons" can be answered from the installer's own
+    screen rather than from a log on a house nobody can reach. Candidates
+    are the entity ids this house actually has in the device's domain --
+    which, across a whole report, is the entity list the matcher was
+    working from.
+    """
+    if decisions is not None:
+        decisions.append(
+            {
+                "entity": str(device.get("entity") or ""),
+                "label": str(device.get("source_line") or device.get("entity") or ""),
+                "room": str(device.get("room") or ""),
+                "floor": str(device.get("floor_key") or device.get("floor") or ""),
+                "domain": str(device.get("domain") or ""),
+                "cls": str(device.get("cls") or ""),
+                "bound": bound,
+                "reason": reason,
+                "via": via,
+                "candidates": [
+                    str(getattr(c, "entity_id", c)) for c in list(candidates)[:_DECISION_CANDIDATES]
+                ],
+            }
+        )
+    return bound
+
+
 def async_match_entity(
     hass: HomeAssistant,
     device: Dict[str, Any],
     area_tokens: Optional[Dict[str, set[str]]] = None,
+    decisions: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[str]:
     """Resolve one ha_map.json device record to a real entity, or None.
 
@@ -173,41 +218,41 @@ def async_match_entity(
 
     Candidates come from hass.states.async_all(), the enumeration idiom the
     rest of this integration uses (health.py, updates.py). Every decision is
-    logged at INFO with its reason, because the only way to find out why a
-    real house shows no icons is to read, on that house, what each device
-    considered -- deploys are rare enough that this is not noise.
+    logged at INFO with its reason and, when `decisions` is given, recorded
+    there for the deploy report (see _decide) -- the first real house showed
+    no icons and nobody could reach its log to learn why.
     """
     label = f"{device.get('entity') or '?'} in {device.get('room') or '?'}"
     domain = str(device.get("domain") or "").strip()
     if not domain:
         _LOGGER.info("Floorplan device %s skipped: no domain", label)
-        return None
+        return _decide(decisions, device, None, "no_domain")
 
     lister = getattr(getattr(hass, "states", None), "async_all", None)
     if lister is None:
-        return None
+        return _decide(decisions, device, None, "unavailable")
 
     try:
         candidates = list(lister(domain))
     except _SOFT_ERRORS as err:
         _LOGGER.debug("Could not enumerate %s entities: %s", domain, err)
-        return None
+        return _decide(decisions, device, None, "unavailable")
 
     if not candidates:
         _LOGGER.info("Floorplan device %s skipped: no %s entities exist", label, domain)
-        return None
+        return _decide(decisions, device, None, "no_entities")
 
     if len(candidates) == 1:
         only = getattr(candidates[0], "entity_id", None)
         _LOGGER.info(
             "Floorplan device %s bound to %s: the only %s entity", label, only, domain
         )
-        return only
+        return _decide(decisions, device, only, "only_entity", candidates=candidates)
 
     room_tokens = _tokens(device.get("room"))
     if not room_tokens:
         _LOGGER.info("Floorplan device %s skipped: no room name to match on", label)
-        return None
+        return _decide(decisions, device, None, "no_room", candidates=candidates)
 
     if area_tokens is None:
         area_tokens = area_tokens_by_entity(hass)
@@ -230,14 +275,16 @@ def async_match_entity(
             "Floorplan device %s bound to %s: shares %d room word(s) by %s",
             label, best_entity, best_score, best_via,
         )
-        return best_entity
+        return _decide(
+            decisions, device, best_entity, "room_word", via=best_via, candidates=candidates
+        )
 
     _LOGGER.info(
         "Floorplan device %s skipped: none of %d %s entities share a room word (%s)",
         label, len(candidates), domain,
         ", ".join(str(getattr(s, "entity_id", "?")) for s in candidates[:8]),
     )
-    return None
+    return _decide(decisions, device, None, "no_shared_word", candidates=candidates)
 
 
 # --- coordinate mapping ----------------------------------------------------
@@ -390,6 +437,7 @@ def build_picture_elements_card(
     image_url: str,
     transform: Optional[Dict[str, Any]] = None,
     area_tokens: Optional[Dict[str, set[str]]] = None,
+    decisions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build one floor's picture-elements card: plan backplate, room labels,
     device icons.
@@ -462,9 +510,12 @@ def build_picture_elements_card(
             continue
         xy = device.get("xy_ft")
         if not xy or len(xy) < 2:
+            # The render pipeline could not anchor this device to a room, so
+            # there is nowhere on the plan to put it whatever it matches.
+            _decide(decisions, device, None, "unplaced")
             continue
 
-        entity_id = async_match_entity(hass, device, area_tokens)
+        entity_id = async_match_entity(hass, device, area_tokens, decisions)
         if entity_id is None:
             continue
 
@@ -542,6 +593,7 @@ def build_dashboard_views(
     plan_image_urls: Dict[str, str],
     plan_transform: Dict[str, Any],
     fallback_image_url: Optional[str] = None,
+    decisions: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """One Lovelace view per floor, lowest floor first: a panel view holding
     that floor's top-down plan card with its room labels and device icons.
@@ -561,11 +613,18 @@ def build_dashboard_views(
     `fallback_image_url` is the legacy hero backplate, used only as a floor's
     image when that floor has no plan render of its own (a deploy job from
     before per-floor plans).
+
+    `decisions`, when given, collects one record per device in ha_map.json
+    -- bound, or skipped with the reason -- for the deploy report. A device
+    on a floor that has no view, or on no known floor at all, is recorded
+    here as well, so the report accounts for every device the estimate
+    listed.
     """
     devices = [d for d in (ha_map.get("devices") or []) if isinstance(d, dict)]
     floor_keys = _ordered_floor_keys(hotspots_by_floor, plan_transform)
     single_floor = len(floor_keys) == 1
     area_tokens = area_tokens_by_entity(hass)
+    considered: List[Dict[str, Any]] = []
 
     views: List[Dict[str, Any]] = []
     for key in floor_keys:
@@ -578,10 +637,11 @@ def build_dashboard_views(
         floor_devices = devices if single_floor else [
             d for d in devices if d.get("floor_key") == key
         ]
+        considered.extend(floor_devices)
 
         transform = plan_transform.get(key) if isinstance(plan_transform, dict) else None
         card = build_picture_elements_card(
-            hass, rooms, floor_devices, image_url, transform, area_tokens
+            hass, rooms, floor_devices, image_url, transform, area_tokens, decisions
         )
         number = len(views) + 1
         views.append(
@@ -593,6 +653,11 @@ def build_dashboard_views(
                 "cards": [card],
             }
         )
+
+    if decisions is not None:
+        for device in devices:
+            if not any(device is seen for seen in considered):
+                _decide(decisions, device, None, "no_floor")
 
     return views
 
@@ -723,6 +788,7 @@ class HADispatchFloorplan:
         """Download, build, and write one deploy job; report the outcome."""
         job_id = str(job.get("id") or "")
 
+        decisions: List[Dict[str, Any]] = []
         try:
             paths = await self._async_download_assets(job)
             hotspots, ha_map, plan_transform = await self._async_load_manifests(paths)
@@ -733,6 +799,7 @@ class HADispatchFloorplan:
                 paths.get("plan_image_urls") or {},
                 plan_transform,
                 fallback_image_url=paths.get("image_url"),
+                decisions=decisions,
             )
             if not views:
                 raise FloorplanApplyError(
@@ -745,9 +812,16 @@ class HADispatchFloorplan:
             self._running.discard(job_id)
             return
 
-        _LOGGER.info("Floorplan deploy %s applied; Home 3D dashboard updated", job_id)
+        placed = sum(1 for d in decisions if d.get("bound"))
+        _LOGGER.info(
+            "Floorplan deploy %s applied; Home 3D dashboard updated, %d of %d devices placed",
+            job_id, placed, len(decisions),
+        )
         await self._async_report(
-            job_id, FLOORPLAN_REPORT_STATUS_DONE, "Home 3D dashboard deployed"
+            job_id,
+            FLOORPLAN_REPORT_STATUS_DONE,
+            f"Home 3D dashboard deployed; {placed} of {len(decisions)} devices placed",
+            devices=decisions,
         )
         self._notify_success(went_live)
         self._running.discard(job_id)
@@ -1097,12 +1171,22 @@ class HADispatchFloorplan:
     # -- reporting ----------------------------------------------------------
 
     async def _async_report(
-        self, job_id: str, status: str, detail: Optional[str]
+        self,
+        job_id: str,
+        status: str,
+        detail: Optional[str],
+        devices: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Report the outcome, tolerating a server that cannot take it."""
+        """Report the outcome, tolerating a server that cannot take it.
+
+        `devices` is the matcher's decision list (see _decide): what each
+        device from the estimate was bound to, or why it was not, and which
+        entities the house had to offer. Sent with a successful deploy so the
+        installer can read it off Dispatch instead of this house's log.
+        """
         try:
             await self.api.report_floorplan(
-                self.installation_id, job_id, status, detail=detail
+                self.installation_id, job_id, status, detail=detail, devices=devices
             )
         except FloorplanUnavailable:
             _LOGGER.info(
