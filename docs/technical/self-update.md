@@ -426,11 +426,15 @@ With GitHub releases as the artifact source, HACS support is nearly free: add `h
 }
 ```
 
-**Caveat:** if HACS installed the integration and the self-updater later rewrites the same files, HACS's record of the installed version goes stale until it rescans, and a subsequent HACS update may overwrite a newer self-installed version. Do not try to reconcile the two automatically. Instead:
+**The two-owner problem.** If HACS installed the integration and the self-updater later rewrites the same files, HACS's record of the installed version goes stale — HACS never re-reads the directory — and a subsequent HACS "update" would overwrite a newer, signed, self-installed version with HACS's own unsigned download of an older one.
 
-- Default `auto_update` to false.
-- Detect a HACS-managed install (presence of the repo in HACS's store data) and surface a repairs issue when `auto_update` is enabled alongside it.
-- Document "pick one": HACS for individually-managed instances, Dispatch self-update for fleets.
+The original plan here was *not* to reconcile the two automatically, and to document "pick one" instead. That did not survive contact with a real house: the first fleet install was set up through HACS, self-updated to 1.7.4, and HACS then showed v1.5.1 installed with an "update" to v1.7.2 waiting to be tapped. Since 1.7.5 the updater reconciles, best-effort:
+
+- `ClientUpdater.async_sync_hacs()` runs after every swap, before the restart (so HACS's own save of the record lands), and once at every start-up (for an installation that drifted before 1.7.5).
+- It finds HACS at `hass.data["hacs"]` and the repository by full name or, failing that, by domain among HACS's *downloaded* repositories, and sets `installed_version` on the live record — plus `last_version` when HACS's notion of "latest" is older than what is running, so the entity does not present a downgrade as an update until HACS next fetches the truth. It then asks HACS to persist (`hacs.data.async_write(force=True)`) and dispatches HACS's repository signal so its entities redraw.
+- It never writes HACS's storage files directly (HACS would overwrite the edit on its next save), and it never raises: no HACS, a HACS that does not manage this integration, or a HACS whose internals have moved all reduce to a DEBUG line. The tag prefix follows what HACS already uses (`v1.7.5` for a repository downloaded from a `v`-prefixed release), because HACS compares the strings as they are.
+
+What remains true: the updater is the authority for fleet installs, HACS for individually-managed ones, and the reconciliation exists so that an install which started as the latter can safely become the former.
 
 ---
 
@@ -473,30 +477,3 @@ With GitHub releases as the artifact source, HACS support is nearly free: add `h
 - update windows including the wrap past midnight and the malformed-value case
 
 Not covered by automated tests: the download path, the restart call, and boot-time confirmation, all of which need a running Home Assistant. Exercise those on a canary instance.
-
-## HACS and the self-updater
-
-An installation that was first set up through HACS has two parties that
-believe they own `custom_components/ha_dispatch_client`. HACS records the
-version it downloaded and never re-reads the directory; the self-updater
-replaces the directory and, until 1.7.5, never told HACS. The result on a real
-house was a HACS update entity showing v1.5.1 installed and offering v1.7.2,
-with 1.7.4 running — an offer that would have replaced a signed release with
-HACS's unsigned download of an older one.
-
-`ClientUpdater.async_sync_hacs()` closes that gap. It runs after every swap,
-before the restart (so HACS's own save of the record lands), and once at every
-start-up (for an installation that drifted before 1.7.5). It finds HACS at
-`hass.data["hacs"]`, the repository by full name or, failing that, by domain
-among HACS's downloaded repositories, and sets `installed_version` on the live
-record — plus `last_version` when HACS's notion of "latest" is older than what
-is running, so the entity does not present a downgrade as an update until HACS
-next fetches. It then asks HACS to persist (`hacs.data.async_write(force=True)`)
-and dispatches HACS's repository signal so its entities redraw.
-
-It never writes HACS's storage files directly (HACS would overwrite the edit on
-its next save), and it never raises: no HACS, a HACS that does not manage this
-integration, or a HACS whose internals have moved all reduce to a DEBUG line.
-The tag prefix follows what HACS already uses (`v1.7.5` for a repository
-downloaded from a `v`-prefixed release), because HACS compares the two strings
-as they are.
