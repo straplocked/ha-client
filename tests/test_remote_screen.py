@@ -20,6 +20,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from test_remote_access import (  # noqa: E402 -- shares the loader and fakes
+    PENDING_PAYLOAD,
     DOMAIN,
     EMPTY_PAYLOAD,
     FakeApiClient,
@@ -349,3 +350,26 @@ class UnknownSessionTest(unittest.TestCase):
             asyncio.run(manager.tunnel.async_pump_once())
 
         self.assertEqual(len(fetched), 1, "One refresh, then the limit holds.")
+
+
+class GracefulStopTest(unittest.TestCase):
+    def test_the_last_session_ending_does_not_cancel_a_poll_in_flight(self):
+        manager, _, _ = make_manager(pending=[PENDING_PAYLOAD])
+        asyncio.run(manager.async_poll_pending())
+        asyncio.run(manager.async_respond(41, "grant"))
+        task = manager.tunnel._task
+
+        asyncio.run(manager.async_revoke(41))
+
+        self.assertFalse(manager.tunnel.running, "It stops counting as running at once.")
+        self.assertFalse(task.cancelled, "But the poll in flight is left to finish its work.")
+
+    def test_unloading_still_cancels(self):
+        manager, _, _ = make_manager(pending=[PENDING_PAYLOAD])
+        asyncio.run(manager.async_poll_pending())
+        asyncio.run(manager.async_respond(41, "grant"))
+        task = manager.tunnel._task
+
+        asyncio.run(manager.async_unload())
+
+        self.assertTrue(task.cancelled)

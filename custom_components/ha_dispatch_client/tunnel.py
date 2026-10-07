@@ -197,13 +197,28 @@ class HADispatchTunnel:
         _LOGGER.info("Remote access session is live; starting the request tunnel")
         self._task = self._create_task(self._async_run())
 
-    def async_stop(self) -> None:
-        """Take the poll loop down, if it is up."""
+    def async_stop(self, graceful: bool = True) -> None:
+        """Take the poll loop down, if it is up.
+
+        Gracefully by default: the loop stops counting as running at once,
+        but a long-poll already in flight is left to come back and its work
+        is answered before the loop exits. Cancelling it instead abandons the
+        request on our side only -- the server keeps that poll open for up
+        to 25 s, and if a new session opens in that window, the orphaned poll
+        claims its first request and hands it to a closed connection. That
+        request then sits unanswered until the relay's 30 s timeout: a
+        Remote Screen opened 20 s after the last one ended took 36 s to
+        appear, every time.
+
+        graceful=False is for unloading and for a server that has withdrawn
+        remote access, where nothing in flight is worth finishing.
+        """
         if self._task is None:
             return
         if not self._task.done():
             _LOGGER.info("No live remote access session; stopping the request tunnel")
-            self._task.cancel()
+            if not graceful:
+                self._task.cancel()
         self._task = None
         self._create_task(self.screen.async_close_all())
 
@@ -221,10 +236,15 @@ class HADispatchTunnel:
         that withdraws the endpoints mid-session would otherwise leave this
         looping against a 404 with sessions still nominally live.
         """
+        me = asyncio.current_task()
         try:
             while self.access.available and self.access.has_live_sessions():
                 if not await self.async_pump_once():
                     await asyncio.sleep(ACCESS_POLL_BACKOFF)
+                # Stopped gracefully, or replaced by a newer loop: the poll
+                # that was in flight has been answered, so leave now.
+                if self._task is not me:
+                    break
         except asyncio.CancelledError:
             raise
         finally:

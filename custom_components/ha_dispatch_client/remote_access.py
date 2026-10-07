@@ -179,7 +179,7 @@ class HADispatchRemoteAccess:
     def async_disable(self) -> None:
         """Stop trying: this server does not offer remote access."""
         self.available = False
-        self.tunnel.async_stop()
+        self.tunnel.async_stop(graceful=False)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -220,7 +220,7 @@ class HADispatchRemoteAccess:
 
     async def async_unload(self) -> None:
         """Stop polling. Live sessions stay on disk; consent is not withdrawn."""
-        self.tunnel.async_stop()
+        self.tunnel.async_stop(graceful=False)
 
     # -- the consent loop ---------------------------------------------------
 
