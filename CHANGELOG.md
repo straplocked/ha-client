@@ -2,7 +2,7 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
-## [Unreleased] — branch feat/remote-screen
+## [1.7.7] - 2026-10-07
 
 ### Added — Remote Screen
 
