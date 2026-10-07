@@ -221,14 +221,23 @@ class PollHintTest(unittest.TestCase):
 
 
 def _registry(devices, entries):
-    """Install a fake device registry and config entry lookup."""
+    """Install a fake device registry and config entry lookup.
+
+    Shaped like the supported API: entries by domain, devices by entry.
+    """
     module = types.ModuleType("homeassistant.helpers.device_registry")
-    module.async_get = lambda hass: types.SimpleNamespace(devices={str(i): d for i, d in enumerate(devices)})
+    module.async_get = lambda hass: object()
+    module.async_entries_for_config_entry = lambda registry, entry_id: [
+        d for d in devices if entry_id in d.config_entries
+    ]
     sys.modules["homeassistant.helpers.device_registry"] = module
     helpers = sys.modules.get("homeassistant.helpers")
     if helpers is not None:
         helpers.device_registry = module
-    return types.SimpleNamespace(async_get_entry=lambda entry_id: entries.get(entry_id))
+    by_domain = {}
+    for entry_id, entry in entries.items():
+        by_domain.setdefault(entry.domain, []).append(types.SimpleNamespace(entry_id=entry_id, domain=entry.domain))
+    return types.SimpleNamespace(async_entries=lambda domain: by_domain.get(domain, []))
 
 
 def _device(entry, manufacturer, model, name=None):
@@ -296,3 +305,47 @@ class ScreenDevicesTest(unittest.TestCase):
         manager._devices_sent_at = -1e9  # would be due again
         asyncio.run(manager.async_poll_pending())
         self.assertEqual(len(calls), 1)
+
+
+class UnknownSessionTest(unittest.TestCase):
+    def test_work_for_a_session_we_have_not_heard_of_refreshes_consent_first(self):
+        # The server already counts session 88 as a live screen; our own
+        # consent poll has not run since. The poll brings its first frames.
+        api = FakeApiClient(pending=[dict(EMPTY_PAYLOAD, active=[_active()])])
+
+        async def poll_access_payload(installation_id):
+            return {"requests": [], "frames": [{"session_id": 88, "kind": "open"}]}
+
+        api.poll_access_payload = poll_access_payload
+        manager, _, _ = make_manager(api=api)
+        opened = []
+
+        async def fake_open(session_id):
+            opened.append(session_id)
+
+        manager.tunnel.screen._async_open = fake_open
+        asyncio.run(manager.tunnel.async_pump_once())
+
+        self.assertEqual(opened, ["88"], "The socket opens on first contact, not after the next tick.")
+
+    def test_a_session_that_is_not_ours_does_not_cause_a_refresh_storm(self):
+        api = FakeApiClient(pending=[EMPTY_PAYLOAD] * 5)
+        fetched = []
+        original = api.fetch_pending_access
+
+        async def counting(installation_id):
+            fetched.append(1)
+            return await original(installation_id)
+
+        api.fetch_pending_access = counting
+
+        async def poll_access_payload(installation_id):
+            return {"requests": [], "frames": [{"session_id": 999, "kind": "open"}]}
+
+        api.poll_access_payload = poll_access_payload
+        manager, _, _ = make_manager(api=api)
+
+        for _ in range(3):
+            asyncio.run(manager.tunnel.async_pump_once())
+
+        self.assertEqual(len(fetched), 1, "One refresh, then the limit holds.")

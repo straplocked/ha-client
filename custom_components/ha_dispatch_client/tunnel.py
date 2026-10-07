@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import time
 from typing import Any, Dict, Optional
 
 import aiohttp
@@ -78,6 +79,10 @@ from .const import (
 from .screen import ScreenSockets
 
 _LOGGER = logging.getLogger(__name__)
+
+# The quickest we will re-ask for the consent list because of work for a
+# session we do not know. See _async_learn_unknown_sessions().
+UNKNOWN_SESSION_REFRESH_SECONDS = 2.0
 
 # Privilege levels, keyed by the Home Assistant group the system user joins.
 GROUP_READ_ONLY = "system-read-only"
@@ -165,6 +170,7 @@ class HADispatchTunnel:
         # Remote Screen sessions' loopback WebSockets. Empty unless a screen
         # is open; see screen.py.
         self.screen = ScreenSockets(hass, self)
+        self._last_unknown_refresh = 0.0
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -250,6 +256,7 @@ class HADispatchTunnel:
             _LOGGER.debug("Remote access poll failed: %s", err)
             return False
 
+        await self._async_learn_unknown_sessions(requests, frames)
         await self.screen.async_prune()
 
         if not requests and not frames:
@@ -264,6 +271,36 @@ class HADispatchTunnel:
             return_exceptions=True,
         )
         return True
+
+    async def _async_learn_unknown_sessions(self, requests, frames) -> None:
+        """Ask for the consent list now if work arrived for a session we do not know.
+
+        The tunnel can be polling -- for another session, or a long-poll still
+        in flight from one that just ended -- when a new session opens. Its
+        first requests, and a Remote Screen's WebSocket "open", can then reach
+        us before our own consent poll has heard of it. Refusing them is
+        correct and harmful at once: the screen's socket is dropped and its
+        frontend sits waiting until it gives up and reconnects. So refresh
+        the consent list first. Consent is still only what the server lists;
+        this changes when we ask, not what we accept.
+
+        At most once every UNKNOWN_SESSION_REFRESH_SECONDS, so work for a
+        session that is genuinely not ours cannot drive a refresh loop.
+        """
+        unknown = {
+            str(item.get("session_id"))
+            for item in list(requests) + list(frames)
+            if item.get("session_id") is not None
+            and self.access.scope_for(item.get("session_id")) is None
+        }
+        if not unknown:
+            return
+        now = time.monotonic()
+        if now - self._last_unknown_refresh < UNKNOWN_SESSION_REFRESH_SECONDS:
+            return
+        self._last_unknown_refresh = now
+        _LOGGER.debug("Work arrived for unknown session(s) %s; refreshing consent", sorted(unknown))
+        await self.access.async_poll_pending()
 
     async def _async_answer(self, request: Dict[str, Any]) -> None:
         """Run one request and post whatever came of it."""

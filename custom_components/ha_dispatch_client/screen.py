@@ -65,16 +65,22 @@ def collect_screen_devices(hass) -> List[Dict[str, Any]]:
 
     registry = device_registry.async_get(hass)
     found: List[Dict[str, Any]] = []
+    seen = set()
 
-    for device in list(getattr(registry, "devices", {}).values()):
-        source = None
-        for entry_id in getattr(device, "config_entries", ()) or ():
-            entry = hass.config_entries.async_get_entry(entry_id)
-            if entry is not None and entry.domain in SCREEN_DEVICE_SOURCES:
-                source = entry.domain
-                break
-        if source is None:
+    # Per config entry, through the registry's own lookup: reading
+    # registry.devices as a mapping is deprecated and stops working in
+    # Home Assistant 2027.9.
+    pairs = [
+        (source, device)
+        for source in SCREEN_DEVICE_SOURCES
+        for entry in hass.config_entries.async_entries(source)
+        for device in device_registry.async_entries_for_config_entry(registry, entry.entry_id)
+    ]
+
+    for source, device in pairs:
+        if getattr(device, "id", id(device)) in seen:
             continue
+        seen.add(getattr(device, "id", id(device)))
 
         record: Dict[str, Any] = {
             "source": source,
