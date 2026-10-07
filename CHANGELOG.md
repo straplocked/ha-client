@@ -2,6 +2,25 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [Unreleased] — branch feat/screen-ahead
+
+### Added — the house's screens, and connecting in seconds
+- `poll_seconds` from `/access/pending` is honoured: where the homeowner's
+  enhanced-permissions grant lets a Remote Screen open unasked, the agent
+  checks every 10 s instead of every minute (hints under 5 s ignored).
+- The companion-app and Fully Kiosk devices in the registry are reported to
+  `/screen-devices`, so a technician can render the actual phone or wall
+  panel. Model only for phones; a phone is usually named after a person.
+
+### Fixed
+- Ending the last session cancelled a long-poll the server still held, and a
+  session opened in the next 25 s had its first request lost: a screen took
+  36 s to appear. The tunnel now stops gracefully.
+- Work for a session the agent had not heard of yet was refused; it now
+  refreshes the consent list first (at most every 2 s).
+- Device registry reads use `async_entries_for_config_entry`; reading
+  `registry.devices` as a mapping stops working in HA 2027.9.
+
 ## [1.7.7] - 2026-10-07
 
 ### Added — Remote Screen
