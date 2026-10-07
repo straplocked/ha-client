@@ -32,7 +32,11 @@ Agent-side spec: docs/technical/remote-access.md
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
+import time
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
@@ -53,11 +57,14 @@ from .const import (
     ACCESS_REQUEST_ISSUE_PREFIX,
     ACCESS_SCOPE_DIAGNOSTIC,
     ACCESS_SCOPE_SCREEN,
+    ACCESS_FAST_POLL_FLOOR_SECONDS,
+    SCREEN_DEVICES_RESEND_SECONDS,
     ACCESS_STORAGE_KEY,
     ACCESS_STORAGE_VERSION,
     ACCESS_UNKNOWN_REQUESTER,
     DOMAIN,
 )
+from .screen import collect_screen_devices
 from .tunnel import HADispatchTunnel
 
 _LOGGER = logging.getLogger(__name__)
@@ -133,6 +140,16 @@ class HADispatchRemoteAccess:
 
         self._store = Store(hass, ACCESS_STORAGE_VERSION, ACCESS_STORAGE_KEY)
         self.tunnel = HADispatchTunnel(hass, self)
+
+        # Faster consent checks, when the server asks for them: see
+        # _apply_poll_hint(). None means the coordinator's usual minute.
+        self.poll_seconds: Optional[int] = None
+        self._fast_task = None
+
+        # What we last told the server about this house's screens.
+        self._devices_digest: Optional[str] = None
+        self._devices_sent_at = 0.0
+        self._devices_supported = True
 
     # -- what the tunnel asks us -------------------------------------------
 
@@ -240,12 +257,14 @@ class HADispatchRemoteAccess:
 
         self.policy = payload.get("policy")
         self.standing_consent_until = payload.get("standing_consent_until")
+        self._apply_poll_hint(payload.get("poll_seconds"))
         self._reconcile(payload.get("requests") or [])
         self._reconcile_active(payload.get("active"))
         self._expire_live()
         await self._async_persist()
         self.tunnel.async_sync()
         self._notify_listeners()
+        await self._async_report_screen_devices()
 
     def _reconcile(self, requests: List[Dict[str, Any]]) -> None:
         """Bring the prompts on screen into line with the server's list."""
@@ -273,6 +292,70 @@ class HADispatchRemoteAccess:
             record = self.pending[session_id]
             self._clear_prompt(session_id)
             self._mark_live(session_id, record, announce=False)
+
+    # -- checking back sooner --------------------------------------------
+
+    def _apply_poll_hint(self, seconds: Any) -> None:
+        """Check for new sessions every `seconds`, if the server asks.
+
+        The server only asks where the homeowner has given the standing
+        enhanced-permissions yes, the one case where a Remote Screen can open
+        with nobody here tapping anything -- so how soon we notice is the
+        whole of the technician's wait. It is still a short poll: nothing is
+        held open while idle. Below ACCESS_FAST_POLL_FLOOR_SECONDS the hint is
+        ignored.
+        """
+        try:
+            seconds = int(seconds) if seconds is not None else None
+        except (TypeError, ValueError):
+            seconds = None
+        if seconds is not None and seconds < ACCESS_FAST_POLL_FLOOR_SECONDS:
+            seconds = None
+
+        self.poll_seconds = seconds
+        running = self._fast_task is not None and not self._fast_task.done()
+        if seconds is not None and not running:
+            self._fast_task = self.tunnel._create_task(self._async_fast_loop())
+
+    async def _async_fast_loop(self) -> None:
+        while self.available and self.poll_seconds:
+            await asyncio.sleep(self.poll_seconds)
+            await self.async_poll_pending()
+
+    # -- the house's screens ----------------------------------------------
+
+    async def _async_report_screen_devices(self) -> None:
+        """Send the house's screens when they change, and now and then anyway."""
+        if not self._devices_supported:
+            return
+        report = getattr(self.api, "report_screen_devices", None)
+        if report is None:
+            return
+
+        try:
+            devices = collect_screen_devices(self.hass)
+        except Exception as err:  # noqa: BLE001 - a registry hiccup must not stop consent
+            _LOGGER.debug("Could not read the device registry for screens: %s", err)
+            return
+
+        digest = hashlib.sha256(json.dumps(devices, sort_keys=True).encode()).hexdigest()
+        stale = time.monotonic() - self._devices_sent_at > SCREEN_DEVICES_RESEND_SECONDS
+        if digest == self._devices_digest and not stale:
+            return
+
+        try:
+            await report(self.installation_id, devices)
+        except RemoteAccessUnavailable:
+            # A server without Remote Screen. Do not ask again this run.
+            self._devices_supported = False
+            return
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            _LOGGER.debug("Could not report screen devices: %s", err)
+            return
+
+        self._devices_digest = digest
+        self._devices_sent_at = time.monotonic()
+        _LOGGER.debug("Reported %d screen device(s) to Dispatch", len(devices))
 
     def _reconcile_active(self, active: Optional[List[Dict[str, Any]]]) -> None:
         """Learn of open sessions that never came through the prompt.

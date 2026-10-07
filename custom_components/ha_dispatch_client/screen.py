@@ -32,7 +32,7 @@ import aiohttp
 from homeassistant.helpers import aiohttp_client
 
 from .api_client import RemoteAccessUnavailable
-from .const import ACCESS_SCOPE_SCREEN, ACCESS_SCREEN_FRAME_FLUSH
+from .const import ACCESS_SCOPE_SCREEN, ACCESS_SCREEN_FRAME_FLUSH, SCREEN_DEVICE_SOURCES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +50,46 @@ def substitute_auth(payload: str, token: str) -> str:
     if isinstance(message, dict) and message.get("type") == "auth":
         return json.dumps({"type": "auth", "access_token": token})
     return payload
+
+
+def collect_screen_devices(hass) -> List[Dict[str, Any]]:
+    """The screens this house looks at Home Assistant on.
+
+    Companion-app phones and tablets, and Fully Kiosk wall panels, from the
+    device registry. Only what sizes a render: the integration, the
+    manufacturer and the model. A wall panel's name is included, because
+    "Kitchen panel" is how a technician knows which one it is; a phone's is
+    not, because it is usually somebody's name.
+    """
+    from homeassistant.helpers import device_registry
+
+    registry = device_registry.async_get(hass)
+    found: List[Dict[str, Any]] = []
+
+    for device in list(getattr(registry, "devices", {}).values()):
+        source = None
+        for entry_id in getattr(device, "config_entries", ()) or ():
+            entry = hass.config_entries.async_get_entry(entry_id)
+            if entry is not None and entry.domain in SCREEN_DEVICE_SOURCES:
+                source = entry.domain
+                break
+        if source is None:
+            continue
+
+        record: Dict[str, Any] = {
+            "source": source,
+            "manufacturer": (getattr(device, "manufacturer", None) or "")[:128],
+            "model": (getattr(device, "model", None) or "")[:128],
+        }
+        if source == "fully_kiosk":
+            name = getattr(device, "name_by_user", None) or getattr(device, "name", None)
+            if name:
+                record["name"] = str(name)[:128]
+        if record["manufacturer"] or record["model"]:
+            found.append(record)
+
+    # Stable order, so an unchanged house produces an unchanged report.
+    return sorted(found, key=lambda d: (d["source"], d.get("name", ""), d["manufacturer"], d["model"]))
 
 
 class _LocalSocket:

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from .const import (
     API_ACCESS_EXCHANGE,
     API_ACCESS_FRAMES,
+    API_SCREEN_DEVICES,
     API_ACCESS_PENDING,
     API_ACCESS_POLL,
     API_ACCESS_RESPOND,
@@ -572,6 +573,20 @@ class HADispatchApiClient:
 
         async with self.session.post(
             url, json={"frames": frames}, headers=self._get_headers()
+        ) as response:
+            await self._raise_for_access_status(response)
+            return await response.json()
+
+    async def report_screen_devices(
+        self, installation_id: str, devices: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Tell Dispatch which screens this house uses (replaces the last report)."""
+        url = self.server_url + API_SCREEN_DEVICES.format(
+            installation_id=installation_id
+        )
+
+        async with self.session.post(
+            url, json={"devices": devices}, headers=self._get_headers()
         ) as response:
             await self._raise_for_access_status(response)
             return await response.json()

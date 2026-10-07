@@ -189,3 +189,110 @@ class PollFallbackTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- checking back sooner, and the house's screens -------------------------
+
+import sys
+import types
+
+
+class PollHintTest(unittest.TestCase):
+    def test_a_hint_starts_faster_checks_and_none_leaves_the_minute(self):
+        manager, _, hass = make_manager(pending=[dict(EMPTY_PAYLOAD, poll_seconds=10)])
+        asyncio.run(manager.async_poll_pending())
+        self.assertEqual(manager.poll_seconds, 10)
+        self.assertEqual(len(hass.background_tasks), 1, "One faster loop, started once.")
+
+        asyncio.run(manager.async_poll_pending())
+        self.assertEqual(len(hass.background_tasks), 1, "Not a second loop on the next poll.")
+
+    def test_a_hint_below_the_floor_is_ignored(self):
+        manager, _, hass = make_manager(pending=[dict(EMPTY_PAYLOAD, poll_seconds=1)])
+        asyncio.run(manager.async_poll_pending())
+        self.assertIsNone(manager.poll_seconds)
+        self.assertEqual(hass.background_tasks, [])
+
+    def test_no_hint_means_no_extra_polling(self):
+        manager, _, hass = make_manager(pending=[EMPTY_PAYLOAD])
+        asyncio.run(manager.async_poll_pending())
+        self.assertIsNone(manager.poll_seconds)
+        self.assertEqual(hass.background_tasks, [])
+
+
+def _registry(devices, entries):
+    """Install a fake device registry and config entry lookup."""
+    module = types.ModuleType("homeassistant.helpers.device_registry")
+    module.async_get = lambda hass: types.SimpleNamespace(devices={str(i): d for i, d in enumerate(devices)})
+    sys.modules["homeassistant.helpers.device_registry"] = module
+    helpers = sys.modules.get("homeassistant.helpers")
+    if helpers is not None:
+        helpers.device_registry = module
+    return types.SimpleNamespace(async_get_entry=lambda entry_id: entries.get(entry_id))
+
+
+def _device(entry, manufacturer, model, name=None):
+    return types.SimpleNamespace(config_entries={entry}, manufacturer=manufacturer, model=model,
+                                 name=name, name_by_user=None)
+
+
+class ScreenDevicesTest(unittest.TestCase):
+    def setUp(self):
+        self.entries = {
+            "phone": types.SimpleNamespace(domain="mobile_app"),
+            "panel": types.SimpleNamespace(domain="fully_kiosk"),
+            "hue": types.SimpleNamespace(domain="hue"),
+        }
+        self.devices = [
+            _device("phone", "Apple", "iPhone 15 Pro", "Alex's iPhone"),
+            _device("panel", "Amazon", "KFTRWI", "Kitchen panel"),
+            _device("hue", "Signify", "Hue bulb", "Lamp"),
+        ]
+
+    def test_only_screens_are_collected_and_a_phone_is_not_named(self):
+        hass = types.SimpleNamespace(config_entries=_registry(self.devices, self.entries))
+        found = screen_mod.collect_screen_devices(hass)
+
+        self.assertEqual(found, [
+            {"source": "fully_kiosk", "manufacturer": "Amazon", "model": "KFTRWI", "name": "Kitchen panel"},
+            {"source": "mobile_app", "manufacturer": "Apple", "model": "iPhone 15 Pro"},
+        ])
+
+    def test_the_report_is_sent_when_it_changes_not_every_poll(self):
+        sent = []
+
+        async def report(installation_id, devices):
+            sent.append(devices)
+            return {"stored": len(devices)}
+
+        api = FakeApiClient(pending=[EMPTY_PAYLOAD] * 3)
+        api.report_screen_devices = report
+        manager, _, hass = make_manager(api=api)
+        hass.config_entries = _registry(self.devices, self.entries)
+
+        asyncio.run(manager.async_poll_pending())
+        asyncio.run(manager.async_poll_pending())
+        self.assertEqual(len(sent), 1, "Unchanged house, one report.")
+
+        self.devices.append(_device("phone", "Google", "Pixel 8"))
+        hass.config_entries = _registry(self.devices, self.entries)
+        asyncio.run(manager.async_poll_pending())
+        self.assertEqual(len(sent), 2, "A new phone, a new report.")
+
+    def test_a_server_without_screens_is_not_asked_again(self):
+        calls = []
+
+        async def report(installation_id, devices):
+            calls.append(1)
+            raise api_client.RemoteAccessUnavailable("no endpoint")
+
+        from test_remote_access import api_client  # noqa: E402
+        api = FakeApiClient(pending=[EMPTY_PAYLOAD] * 2)
+        api.report_screen_devices = report
+        manager, _, hass = make_manager(api=api)
+        hass.config_entries = _registry(self.devices, self.entries)
+
+        asyncio.run(manager.async_poll_pending())
+        manager._devices_sent_at = -1e9  # would be due again
+        asyncio.run(manager.async_poll_pending())
+        self.assertEqual(len(calls), 1)

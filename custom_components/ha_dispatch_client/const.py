@@ -55,6 +55,8 @@ API_ACCESS_EXCHANGE = (
 # Remote Screen: WebSocket frames from this Home Assistant, for the browser
 # Dispatch is rendering the customer's frontend in.
 API_ACCESS_FRAMES = "/api/v1/installations/{installation_id}/access/frames"
+# The screens this house uses, so a technician can render the real device.
+API_SCREEN_DEVICES = "/api/v1/installations/{installation_id}/screen-devices"
 API_UPDATES_PENDING = "/api/v1/installations/{installation_id}/updates/pending"
 API_UPDATES_REPORT = (
     "/api/v1/installations/{installation_id}/updates/{run_id}/report"
@@ -178,6 +180,18 @@ ACCESS_SCREEN_MAX_RESPONSE_BYTES = 12 * 1024 * 1024
 # How long frames from Home Assistant are gathered before being posted as one
 # batch. Long enough to coalesce a state burst, short enough not to be seen.
 ACCESS_SCREEN_FRAME_FLUSH = 0.03
+
+# Integrations whose devices are screens someone looks at Home Assistant on.
+SCREEN_DEVICE_SOURCES = ("mobile_app", "fully_kiosk")
+
+# Re-send the device report at least this often even if nothing changed, so
+# a server that lost it (a restore, a migration) gets it back.
+SCREEN_DEVICES_RESEND_SECONDS = 6 * 3600
+
+# The fastest the server may ask us to check for new sessions. Anything
+# lower is ignored, so a misconfigured server cannot turn the consent poll
+# into a hot loop on somebody's Home Assistant.
+ACCESS_FAST_POLL_FLOOR_SECONDS = 5
 
 # Loopback address used when Home Assistant's own internal URL is unset or
 # unusable from inside this process.
