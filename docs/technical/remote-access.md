@@ -194,6 +194,35 @@ should still refuse anything your own configuration forbids":
 - responses over `ACCESS_MAX_RESPONSE_BYTES` (2 MB) are refused rather than
   posted, since they cross as a database row on the server.
 
+A `screen` session (below) is judged by its own rule instead: reads of any
+path except `/auth…` and `/api/websocket`, writes only under `/api/`, and a
+12 MB response cap (`ACCESS_SCREEN_MAX_RESPONSE_BYTES`) because frontend
+bundles are larger than any REST answer.
+
+## Remote Screen
+
+Dispatch can render this house's own frontend in a headless browser on its
+side, so a technician sees the real dashboards at a chosen device size. The
+agent's part (`screen.py`, `tunnel.py`, `remote_access.py`):
+
+- **Learning the session.** A screen opened under the homeowner's standing
+  enhanced permissions is never pending. `/access/pending` lists it under
+  `active`; `_reconcile_active()` marks it live, announces it with the usual
+  "access is active" notification and off-switch, and ends it when the server
+  stops listing it. A server without the list changes nothing.
+- **HTTP.** Relayed like any session, with the screen policy above and the
+  admin system user's credential.
+- **The WebSocket.** The poll response carries `frames` beside `requests`.
+  `ScreenSockets` holds one loopback socket to `/api/websocket` per screen
+  session, applies frames in order (`open`, `frame`, `close`), and posts what
+  Home Assistant sends back to `/access/frames`, batched every 30 ms.
+- **The credential stays here.** The browser on the Dispatch side holds a
+  placeholder. Its `auth` frame is rewritten with our own token
+  (`substitute_auth`) before it reaches Home Assistant; nothing else is
+  rewritten. Frames for a session without screen consent here are dropped.
+
+The full design is ha-dispatch `docs/technical/remote-screen.md`.
+
 ### Body encoding
 
 Bodies cross as strings. Textual content types (`text/*`, `application/json`,
@@ -230,8 +259,8 @@ base64 encoded, keeps its original `Content-Type`, and is labelled
 
 ## What is not supported
 
-WebSockets are not relayed, so Home Assistant's own frontend cannot be proxied
-end to end. The REST API, which covers most remote repairs, works fully.
+WebSockets are carried only for `screen` sessions, as frames. Other scopes
+remain REST-only, and streaming endpoints are not carried at all.
 
 ---
 

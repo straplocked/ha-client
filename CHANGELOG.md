@@ -2,6 +2,25 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [Unreleased] — branch feat/remote-screen
+
+### Added — Remote Screen
+
+Dispatch can now render this house's own Home Assistant frontend in a
+headless browser on its side, so a technician sees and uses the real
+dashboards at a chosen device size. The agent carries it:
+
+- a `screen` scope with its own local policy (frontend reads, never `/auth`
+  or the raw socket; writes only to `/api`), served with the admin user;
+- `screen.py`: one loopback WebSocket per screen session, frames pumped over
+  the existing outbound poll, the browser's placeholder token swapped for
+  ours so a real credential never leaves the house;
+- screens opened under standing enhanced permissions are learned from
+  `active` on `/access/pending`, announced to the homeowner, and ended when
+  the server stops listing them.
+
+Verified end to end against HA core 2026.9.4 and a local Dispatch.
+
 ## [1.7.6] - 2026-10-06
 
 ### Added — the deploy report says what happened to every device
