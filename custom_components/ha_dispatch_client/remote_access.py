@@ -52,6 +52,7 @@ from .const import (
     ACCESS_NOTIFICATION_PREFIX,
     ACCESS_REQUEST_ISSUE_PREFIX,
     ACCESS_SCOPE_DIAGNOSTIC,
+    ACCESS_SCOPE_SCREEN,
     ACCESS_STORAGE_KEY,
     ACCESS_STORAGE_VERSION,
     ACCESS_UNKNOWN_REQUESTER,
@@ -240,6 +241,7 @@ class HADispatchRemoteAccess:
         self.policy = payload.get("policy")
         self.standing_consent_until = payload.get("standing_consent_until")
         self._reconcile(payload.get("requests") or [])
+        self._reconcile_active(payload.get("active"))
         self._expire_live()
         await self._async_persist()
         self.tunnel.async_sync()
@@ -271,6 +273,34 @@ class HADispatchRemoteAccess:
             record = self.pending[session_id]
             self._clear_prompt(session_id)
             self._mark_live(session_id, record, announce=False)
+
+    def _reconcile_active(self, active: Optional[List[Dict[str, Any]]]) -> None:
+        """Learn of open sessions that never came through the prompt.
+
+        A Remote Screen opened under the homeowner's standing enhanced
+        permissions is never pending, so without this we would have no record
+        of its scope and would refuse every request for it. They are
+        announced -- the homeowner gave a standing yes, and seeing "your
+        installer is on your screen until ..." with a one-tap off-switch is
+        what keeps that yes informed.
+
+        A server that predates the list sends nothing, and None leaves
+        everything exactly as it was. An empty list ends any screen session
+        we hold that the server no longer counts as open.
+        """
+        if active is None:
+            return
+
+        incoming = {str(record.get("id")): record for record in active}
+
+        for session_id, record in incoming.items():
+            if session_id in self._live:
+                continue
+            self._mark_live(session_id, record, expires_at=record.get("expires_at"))
+
+        for session_id, entry in list(self._live.items()):
+            if entry.get("scope") == ACCESS_SCOPE_SCREEN and session_id not in incoming:
+                self._end_live(session_id)
 
     def _announce(self, session_id: str, record: Dict[str, Any]) -> None:
         """Put a new request in front of the customer, both ways."""

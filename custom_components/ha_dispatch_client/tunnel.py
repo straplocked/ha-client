@@ -68,9 +68,14 @@ from .const import (
     ACCESS_MAX_RESPONSE_BYTES,
     ACCESS_POLL_BACKOFF,
     ACCESS_READ_ONLY_SCOPES,
+    ACCESS_SCOPE_SCREEN,
+    ACCESS_SCREEN_DENIED_PATH_PREFIXES,
+    ACCESS_SCREEN_MAX_RESPONSE_BYTES,
+    ACCESS_SCREEN_READ_METHODS,
     ACCESS_SYSTEM_USER_ADMIN,
     ACCESS_SYSTEM_USER_READ_ONLY,
 )
+from .screen import ScreenSockets
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,11 +119,25 @@ def is_textual(content_type: str) -> bool:
     )
 
 
-def refusal_reason(method: str, path: str) -> Optional[str]:
+def refusal_reason(method: str, path: str, scope: Optional[str] = None) -> Optional[str]:
     """Local policy, applied after the server has already checked scope.
 
     Returns the reason to refuse, or None to proceed.
+
+    A screen session relays the frontend itself, so it is judged by its own
+    rule: reads of anything except the login and the raw socket, writes only
+    to the REST API. Every other scope keeps the REST-only rule.
     """
+    if scope == ACCESS_SCOPE_SCREEN:
+        for denied in ACCESS_SCREEN_DENIED_PATH_PREFIXES:
+            if path == denied or path.startswith(denied + "/"):
+                return "A Remote Screen never relays the login or the raw WebSocket."
+        if method.upper() not in ACCESS_SCREEN_READ_METHODS and not path.startswith(
+            ACCESS_ALLOWED_PATH_PREFIX
+        ):
+            return "A Remote Screen only writes to the Home Assistant REST API."
+        return None
+
     if not path.startswith(ACCESS_ALLOWED_PATH_PREFIX):
         return "This installation only relays the Home Assistant REST API under /api/."
     for denied in ACCESS_DENIED_PATH_PREFIXES:
@@ -143,6 +162,9 @@ class HADispatchTunnel:
         # group id -> refresh token. Minted on first use, kept for the life of
         # the process; the token itself is short-lived and derived per request.
         self._refresh_tokens: Dict[str, Any] = {}
+        # Remote Screen sessions' loopback WebSockets. Empty unless a screen
+        # is open; see screen.py.
+        self.screen = ScreenSockets(hass, self)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -177,6 +199,7 @@ class HADispatchTunnel:
             _LOGGER.info("No live remote access session; stopping the request tunnel")
             self._task.cancel()
         self._task = None
+        self._create_task(self.screen.async_close_all())
 
     def _create_task(self, coro):
         """Create a background task, tolerating older Home Assistant cores."""
@@ -209,8 +232,16 @@ class HADispatchTunnel:
         Returns False when the poll itself failed, which is the caller's cue to
         back off rather than spin.
         """
+        api = self.access.api
         try:
-            requests = await self.access.api.poll_access(self.access.installation_id)
+            # The full payload carries screen frames as well as requests; an
+            # API client without it is one that predates screens.
+            full_poll = getattr(api, "poll_access_payload", None)
+            if full_poll is not None:
+                payload = await full_poll(self.access.installation_id)
+                requests, frames = payload["requests"], payload["frames"]
+            else:
+                requests, frames = await api.poll_access(self.access.installation_id), []
         except RemoteAccessUnavailable:
             _LOGGER.warning("Server withdrew the remote access endpoints; stopping")
             self.access.async_disable()
@@ -219,12 +250,16 @@ class HADispatchTunnel:
             _LOGGER.debug("Remote access poll failed: %s", err)
             return False
 
-        if not requests:
+        await self.screen.async_prune()
+
+        if not requests and not frames:
             return True
 
         # The technician is waiting on the whole batch, not the slowest item in
-        # sequence.
+        # sequence. Frames are the exception: they are one ordered stream, so
+        # they are applied in sequence, alongside the requests.
         await asyncio.gather(
+            self.screen.async_handle(frames),
             *(self._async_answer(request) for request in requests),
             return_exceptions=True,
         )
@@ -270,7 +305,7 @@ class HADispatchTunnel:
             # have no basis for choosing a credential.
             return {"error": "No consent on record for this session."}
 
-        refused = refusal_reason(method, path)
+        refused = refusal_reason(method, path, scope)
         if refused:
             _LOGGER.info("Refusing relayed request %s %s: %s", method, path, refused)
             return {"error": refused}
@@ -308,11 +343,16 @@ class HADispatchTunnel:
             _call(), timeout=ACCESS_EXECUTE_TIMEOUT
         )
 
-        if len(raw) > ACCESS_MAX_RESPONSE_BYTES:
+        limit = (
+            ACCESS_SCREEN_MAX_RESPONSE_BYTES
+            if scope == ACCESS_SCOPE_SCREEN
+            else ACCESS_MAX_RESPONSE_BYTES
+        )
+        if len(raw) > limit:
             return {
                 "error": (
                     f"Response of {len(raw)} bytes exceeds the "
-                    f"{ACCESS_MAX_RESPONSE_BYTES} byte relay limit."
+                    f"{limit} byte relay limit."
                 )
             }
 

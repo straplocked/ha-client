@@ -52,6 +52,9 @@ API_ACCESS_POLL = "/api/v1/installations/{installation_id}/access/poll"
 API_ACCESS_EXCHANGE = (
     "/api/v1/installations/{installation_id}/access/exchanges/{request_id}/respond"
 )
+# Remote Screen: WebSocket frames from this Home Assistant, for the browser
+# Dispatch is rendering the customer's frontend in.
+API_ACCESS_FRAMES = "/api/v1/installations/{installation_id}/access/frames"
 API_UPDATES_PENDING = "/api/v1/installations/{installation_id}/updates/pending"
 API_UPDATES_REPORT = (
     "/api/v1/installations/{installation_id}/updates/{run_id}/report"
@@ -116,6 +119,10 @@ ACCESS_DECISION_DENY = "deny"
 ACCESS_SCOPE_DIAGNOSTIC = "diagnostic"
 ACCESS_SCOPE_MAINTENANCE = "maintenance"
 ACCESS_SCOPE_FULL = "full"
+# The customer's own frontend, rendered on the Dispatch side in a headless
+# browser. Served with the admin credential, like full: a signed-in frontend
+# can do anything an admin on this screen could.
+ACCESS_SCOPE_SCREEN = "screen"
 
 # Scopes that can be served with a read-only Home Assistant credential.
 ACCESS_READ_ONLY_SCOPES = frozenset({ACCESS_SCOPE_DIAGNOSTIC})
@@ -155,6 +162,22 @@ ACCESS_ALLOWED_PATH_PREFIX = "/api/"
 # Endpoints that cannot work over a request/response relay, and would hold the
 # exchange open until it timed out.
 ACCESS_DENIED_PATH_PREFIXES = ("/api/stream", "/api/websocket")
+
+# A screen session relays the frontend itself, so its local policy is a
+# different shape: any read except the login and the raw socket (which only
+# ever crosses as frames, through the bridge in screen.py), and writes only to
+# the REST API. The same lines the server draws, drawn again here so a
+# compromised server still cannot reach /auth through this house.
+ACCESS_SCREEN_DENIED_PATH_PREFIXES = ("/auth", "/api/websocket")
+ACCESS_SCREEN_READ_METHODS = frozenset({"GET", "HEAD"})
+
+# Frontend bundles are larger than any REST answer. Still bounded by the
+# server's 20 MB request ceiling once wrapped in JSON and base64.
+ACCESS_SCREEN_MAX_RESPONSE_BYTES = 12 * 1024 * 1024
+
+# How long frames from Home Assistant are gathered before being posted as one
+# batch. Long enough to coalesce a state burst, short enough not to be seen.
+ACCESS_SCREEN_FRAME_FLUSH = 0.03
 
 # Loopback address used when Home Assistant's own internal URL is unset or
 # unusable from inside this process.

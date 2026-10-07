@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from .const import (
     API_ACCESS_EXCHANGE,
+    API_ACCESS_FRAMES,
     API_ACCESS_PENDING,
     API_ACCESS_POLL,
     API_ACCESS_RESPOND,
@@ -534,6 +535,43 @@ class HADispatchApiClient:
         _LOGGER.debug("Revoking access session %s", session_id)
         async with self.session.post(
             url, json=data, headers=self._get_headers()
+        ) as response:
+            await self._raise_for_access_status(response)
+            return await response.json()
+
+    async def poll_access_payload(self, installation_id: str) -> Dict[str, Any]:
+        """Long-poll for authorised work: relayed requests and screen frames.
+
+        Same endpoint and timing as poll_access(); this returns the whole
+        payload because a Remote Screen also carries WebSocket frames from the
+        browser alongside the HTTP requests. A server that predates screens
+        simply never sends the "frames" key.
+        """
+        url = self.server_url + API_ACCESS_POLL.format(
+            installation_id=installation_id
+        )
+        timeout = aiohttp.ClientTimeout(total=ACCESS_POLL_TIMEOUT)
+
+        async with self.session.get(
+            url, headers=self._get_headers(), timeout=timeout
+        ) as response:
+            await self._raise_for_access_status(response)
+            payload = await response.json()
+            return {
+                "requests": payload.get("requests") or [],
+                "frames": payload.get("frames") or [],
+            }
+
+    async def post_access_frames(
+        self, installation_id: str, frames: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Hand Dispatch the frames Home Assistant sent to a rendered screen."""
+        url = self.server_url + API_ACCESS_FRAMES.format(
+            installation_id=installation_id
+        )
+
+        async with self.session.post(
+            url, json={"frames": frames}, headers=self._get_headers()
         ) as response:
             await self._raise_for_access_status(response)
             return await response.json()
