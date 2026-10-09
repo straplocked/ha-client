@@ -854,9 +854,51 @@ Full design: [Component Inventory](component-inventory.md).
 
 ---
 
+## Endpoint 13: Report Backups
+
+**Endpoint:** `POST /api/v1/installations/{installation_id}/backups/batch`
+
+### Request Body
+
+```json
+{
+  "backups": [
+    {
+      "slug": "automatic",
+      "name": "Automatic backup 2026.10.1",
+      "type": "full",
+      "size_bytes": 184320000,
+      "checksum": "sha256:9f86d0…",
+      "completed_at": "2026-10-08T03:05:00+00:00"
+    }
+  ]
+}
+```
+
+1–100 entries, oldest first. `slug` and `completed_at` are required.
+
+### Success Response (201 Created)
+
+```json
+{ "status": "ok", "recorded": 1, "backup_ids": [42] }
+```
+
+### Client Implementation Notes
+
+- The server does not de-duplicate. Report each backup once, and remember
+  which ones you have sent.
+- A 404 means the server has no backup reporting. It maps to
+  `BackupReportingUnavailable`, never `InstallationGoneError`.
+- Only a copy on this machine is hashed. Cloud copies are not downloaded.
+
+Full design: [Backup Reporting](backup-reporting.md).
+
+---
+
 ## Related Documentation
 
 - [Component Inventory](component-inventory.md) for what is reported, from where, and on what cadence
+- [Backup Reporting](backup-reporting.md) for which backups are reported, under which slug, and how they are hashed
 - [Remote Access](remote-access.md) for consent, the tunnel, and the local credential model
 - [Self-Update](self-update.md) for the update trust model, signing, and rollout design
 - [Authentication & Security](dev-guide/authentication.md) for token generation and request authentication

@@ -17,6 +17,7 @@ from .const import (
 )
 from .api_client import HADispatchApiClient
 from .coordinator import HADispatchCoordinator
+from .backups import HADispatchBackups
 from .floorplan import HADispatchFloorplan
 from .remote_access import (
     HADispatchRemoteAccess,
@@ -509,6 +510,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     floorplan = HADispatchFloorplan(hass, coordinator)
     coordinator.floorplan = floorplan
 
+    # Backup reporting: this installation's own backups, so the server can
+    # notice a schedule that stopped or an archive that shrank.
+    coordinator.backups = HADispatchBackups(hass, coordinator)
+
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()
 
@@ -539,6 +544,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # integration reload is not the customer withdrawing consent.
         if getattr(coordinator, "remote_access", None) is not None:
             await coordinator.remote_access.async_unload()
+
+        if getattr(coordinator, "backups", None) is not None:
+            coordinator.backups.async_unload()
 
         # If this was the last coordinator, remove services
         teardown_services(hass)

@@ -12,6 +12,16 @@ All notable changes to HA Dispatch Client will be documented in this file.
   `/screen-devices`, so a technician can render the actual phone or wall
   panel. Model only for phones; a phone is usually named after a person.
 
+### Added — backup reporting
+- `backups.py` reports this installation's own backups to `/backups/batch`
+  (from HA 2025.1): automatic-schedule backups as `automatic`, other full
+  backups as `manual`. Size comes from the local copy, and a `sha256:`
+  checksum is read from `backup.local` or `hassio.local`; cloud-only copies
+  are never downloaded. Each backup is reported once, with the reported ids
+  stored per installation. The first scan sends the newest 10 per slug.
+  Scans run every 30 min, and on the next tick after a backup completes, in
+  the background.
+
 ### Fixed
 - Ending the last session cancelled a long-poll the server still held, and a
   session opened in the next 25 s had its first request lost: a screen took

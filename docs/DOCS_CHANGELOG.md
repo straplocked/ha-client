@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-08] — Backup Reporting (unreleased)
+
+### Added
+- `docs/technical/backup-reporting.md`: source, what is reported under which slug and why, the once-each storage, local-only checksums, and cadence
+
+### Changed
+- `docs/technical/api-reference.md`: Endpoint 13 (`POST .../backups/batch`)
+- `docs/INDEX.md`, `CLAUDE.md`: added Backup Reporting
+
 ## [2026-09-19] — Component Inventory (v1.6.0)
 
 ### Added

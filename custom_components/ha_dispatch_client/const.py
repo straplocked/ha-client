@@ -61,6 +61,8 @@ API_UPDATES_PENDING = "/api/v1/installations/{installation_id}/updates/pending"
 API_UPDATES_REPORT = (
     "/api/v1/installations/{installation_id}/updates/{run_id}/report"
 )
+# The installation's own backups -- not the pre-update ones a run takes.
+API_BACKUPS_BATCH = "/api/v1/installations/{installation_id}/backups/batch"
 API_FLOORPLAN_PENDING = "/api/v1/installations/{installation_id}/floorplan/pending"
 API_FLOORPLAN_REPORT = (
     "/api/v1/installations/{installation_id}/floorplan/{id}/report"
@@ -338,6 +340,42 @@ UPDATE_RUN_STORAGE_VERSION = 1
 # How long a single relayed update phase may take against the Supervisor. A full
 # backup of a large system is slow, so this is generous.
 UPDATE_RUN_OPERATION_TIMEOUT = 1800
+
+# --- Backup reporting -------------------------------------------------------
+# Full design: docs/technical/backup-reporting.md
+
+# How often Home Assistant's backup list is checked for backups the server has
+# not heard about. The server's freshness alerts start at 30 hours, so half an
+# hour of lag is invisible; a backup finishing is also noticed as it happens
+# and reported on the next tick.
+BACKUP_SCAN_INTERVAL = 1800
+
+# Backup slugs. The server scores freshness and size per slug, so a slug must
+# name one schedule whose backups are comparable with each other.
+BACKUP_SLUG_AUTOMATIC = "automatic"
+BACKUP_SLUG_MANUAL = "manual"
+
+# Wire values for `type`. The server rejects anything else with a 422.
+BACKUP_TYPE_FULL = "full"
+BACKUP_TYPE_PARTIAL = "partial"
+
+# The first scan after install (or after re-enrolment) reports at most this many
+# existing backups per slug -- enough history for the server's size check, which
+# compares against the median of the last 5 -- rather than years of them.
+BACKUP_BACKFILL_PER_SLUG = 10
+
+# The server accepts at most 100 backups per batch request.
+BACKUP_BATCH_MAX = 100
+
+# Agents whose archive sits on this machine. Only these are checksummed: a cloud
+# copy would have to be downloaded in full to hash it.
+BACKUP_AGENT_CORE_LOCAL = "backup.local"
+BACKUP_AGENT_SUPERVISOR_LOCAL = "hassio.local"
+
+# Backup ids already reported, per installation, so a restart neither resends
+# history nor re-hashes archives.
+BACKUP_STORAGE_KEY = "ha_dispatch_client.backups_reported"
+BACKUP_STORAGE_VERSION = 1
 
 # --- Floorplan deploy --------------------------------------------------------
 # A technician uploads a floor-plan sketch to HA Dispatch; a render pipeline

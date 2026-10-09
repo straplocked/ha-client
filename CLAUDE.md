@@ -26,6 +26,7 @@ custom_components/ha_dispatch_client/
 ├── components.py     # Component inventory - core, OS, Supervisor, add-ons, integrations, HACS
 ├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and live session state
 ├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
+├── backups.py      # HADispatchBackups - reports the installation's own backups (+ sha256)
 ├── screen.py         # ScreenSockets - Remote Screen's loopback WebSocket, frames over the poll
 ├── repairs.py        # Approve/Deny dialog and the end-access off-switch
 ├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
@@ -61,6 +62,7 @@ All under `/api/v1/installations/`:
 - `POST .../{id}/alerts/{type}/resolve` - Resolve alerts by type
 - `POST .../{id}/components` - Report the full component inventory (snapshot, not a delta)
 - `POST .../{id}/client-update` - Report a self-update outcome (started/success/failed)
+- `POST .../{id}/backups/batch` - Report finished backups, oldest first (once each)
 - `GET  .../{id}/access/pending` - Remote access requests awaiting the customer
 - `POST .../{id}/access/{session}/respond` - Report grant/deny
 - `POST .../{id}/access/{session}/revoke` - End a live session
@@ -191,6 +193,7 @@ All documentation is organized under `docs/` — see `docs/INDEX.md` as the mast
 | Remote update design | `docs/technical/self-update.md` (client built; server side outstanding) |
 | Remote access design | `docs/technical/remote-access.md` (consent, tunnel, local credentials) |
 | Component inventory | `docs/technical/component-inventory.md` (sources, stable slugs, cadence, truncation) |
+| Backup reporting | `docs/technical/backup-reporting.md` (which backups, slugs, once-each storage, checksums) |
 | Data model | `docs/technical/data-model/README.md` |
 | Dev guide | `docs/technical/dev-guide/README.md` |
 | Quickstart | `docs/user/quickstart.md` |

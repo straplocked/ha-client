@@ -92,6 +92,9 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         # it, so a coordinator built without one never polls for a deploy.
         self.floorplan = None
 
+        # Backup reporting. Same arrangement: absent unless setup wires it.
+        self.backups = None
+
         # Component inventory. Reported on its own slow cadence rather than on
         # every metrics poll: versions change rarely, and the fleet's
         # attribution window is two hours wide. None means "never reported",
@@ -167,6 +170,11 @@ class HADispatchCoordinator(DataUpdateCoordinator):
             # just as unable to raise.
             if self.floorplan is not None:
                 await self.floorplan.async_poll_pending()
+
+            # Backups are found and reported in a background task (hashing an
+            # archive can take a while), so this only decides whether one is due.
+            if self.backups is not None:
+                self.backups.async_tick()
 
             # Return combined data for sensors
             return {

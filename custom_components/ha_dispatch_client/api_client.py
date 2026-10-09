@@ -10,6 +10,7 @@ from .const import (
     API_SCREEN_DEVICES,
     API_ACCESS_PENDING,
     API_ACCESS_POLL,
+    API_BACKUPS_BATCH,
     API_ACCESS_RESPOND,
     API_ACCESS_REVOKE,
     API_COMPONENTS,
@@ -81,6 +82,15 @@ class RemoteUpdatesUnavailable(Exception):
     remote updates answers 404 for every /updates/ path while the installation
     is perfectly healthy, and treating that as "the server has forgotten us"
     would re-enrol a working installation forever.
+    """
+
+
+class BackupReportingUnavailable(Exception):
+    """Raised when this server does not accept backup reports.
+
+    Same reasoning as RemoteUpdatesUnavailable: a server predating backup
+    verification answers 404 for /backups/batch while the installation is
+    perfectly healthy.
     """
 
 
@@ -322,6 +332,29 @@ class HADispatchApiClient:
             url, json=data, headers=self._get_headers()
         ) as response:
             await self._raise_for_status(response)
+            return await response.json()
+
+    async def report_backups(
+        self,
+        installation_id: str,
+        backups: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Report finished backups, oldest first.
+
+        Always the batch endpoint, even for one backup: the server scores the
+        entries in the order given, and one code path is enough.
+        """
+        url = self.server_url + API_BACKUPS_BATCH.format(installation_id=installation_id)
+
+        _LOGGER.debug("Reporting %s backups to server", len(backups))
+        async with self.session.post(
+            url, json={"backups": backups}, headers=self._get_headers()
+        ) as response:
+            if response.status == 404:
+                raise BackupReportingUnavailable(
+                    f"Server has no backup reporting endpoint at {response.url}"
+                )
+            await self._raise_for_status(response, installation_scoped=False)
             return await response.json()
 
     async def submit_metrics_batch(
