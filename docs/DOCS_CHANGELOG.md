@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
-## [2026-10-08] — Backup Reporting (unreleased)
+## [2026-10-08] — Backup Reporting (v1.7.8)
 
 ### Added
 - `docs/technical/backup-reporting.md`: source, what is reported under which slug and why, the once-each storage, local-only checksums, and cadence

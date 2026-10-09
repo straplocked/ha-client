@@ -2,7 +2,7 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
-## [Unreleased] — branch feat/screen-ahead
+## [1.7.8] - 2026-10-08
 
 ### Added — the house's screens, and connecting in seconds
 - `poll_seconds` from `/access/pending` is honoured: where the homeowner's

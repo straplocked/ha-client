@@ -58,7 +58,7 @@ For developers working on or extending the integration.
 | [Remote Access](technical/remote-access.md) | Consent-gated remote access: consent surfaces, the tunnel, and the local credential model (built in 1.6.0) |
 | [Remote Updates](technical/remote-updates.md) | Consent-gated HA Core/OS/add-on updates: backup, apply, and confirm on boot (built in 1.7.0) |
 | [Component Inventory](technical/component-inventory.md) | What the installation is running: where each kind comes from, why slugs must be stable, cadence and truncation (built in 1.6.0) |
-| [Backup Reporting](technical/backup-reporting.md) | This installation's own backups: which are reported, slugs, once-each storage, local-only checksums (unreleased) |
+| [Backup Reporting](technical/backup-reporting.md) | This installation's own backups: which are reported, slugs, once-each storage, local-only checksums (built in 1.7.8) |
 | [Data Model](technical/data-model/README.md) | Database schema, relationships, business rules |
 | [Dev Guide](technical/dev-guide/README.md) | Full client development guide (12 topics) |
 
