@@ -27,8 +27,9 @@ history nor re-hashes archives, and a re-enrolled installation, which is a new
 record on the server, gets its history again.
 
 A checksum (`sha256:<hex>`) is sent for the newest new backup of each slug,
-read from a copy on this machine. Cloud copies are never downloaded to hash
-them. In steady state every backup is the newest when it is first seen, so
+read from a copy on this machine or on a network share the Supervisor mounts
+for backups -- both on the house's own network. Cloud copies are never
+downloaded to hash them. In steady state every backup is the newest when it is first seen, so
 every one gets a checksum; only the first scan's backfill goes without for all
 but the latest.
 
@@ -54,6 +55,7 @@ from .api_client import BackupReportingUnavailable
 from .const import (
     BACKUP_AGENT_CORE_LOCAL,
     BACKUP_AGENT_SUPERVISOR_LOCAL,
+    BACKUP_AGENT_SUPERVISOR_PREFIX,
     BACKUP_BACKFILL_PER_SLUG,
     BACKUP_BATCH_MAX,
     BACKUP_SCAN_INTERVAL,
@@ -353,21 +355,22 @@ class HADispatchBackups:
     # ------------------------------------------------------------ checksum --
 
     async def _async_checksum(self, manager, backup_id: str, backup) -> Optional[str]:
-        """sha256 of a copy on this machine, or None if there is not one."""
+        """sha256 of a copy on the house's own network, or None if there is not one."""
         agents = getattr(backup, "agents", None) or {}
+        source = None
         try:
             local_agents = getattr(manager, "local_backup_agents", None) or {}
             core_local = local_agents.get(BACKUP_AGENT_CORE_LOCAL)
             if BACKUP_AGENT_CORE_LOCAL in agents and core_local is not None:
+                source = BACKUP_AGENT_CORE_LOCAL
                 path = core_local.get_backup_path(backup_id)
                 digest = await self.hass.async_add_executor_job(_hash_file, path)
                 return f"sha256:{digest}"
 
-            supervisor_local = (getattr(manager, "backup_agents", None) or {}).get(
-                BACKUP_AGENT_SUPERVISOR_LOCAL
-            )
-            if BACKUP_AGENT_SUPERVISOR_LOCAL in agents and supervisor_local is not None:
-                stream = await supervisor_local.async_download_backup(backup_id)
+            supervisor_agent = _supervisor_agent(manager, agents)
+            if supervisor_agent is not None:
+                source, agent = supervisor_agent
+                stream = await agent.async_download_backup(backup_id)
                 sha = hashlib.sha256()
                 async for chunk in stream:
                     # Off the event loop: a few GB of hashing on a Green's
@@ -377,8 +380,28 @@ class HADispatchBackups:
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except Exception as err:  # noqa: BLE001 - report without it
-            _LOGGER.debug("Could not checksum backup %s: %s", backup_id, err)
+            # A warning, not debug: a copy we could have hashed and did not is
+            # exactly what an operator needs to see in the normal log.
+            _LOGGER.warning(
+                "Could not checksum backup %s from %s; reporting it without one: %s",
+                backup_id, source, err,
+            )
         return None
+
+
+def _supervisor_agent(manager, agents) -> Optional[tuple[str, Any]]:
+    """The Supervisor agent to stream a backup from: this machine first, then a share."""
+    known = getattr(manager, "backup_agents", None) or {}
+    candidates = [BACKUP_AGENT_SUPERVISOR_LOCAL] + sorted(
+        agent_id
+        for agent_id in agents
+        if str(agent_id).startswith(BACKUP_AGENT_SUPERVISOR_PREFIX)
+        and agent_id != BACKUP_AGENT_SUPERVISOR_LOCAL
+    )
+    for agent_id in candidates:
+        if agent_id in agents and known.get(agent_id) is not None:
+            return agent_id, known[agent_id]
+    return None
 
 
 def _limit_backfill(fresh: list) -> tuple[list, List[str]]:

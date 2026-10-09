@@ -889,7 +889,8 @@ Full design: [Component Inventory](component-inventory.md).
   which ones you have sent.
 - A 404 means the server has no backup reporting. It maps to
   `BackupReportingUnavailable`, never `InstallationGoneError`.
-- Only a copy on this machine is hashed. Cloud copies are not downloaded.
+- Only a copy on the house's network is hashed: this machine's, or a network
+  share the Supervisor mounts. Cloud copies are not downloaded.
 
 Full design: [Backup Reporting](backup-reporting.md).
 

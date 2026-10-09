@@ -57,14 +57,22 @@ oldest first, at most 100 backups per request.
 
 ## Checksums
 
-The agent only hashes a copy that sits on this machine: `backup.local` is read
-from disk in the executor, and `hassio.local` is streamed from the Supervisor,
-with each chunk hashed in the executor. A backup held only in the cloud is
-never downloaded to hash it. Within one scan, only the newest new backup of
-each slug is hashed. In normal running each backup is the newest one when it
-is first seen, so every backup gets a checksum; on the first scan, only the
-latest backup of each slug does. If hashing fails, the backup is still
-reported, without a checksum.
+The agent hashes a copy that sits on the house's own network:
+
+- `backup.local` (a Core install): read from disk in the executor.
+- `hassio.local` (this machine's `/backup` on HAOS): streamed from the
+  Supervisor.
+- `hassio.<mount>` (a network share the Supervisor mounts for backups, such
+  as a NAS): also streamed through the Supervisor. This arrived in 1.7.8
+  without it; a house that backs up only to a share got no checksum at all.
+
+When there is a choice, this machine's copy is read first. A backup held only
+in Nabu Casa cloud or another off-site target is never downloaded to hash it.
+Within one scan, only the newest new backup of each slug is hashed. In normal
+running each backup is the newest one when it is first seen, so every backup
+gets a checksum; on the first scan, only the latest backup of each slug does.
+If hashing fails, the backup is still reported, without a checksum, and a
+warning naming the backup and its source goes to the Home Assistant log.
 
 ## Cadence
 

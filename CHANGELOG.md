@@ -2,6 +2,17 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.7.9] - 2026-10-09
+
+### Fixed
+- A backup stored only on a network share (a Supervisor backup mount such as a
+  NAS) was reported without a checksum, because only `backup.local` and
+  `hassio.local` were hashed. Every `hassio.*` agent is now streamed through
+  the Supervisor, with this machine's copy preferred. Cloud copies are still
+  never downloaded.
+- A failure to checksum a backup is now logged as a warning naming the backup
+  and its source, instead of at debug level, where nobody would see it.
+
 ## [1.7.8] - 2026-10-08
 
 ### Added — the house's screens, and connecting in seconds

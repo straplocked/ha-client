@@ -90,10 +90,11 @@ class FakeSupervisorAgent:
 
 
 class FakeManager:
-    def __init__(self, backups=(), local=None, supervisor=None, legacy=False):
+    def __init__(self, backups=(), local=None, supervisor=None, legacy=False, agents=None):
         self.backups = {b.backup_id: b for b in backups}
         self.local_backup_agents = {"backup.local": local} if local else {}
         self.backup_agents = {"hassio.local": supervisor} if supervisor else {}
+        self.backup_agents.update(agents or {})
         self.legacy = legacy
         self.subscribers = []
 
@@ -382,16 +383,52 @@ class ChecksumTests(unittest.TestCase):
         self.assertNotIn("checksum", by_slug_time[("automatic", _at(24))])
         self.assertIn("checksum", by_slug_time[("automatic", _at(0))])
 
+    def test_a_backup_on_a_network_share_is_hashed_through_the_supervisor(self):
+        nas = FakeSupervisorAgent({"a": b"archive on the nas"})
+        manager = FakeManager(
+            [Backup("a", _at(0), agents={
+                "hassio.nas_backups": AgentStatus(18),
+                "cloud.cloud": AgentStatus(18),
+            }, folders=["share"])],
+            agents={"hassio.nas_backups": nas},
+        )
+        reporter, api, _ = _reporter(manager)
+        _run(reporter.async_scan())
+
+        self.assertEqual(["a"], nas.downloaded)
+        expected = "sha256:" + hashlib.sha256(b"archive on the nas").hexdigest()
+        self.assertEqual(expected, api.sent[0]["checksum"])
+
+    def test_this_machines_copy_is_preferred_over_a_share(self):
+        local = FakeSupervisorAgent({"a": b"same archive"})
+        nas = FakeSupervisorAgent({"a": b"same archive"})
+        manager = FakeManager(
+            [Backup("a", _at(0), agents={
+                "hassio.nas_backups": AgentStatus(12),
+                "hassio.local": AgentStatus(12),
+            }, folders=["share"])],
+            supervisor=local,
+            agents={"hassio.nas_backups": nas},
+        )
+        reporter, _, _ = _reporter(manager)
+        _run(reporter.async_scan())
+
+        self.assertEqual(["a"], local.downloaded)
+        self.assertEqual([], nas.downloaded)
+
     def test_a_cloud_only_backup_is_never_downloaded_to_hash_it(self):
         supervisor = FakeSupervisorAgent({})
+        cloud = FakeSupervisorAgent({})
         manager = FakeManager(
             [Backup("a", _at(0), agents={"cloud.cloud": AgentStatus(5)})],
             supervisor=supervisor,
+            agents={"cloud.cloud": cloud},
         )
         reporter, api, _ = _reporter(manager)
         _run(reporter.async_scan())
 
         self.assertEqual([], supervisor.downloaded)
+        self.assertEqual([], cloud.downloaded)
         self.assertNotIn("checksum", api.sent[0])
         self.assertEqual(5, api.sent[0]["size_bytes"])
 
@@ -400,8 +437,10 @@ class ChecksumTests(unittest.TestCase):
             [Backup("a", _at(0))], local=FakeLocalAgent({"a": "/nonexistent/a.tar"})
         )
         reporter, api, _ = _reporter(manager)
-        self.assertEqual(1, _run(reporter.async_scan()))
+        with self.assertLogs(backups_mod._LOGGER, level="WARNING") as logs:
+            self.assertEqual(1, _run(reporter.async_scan()))
         self.assertNotIn("checksum", api.sent[0])
+        self.assertIn("Could not checksum backup a from backup.local", logs.output[0])
 
 
 # --- scheduling --------------------------------------------------------------

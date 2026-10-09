@@ -367,10 +367,14 @@ BACKUP_BACKFILL_PER_SLUG = 10
 # The server accepts at most 100 backups per batch request.
 BACKUP_BATCH_MAX = 100
 
-# Agents whose archive sits on this machine. Only these are checksummed: a cloud
-# copy would have to be downloaded in full to hash it.
+# Agents whose archive is checksummed. backup.local is read from disk. Every
+# Supervisor agent is streamed through the Supervisor: hassio.local is this
+# machine's /backup, and hassio.<mount> is a network share on the house's own
+# LAN. Cloud and other off-site agents are never hashed, because that would
+# mean downloading the whole archive over the internet.
 BACKUP_AGENT_CORE_LOCAL = "backup.local"
 BACKUP_AGENT_SUPERVISOR_LOCAL = "hassio.local"
+BACKUP_AGENT_SUPERVISOR_PREFIX = "hassio."
 
 # Backup ids already reported, per installation, so a restart neither resends
 # history nor re-hashes archives.

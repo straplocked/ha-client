@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-09] — Backup checksums from network shares (v1.7.9)
+
+### Changed
+- `docs/technical/backup-reporting.md`, `docs/technical/api-reference.md`: copies on a Supervisor backup mount (NAS) are hashed too; checksum failures are logged as warnings
+
 ## [2026-10-08] — Backup Reporting (v1.7.8)
 
 ### Added
