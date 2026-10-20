@@ -34,7 +34,7 @@ For end users installing, configuring, and operating the integration.
 | [Quickstart](user/quickstart.md) | 5-minute setup guide |
 | [Installation](user/installation.md) | Detailed installation and setup |
 | [Configuration](user/configuration.md) | Config flow and entity management |
-| [Services Guide](user/services-guide.md) | All 9 services with examples |
+| [Services Guide](user/services-guide.md) | All 10 services with examples |
 | [Alerts Guide](user/alerts-guide.md) | Alert submission, resolution, automation |
 | [Deployment](user/deployment.md) | Deploy script, versioning, caching tips |
 | [Updating the Client](user/updating.md) | Updating from HA, the dashboard, or SSH; recovery |

@@ -5,7 +5,7 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.7.9 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.8.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
 - **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`, `cryptography>=41.0.0`
@@ -181,16 +181,41 @@ server is the one they made, and that a request leaving the pending list clears
 both its notification and its Repairs issue -- and component inventory: that
 every report is a full snapshot rather than a delta, that a slug survives
 anything a user can rename, and that the inventory does not ride the 60 s
-metrics poll). Home Assistant is not installed in the dev environment;
-`tests/conftest.py` stubs the symbols the integration imports, including
-recording versions of `persistent_notification` and `issue_registry` so tests
-can assert on what was actually put in front of the customer, and Supervisor
-helpers that answer the way a Core-only install does. Add to that conftest when
-new HA imports appear.
+metrics poll). The Home 3D floorplan is covered the same way: that a room's
+temperature never binds to an outdoor sensor or to an entity of the wrong
+`device_class`, that the installer's corrections survive a redeploy and are
+laid over the *new* manifests, that the dashboard is built from
+`<ayvra-room-plan>` and each device lands in its own room's controls, that a
+quarter turn means what `rotate_percent_point` says it means, and that the
+card's Lovelace resource is re-pointed rather than duplicated. Home Assistant
+is not installed in the dev environment; `tests/conftest.py` stubs the symbols
+the integration imports, including recording versions of
+`persistent_notification` and `issue_registry` so tests can assert on what was
+actually put in front of the customer, and Supervisor helpers that answer the
+way a Core-only install does. Add to that conftest when new HA imports appear.
 
 ```bash
 python3 -m pytest tests/ -q
 ```
+
+That currently prints `342 passed, 39 subtests passed`. Two standing limits on
+what that number means, both of which have caught people out:
+
+- **`__init__.py` is exercised by no test at all.** `voluptuous` is not
+  installed here, so a service cannot be invoked in this environment. The
+  service *handlers* are verified only by inspection; the manager methods they
+  call are tested directly, and `ServiceWiringTest` reads `__init__.py` to
+  prove each service name is registered, torn down, and described in both
+  `services.yaml` and `strings.json`. A change to a handler body is unguarded.
+- **`www/ayvra-room-plan.js` has no test runner.** The suite is pytest and the
+  card is hand-written JS with no toolchain, deliberately. What the suite can
+  assert about it, it asserts *as strings* on the shipped file (the
+  `localStorage` key template, the four legal angles, every colour coming from
+  a theme variable, the grey-out never selecting the focused room). Anything
+  about rendering -- registration of the backplate, the polygons and the tap
+  targets at 90/270, the focus treatment, hit testing -- needs a real browser.
+  `docs/user/deployment.md` carries the manual checks; do not take a green
+  suite as evidence the card draws correctly.
 
 Note `api_client.py` imports `aiohttp` at module scope, so `test_reregistration.py`
 needs aiohttp importable even though the HTTP calls are faked.

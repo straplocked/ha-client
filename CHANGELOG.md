@@ -2,7 +2,7 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
-## [Unreleased]
+## [1.8.0] - 2026-10-20
 
 ### Added -- the Home 3D plan is room-first now
 - Tapping a **room** is the interaction: the floor greys out around it and a

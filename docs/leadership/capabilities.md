@@ -32,7 +32,7 @@ The table below outlines every capability delivered in the current version (v1.6
 
 ## Summary
 
-- **9 services** for testing, monitoring, management, and remote support
+- **10 services** for testing, monitoring, management, remote support, and correcting the Home 3D plan
 - **4 entities** for at-a-glance local monitoring, including a remote access request indicator
 - **Fully automated** registration, reporting, and configuration management
 - **No manual configuration files** -- everything is set up through the user interface

@@ -163,15 +163,18 @@ ssh straplocked@homeassistant.local "grep version /config/custom_components/ha_d
 | `manifest.json` | Integration metadata including the `version` field |
 | `CHANGELOG.md` | Documents all changes per version |
 
-The `VERSION` file and the `version` field in `manifest.json` must always stay in sync. The `bump_version.sh` script handles this automatically.
+The `VERSION` file and the `version` field in `manifest.json` must always stay in sync. The `bump_version.sh` script handles this automatically, and `tests/test_release_metadata.py` fails the suite if they ever drift -- `scripts/release.sh` also refuses to build, but by then the version has already been deployed and reported to the server.
+
+The version is not only bookkeeping: the Home 3D room-plan card's Lovelace resource is stamped `?v=<version>`, and Home Assistant caches frontend resources hard. **A change to `www/ayvra-room-plan.js` that ships without a version bump re-registers a URL identical to the one already on the wall tablet, and the tablet keeps the card it downloaded before.** Bump the version whenever the card changes.
 
 ## Checking the Home 3D room plan by hand
 
 The room-first plan card is JavaScript, so the automated suite can only prove
 that the file was copied, that its Lovelace resource is registered once with a
 version stamp, and that the dashboard config is shaped the way the card
-expects. These six checks are the part only a person can do, and are worth
-running after a floorplan deploy on a real installation:
+expects. These six checks are the part that needs a real installation, and are
+worth running after a floorplan deploy on one. "What has already been checked
+in a browser" below narrows checks 5 and 6 to what is genuinely still open.
 
 1. **The card loaded at all.** Open the *Home 3D* dashboard. Rooms outlined on
    the plan means the resource loaded; a "Custom element doesn't exist:
@@ -214,6 +217,34 @@ running after a floorplan deploy on a real installation:
    own; it derives everything from the theme, so a theme with unusual
    variables is where this would show up first. A device set to "reduce
    motion" should land on exactly the same picture with no transition.
+
+### What has already been checked in a browser, and what has not
+
+Checks 5 and 6 above are about geometry and colour, and the geometry half has
+been measured rather than eyeballed -- in **Chrome 141 headless only**, driving
+the shipped card against a four-colour test backplate:
+
+- At all four angles, a tap aimed at each of four rooms landed on that room's
+  own polygon, and the backplate pixel under that same point was that room's
+  own colour -- 16 of 16, exact. So the picture, the room outlines and the tap
+  targets are registered together, including at 90 and 270 where the aspect
+  ratio inverts. The plan fills the stage at every angle; nothing is
+  letterboxed.
+- The focus layer carries the identical CSS transform as the plan layer and
+  occupies the identical box, so the focused room's full-colour copy cannot
+  drift off the room it was cut from when the view is rotated. Room name
+  labels, including the focused room's, are counter-rotated.
+- With a room in focus at a rotated angle, the focused room's pixels keep
+  their exact original colour while every other room measures fully
+  desaturated and dimmed.
+
+What is **still only a human's job**, and is why checks 5 and 6 stay in the
+list: how the treatment reads over a real photographic house render rather
+than flat test colours (is the dim the right amount over a dark floor?); the
+animation as motion rather than as two end states; legibility in both themes
+on the actual tablet; and old tablet WebViews, where `clip-path: polygon()`
+with percentages and hit testing on a rotated SVG have not been exercised at
+all. Checks 1-4 have not been automated in any form.
 
 The card's colours can be tuned per theme without touching the integration;
 every one of them is a CSS custom property on the card:
