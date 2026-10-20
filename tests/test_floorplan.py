@@ -209,9 +209,12 @@ class FakeApi:
 
 
 class FakeCoordinator:
-    def __init__(self, api):
+    def __init__(self, api, client_version=None):
         self.api_client = api
         self.installation_id = "inst-1"
+        # What the real coordinator carries once setup has read the installed
+        # manifest; the room-plan card's cache-busting URL is stamped with it.
+        self.client_version = client_version
 
 
 class FakeState:
@@ -268,9 +271,9 @@ class FakeHass:
         return func(*args)
 
 
-def _manager(api, base_dir=".", states=None):
+def _manager(api, base_dir=".", states=None, client_version=None):
     hass = FakeHass(base_dir, states=states)
-    return HADispatchFloorplan(hass, FakeCoordinator(api)), hass
+    return HADispatchFloorplan(hass, FakeCoordinator(api, client_version)), hass
 
 
 # --- entity matching ---------------------------------------------------------
@@ -600,17 +603,20 @@ class IndoorReadingTest(unittest.TestCase):
 
     def test_a_room_with_no_indoor_reading_gets_no_display_on_the_card(self):
         hass = FakeHass(states=[self._outdoor()])
-        card = floorplan_mod.build_picture_elements_card(
+        card = floorplan_mod.build_room_plan_card(
             hass,
             HOTSPOTS["Floor_1"],
             [dict(self.KITCHEN_VENT, xy_ft=[5.0, -5.0])],
             "/local/x.png",
         )
-        self.assertEqual([e for e in card["elements"] if e["type"] == "state-icon"], [])
+        # The Kitchen's controls hold nothing: there is no indoor reading to
+        # show, and the outdoor one is not an acceptable substitute.
+        self.assertEqual(_room_entities(card)["Kitchen"], [])
         # Nothing anywhere on the card points at the outdoor sensor.
         self.assertNotIn("sensor.outdoor_temperature", json.dumps(card))
-        # The room label itself still stands -- it is the reading that is gone.
-        self.assertIn("Kitchen", [e.get("title") for e in card["elements"]])
+        # The room itself still renders and still taps -- it is the reading
+        # that is gone, not the room.
+        self.assertIn("Kitchen", [room["name"] for room in card["rooms"]])
 
 
 class DecisionRecordTest(unittest.TestCase):
@@ -670,13 +676,17 @@ class DecisionRecordTest(unittest.TestCase):
         )
         self.assertEqual(len(record["candidates"]), 10)
 
-    def test_a_device_with_no_position_and_a_device_on_no_floor_are_accounted_for(self):
+    def test_a_device_in_no_room_on_the_plan_and_one_on_no_floor_are_accounted_for(self):
+        # Under the room metaphor a device is placed by its room, not by its
+        # coordinates: nothing anchors a loose icon any more. So "the Loft, on
+        # Floor_1" -- a room that floor does not have -- is the unplaceable
+        # case, and a floor the plan does not have at all is the other.
         hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
         ha_map = {"devices": HA_MAP["devices"] + [
             {"entity": "light.loft.01", "domain": "light", "room": "Loft",
-             "floor_key": "Floor_1"},                                  # no xy_ft
+             "floor_key": "Floor_1"},                       # Loft is upstairs
             {"entity": "light.attic.01", "domain": "light", "room": "Attic",
-             "floor_key": "Attic", "xy_ft": [0.0, 0.0]},                # no such floor
+             "floor_key": "Attic", "xy_ft": [0.0, 0.0]},    # no such floor
         ]}
         decisions = []
         floorplan_mod.build_dashboard_views(
@@ -685,85 +695,187 @@ class DecisionRecordTest(unittest.TestCase):
             TWO_FLOOR_TRANSFORM, decisions=decisions,
         )
         by_entity = {d["entity"]: d["reason"] for d in decisions}
-        self.assertEqual(by_entity["light.loft.01"], "unplaced")
+        self.assertEqual(by_entity["light.loft.01"], "no_room_on_plan")
         self.assertEqual(by_entity["light.attic.01"], "no_floor")
         self.assertEqual(by_entity["thermostat.den.01"], "only_entity")
         # Every device the estimate listed is in the report exactly once.
         self.assertEqual(len(decisions), len(ha_map["devices"]))
 
+    def test_a_device_with_no_coordinates_still_lands_in_its_room(self):
+        # xy_ft placed an icon; nothing places an icon now. A device the
+        # pipeline could not anchor to a coordinate is still perfectly
+        # placeable, because what places it is the room it is in.
+        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
+        device = {"entity": "thermostat.den.01", "domain": "climate",
+                  "cls": "thermostat", "room": "Den"}          # no xy_ft
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [device], "/local/plan.png",
+            transform=PLAN_TRANSFORM["Floor_1"],
+        )
+        self.assertEqual(
+            _room_entities(card),
+            {"Den": ["climate.den_thermostat"], "Kitchen": []},
+        )
 
-class CardBuildingTest(unittest.TestCase):
-    def test_room_hotspots_become_labeled_points_regardless_of_entities(self):
+
+def _room_entities(card):
+    """{room name: [entity id, ...]} off a room-plan card -- which room's
+    controls actually hold each device."""
+    return {room["name"]: [e["entity"] for e in room["entities"]]
+            for room in card["rooms"]}
+
+
+def _room(card, name):
+    return [room for room in card["rooms"] if room["name"] == name][0]
+
+
+class RoomPlanCardTest(unittest.TestCase):
+    """The room-first card the dashboard is built out of.
+
+    The customer's own words: "inventory should be assigned to rooms and when
+    tapping on a room, opens a modal box that has the controls for that room
+    ... we need to use this as the primary UI metaphor for the software." So
+    rooms are what the plan draws and what a tap lands on, and a device's
+    controls live inside its room rather than as a loose icon somewhere near
+    it.
+    """
+
+    def test_the_card_is_the_custom_room_plan_card_not_picture_elements(self):
         hass = FakeHass(states=[])
-        card = floorplan_mod.build_picture_elements_card(
+        card = floorplan_mod.build_room_plan_card(
             hass, HOTSPOTS["Floor_1"], [], "/local/x.png"
         )
+        self.assertEqual(card["type"], "custom:ayvra-room-plan")
+        # No loose icons on the plan at all any more.
+        self.assertNotIn("state-icon", json.dumps(card))
+        self.assertNotIn("picture-elements", json.dumps(card))
 
-        labels = sorted(e["title"] for e in card["elements"] if e["type"] == "icon")
-        self.assertEqual(labels, ["Den", "Kitchen"])
+    def test_every_room_is_a_tappable_polygon_with_its_own_name(self):
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/x.png",
+            transform=PLAN_TRANSFORM["Floor_1"],
+        )
+        self.assertEqual(sorted(r["name"] for r in card["rooms"]), ["Den", "Kitchen"])
+        for room in card["rooms"]:
+            # A polygon, so the tap hits the room's real shape rather than
+            # its bounding box.
+            self.assertGreaterEqual(len(room["poly"]), 3)
 
-    def test_a_matched_device_becomes_a_state_icon_bound_to_the_real_entity(self):
+    def test_a_rooms_polygon_is_projected_point_by_point_onto_the_backplate(self):
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/plan.png",
+            transform=PLAN_TRANSFORM["Floor_1"],
+        )
+        # Hand-computed from PLAN_TRANSFORM (10 px/ft, origin (200, 150) on a
+        # 400x300 image), never from the code's own projection. The Den's
+        # corners are (-15,-10) (-5,-10) (-5,0) (-15,0) ft:
+        #   (-15,-10) -> ( 50, 250) -> (12.5%, 83.3%)
+        #   ( -5,-10) -> (150, 250) -> (37.5%, 83.3%)
+        #   ( -5,  0) -> (150, 150) -> (37.5%, 50.0%)
+        #   (-15,  0) -> ( 50, 150) -> (12.5%, 50.0%)
+        self.assertEqual(
+            _room(card, "Den")["poly"],
+            [[12.5, 83.3], [37.5, 83.3], [37.5, 50.0], [12.5, 50.0]],
+        )
+        # And the room's name sits at its centroid, (-10, -5) ft.
+        self.assertEqual(_room(card, "Den")["label"], list(DEN_LABEL))
+
+    def test_a_matched_device_lands_in_its_rooms_control_list(self):
         hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
-        card = floorplan_mod.build_picture_elements_card(
+        card = floorplan_mod.build_room_plan_card(
             hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/x.png"
         )
+        self.assertEqual(
+            _room_entities(card),
+            {"Den": ["climate.den_thermostat"], "Kitchen": []},
+        )
 
-        state_icons = [e for e in card["elements"] if e["type"] == "state-icon"]
-        self.assertEqual([e["entity"] for e in state_icons], ["climate.den_thermostat"])
-
-    def test_an_unmatched_device_is_left_off_the_card_entirely(self):
+    def test_an_unmatched_device_is_left_out_of_every_room(self):
         # No light entities exist at all, so the kitchen light in HA_MAP has
         # nothing to bind to and must not appear as a fabricated entity id.
         hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
-        card = floorplan_mod.build_picture_elements_card(
+        card = floorplan_mod.build_room_plan_card(
             hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/x.png"
         )
+        self.assertNotIn("light_recessed.kitchen.01", json.dumps(card))
+        self.assertEqual(_room_entities(card)["Kitchen"], [])
 
-        state_icon_entities = {e["entity"] for e in card["elements"] if e["type"] == "state-icon"}
-        self.assertNotIn("light_recessed.kitchen.01", state_icon_entities)
-        self.assertEqual(len(state_icon_entities), 1)
+    def test_an_empty_room_still_renders_and_still_taps(self):
+        # A room nobody put anything in is a fact the installer has to be able
+        # to check, so it is drawn and tappable like any other; the card says
+        # so in as many words once it is open.
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/x.png"
+        )
+        self.assertEqual(len(card["rooms"]), 2)
+        self.assertEqual([len(r["entities"]) for r in card["rooms"]], [0, 0])
+        self.assertGreaterEqual(len(_room(card, "Kitchen")["poly"]), 3)
 
     def test_the_card_references_the_local_backplate_url(self):
         hass = FakeHass(states=[])
-        card = floorplan_mod.build_picture_elements_card(
+        card = floorplan_mod.build_room_plan_card(
             hass, HOTSPOTS["Floor_1"], [], "/local/ha_dispatch/floorplan/backplate.png"
         )
-        self.assertEqual(card["type"], "picture-elements")
         self.assertEqual(card["image"], "/local/ha_dispatch/floorplan/backplate.png")
 
-    def test_a_matched_device_gets_a_domain_appropriate_icon(self):
+    def test_a_control_carries_a_domain_appropriate_icon_and_the_estimates_line(self):
         hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
-        card = floorplan_mod.build_picture_elements_card(
-            hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/x.png"
+        devices = [dict(HA_MAP["devices"][0], source_line="Thermostat - Den")]
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], devices, "/local/x.png"
         )
-        state_icons = [e for e in card["elements"] if e["type"] == "state-icon"]
-        self.assertEqual(state_icons[0]["icon"], "mdi:thermostat")
+        control = _room(card, "Den")["entities"][0]
+        self.assertEqual(control["icon"], "mdi:thermostat")
+        self.assertEqual(control["name"], "Thermostat - Den")
+
+    def test_a_control_without_an_estimate_line_carries_no_label_at_all(self):
+        # ha_map.json's device slug is not a Home Assistant entity id and must
+        # never be shown as though it were, so a device the estimate gave no
+        # line item for carries no name and the card falls back to the real
+        # entity's own friendly name.
+        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
+        devices = [{k: v for k, v in HA_MAP["devices"][0].items()}]
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], devices, "/local/x.png"
+        )
+        control = _room(card, "Den")["entities"][0]
+        self.assertEqual(control["entity"], "climate.den_thermostat")
+        self.assertNotIn("name", control)
+        self.assertNotIn("thermostat.den.01", json.dumps(card))
+
+    def test_the_card_names_the_floor_it_is_drawing(self):
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/x.png",
+            floor_key="Floor_1", floor_name="1st Floor",
+        )
+        self.assertEqual(card["floor_key"], "Floor_1")
+        self.assertEqual(card["floor_name"], "1st Floor")
 
     def test_with_no_transform_positions_fall_back_to_the_bounding_box(self):
-        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
-        card = floorplan_mod.build_picture_elements_card(
-            hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/x.png", transform=None
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/x.png", transform=None
         )
         self.assertEqual(card["aspect_ratio"], "8:5")
-        state_icon = [e for e in card["elements"] if e["type"] == "state-icon"][0]
-        # Den's centroid (-10, -5) sits left-of-centre and below-centre of
-        # the Floor_1 hotspot bounding box (x: -15..10, y: -10..0).
-        self.assertLess(float(state_icon["style"]["left"].rstrip("%")), 50.0)
+        # Den's centroid (-10, -5) sits left-of-centre of the Floor_1 hotspot
+        # bounding box (x: -15..10, y: -10..0).
+        self.assertLess(_room(card, "Den")["label"][0], 50.0)
 
-    def test_with_a_transform_positions_use_the_exact_affine_map(self):
-        hass = FakeHass(states=[FakeState("climate.den_thermostat", "Den Thermostat")])
-        transform = PLAN_TRANSFORM["Floor_1"]
-        card = floorplan_mod.build_picture_elements_card(
-            hass, HOTSPOTS["Floor_1"], HA_MAP["devices"], "/local/plan.png", transform=transform
+    def test_with_a_transform_the_aspect_ratio_is_the_backplates_own(self):
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/plan.png",
+            transform=PLAN_TRANSFORM["Floor_1"],
         )
         self.assertEqual(card["aspect_ratio"], "400:300")
-        state_icon = [e for e in card["elements"] if e["type"] == "state-icon"][0]
-        # Den's device sits at (-10, -5) ft. pixel = (10*-10+200, -10*-5+150)
-        # = (100, 200) on a 400x300 image -> (25.0%, 66.7%).
-        self.assertEqual(state_icon["style"]["left"], "25.0%")
-        self.assertEqual(state_icon["style"]["top"], "66.7%")
 
-    def test_a_second_device_in_the_same_room_is_fanned_out_not_stacked(self):
+    def test_two_devices_in_one_room_share_that_rooms_control_list(self):
+        # The old card had to fan loose icons out so they did not stack; a
+        # room's modal just lists them.
         hass = FakeHass(
             states=[
                 FakeState("light.den_recessed_one", "Den Recessed One"),
@@ -776,11 +888,35 @@ class CardBuildingTest(unittest.TestCase):
             {"entity": "light_recessed.den.02", "domain": "light", "cls": "light_recessed",
              "room": "Den", "xy_ft": [-10.0, -5.0]},
         ]
-        card = floorplan_mod.build_picture_elements_card(
-            hass, [], devices, "/local/plan.png", transform=PLAN_TRANSFORM["Floor_1"]
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], devices, "/local/plan.png",
+            transform=PLAN_TRANSFORM["Floor_1"],
         )
-        positions = {(e["style"]["left"], e["style"]["top"]) for e in card["elements"]}
-        self.assertEqual(len(positions), 2)
+        # Both lights share a room word with "Den", so the matcher binds the
+        # same best candidate twice; the room lists it once.
+        self.assertEqual(len(_room(card, "Den")["entities"]), 1)
+
+    def test_a_room_the_installer_spelled_differently_still_takes_its_devices(self):
+        hass = FakeHass(states=[FakeState("climate.great_room_stat", "Great Room Stat")])
+        rooms = [{"name": "Great Room", "centroid": [0.0, 0.0],
+                  "poly_ft": [[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0]]}]
+        devices = [{"entity": "thermostat.great_room.01", "domain": "climate",
+                    "cls": "thermostat", "room": "great  room", "xy_ft": [0.0, 0.0]}]
+        card = floorplan_mod.build_room_plan_card(
+            hass, rooms, devices, "/local/plan.png",
+            transform=PLAN_TRANSFORM["Floor_1"],
+        )
+        self.assertEqual(
+            _room_entities(card), {"Great Room": ["climate.great_room_stat"]}
+        )
+
+    def test_a_floor_with_no_usable_coordinates_at_all_yields_no_rooms(self):
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, [{"name": "Den"}], HA_MAP["devices"], "/local/x.png"
+        )
+        self.assertEqual(card["type"], "custom:ayvra-room-plan")
+        self.assertEqual(card["rooms"], [])
 
 
 class DashboardViewsTest(unittest.TestCase):
@@ -795,10 +931,12 @@ class DashboardViewsTest(unittest.TestCase):
         self.assertEqual(view["title"], "1st Floor")
         self.assertEqual(view["path"], "floor-1")
         self.assertEqual(len(view["cards"]), 1)
-        self.assertEqual(view["cards"][0]["type"], "picture-elements")
+        self.assertEqual(view["cards"][0]["type"], "custom:ayvra-room-plan")
         self.assertEqual(view["cards"][0]["image"], "/local/plan_Floor_1.png")
+        self.assertEqual(view["cards"][0]["floor_key"], "Floor_1")
+        self.assertEqual(view["cards"][0]["floor_name"], "1st Floor")
         self.assertNotIn("vertical-stack", json.dumps(views))
-        self.assertNotIn('"picture"', json.dumps(views))
+        self.assertNotIn("picture-elements", json.dumps(views))
 
     def test_floors_are_ordered_lowest_first_whatever_the_manifest_order(self):
         hass = FakeHass(states=[])
@@ -841,10 +979,15 @@ class DashboardViewsTest(unittest.TestCase):
             {"Floor_1": "/local/plan_Floor_1.png", "Floor_2": "/local/plan_Floor_2.png"},
             TWO_FLOOR_TRANSFORM,
         )
-        bound = {v["title"]: [e["entity"] for e in v["cards"][0]["elements"]
-                              if e["type"] == "state-icon"] for v in views}
-        self.assertEqual(bound, {"1st Floor": ["climate.den_thermostat", "light.kitchen_spot"],
-                                 "2nd Floor": ["light.loft_lamp"]})
+        bound = {v["title"]: _room_entities(v["cards"][0]) for v in views}
+        self.assertEqual(
+            bound,
+            {
+                "1st Floor": {"Den": ["climate.den_thermostat"],
+                              "Kitchen": ["light.kitchen_spot"]},
+                "2nd Floor": {"Loft": ["light.loft_lamp"]},
+            },
+        )
 
     def test_a_single_floor_with_no_floor_key_still_gets_its_devices(self):
         # Mirrors a manifest predating floor_key: devices only carry the
@@ -857,8 +1000,10 @@ class DashboardViewsTest(unittest.TestCase):
             hass, HOTSPOTS, legacy_map, {}, {}, fallback_image_url="/local/hero.png"
         )
         plan_card = views[-1]["cards"][0]
-        state_icons = [e for e in plan_card["elements"] if e["type"] == "state-icon"]
-        self.assertEqual(len(state_icons), 1)
+        self.assertEqual(
+            _room_entities(plan_card),
+            {"Den": ["climate.den_thermostat"], "Kitchen": []},
+        )
 
     def test_a_floor_with_no_plan_render_falls_back_to_the_legacy_hero_image(self):
         hass = FakeHass(states=[])
@@ -936,10 +1081,12 @@ class SuccessfulDeployTest(unittest.TestCase):
             # One card per view: that floor's plan, nothing stacked above it.
             self.assertEqual(len(view["cards"]), 1)
             plan_card = view["cards"][0]
-            self.assertEqual(plan_card["type"], "picture-elements")
+            self.assertEqual(plan_card["type"], "custom:ayvra-room-plan")
             self.assertEqual(plan_card["image"], "/local/ha_dispatch/floorplan/plan_Floor_1.png")
-            entities = [e["entity"] for e in plan_card["elements"] if e["type"] == "state-icon"]
-            self.assertEqual(entities, ["climate.den_thermostat"])
+            self.assertEqual(
+                _room_entities(plan_card),
+                {"Den": ["climate.den_thermostat"], "Kitchen": []},
+            )
 
             self.assertEqual(len(notifications.created), 1)
             self.assertEqual(notifications.created[0]["notification_id"], const.FLOORPLAN_NOTIFICATION_ID)
@@ -962,8 +1109,9 @@ class SuccessfulDeployTest(unittest.TestCase):
             dashboard = manager._dashboard_store.data
             plan_card = dashboard["config"]["views"][0]["cards"][0]
             self.assertEqual(plan_card["image"], "/local/ha_dispatch/floorplan/backplate.png")
-            entities = [e["entity"] for e in plan_card["elements"] if e["type"] == "state-icon"]
-            self.assertEqual(entities, ["climate.den_thermostat"])
+            self.assertEqual(
+                _room_entities(plan_card)["Den"], ["climate.den_thermostat"]
+            )
 
     def test_redeploying_updates_the_same_dashboard_registry_entry_not_a_second_one(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1064,9 +1212,48 @@ class FakeDashboardsCollectionWebsocket:
         """Never actually called by these tests -- only its __self__ is."""
 
 
+class FakeResourceCollection:
+    """Mimics lovelace's live ResourceStorageCollection: the list that decides
+    whether a browser loads the room-plan card at all. Real lovelace reads its
+    file lazily, so `loaded` and async_load() are part of the contract
+    floorplan.py has to honour."""
+
+    def __init__(self):
+        self.items = []
+        self.loaded = False
+        self.load_calls = 0
+        self.create_calls = []
+        self.update_calls = []
+
+    async def async_load(self):
+        self.loaded = True
+        self.load_calls += 1
+
+    def async_items(self):
+        return list(self.items)
+
+    async def async_create_item(self, data):
+        assert sorted(data) == ["res_type", "url"], data
+        item = {"id": f"res{len(self.items) + 1}", "type": data["res_type"],
+                "url": data["url"]}
+        self.items.append(item)
+        self.create_calls.append(dict(data))
+        return item
+
+    async def async_update_item(self, item_id, updates):
+        item = [i for i in self.items if i["id"] == item_id][0]
+        if "res_type" in updates:
+            item["type"] = updates["res_type"]
+        if "url" in updates:
+            item["url"] = updates["url"]
+        self.update_calls.append({"id": item_id, **updates})
+        return item
+
+
 class FakeLovelaceData:
     def __init__(self):
         self.dashboards = {}
+        self.resources = FakeResourceCollection()
 
 
 def _wire_live_lovelace(hass):
@@ -1342,14 +1529,15 @@ def _two_thermostat_states():
     ]
 
 
-# Positions are hand-computed from PLAN_TRANSFORM (10 px per foot, origin at
-# (200, 150) on a 400x300 image), never from the code's own projection:
+# Where each room's name is drawn on the card, hand-computed from
+# PLAN_TRANSFORM (10 px per foot, origin at (200, 150) on a 400x300 image),
+# never from the code's own projection:
 #   Den     centroid (-10, -5) -> (10*-10+200, -10*-5+150) = (100, 200)
 #                              -> (25.0%, 66.7%)
 #   Kitchen centroid (  5, -5) -> (10*  5+200, -10*-5+150) = (250, 200)
 #                              -> (62.5%, 66.7%)
-DEN_POSITION = ("25.0%", "66.7%")
-KITCHEN_POSITION = ("62.5%", "66.7%")
+DEN_LABEL = (25.0, 66.7)
+KITCHEN_LABEL = (62.5, 66.7)
 
 # A second deploy's ha_map.json: the same two device slugs, listed in the
 # opposite order, with the thermostat still placed in the Den. A correction
@@ -1383,18 +1571,16 @@ REDEPLOY_HA_MAP_URL = "https://dispatch.example.com/assets/ha_map.2.json"
 OVERRIDE_ASSETS = dict(ASSETS, **{REDEPLOY_HA_MAP_URL: json.dumps(REDEPLOY_HA_MAP)})
 
 
-def _state_icons(card):
-    return [e for e in card["elements"] if e["type"] == "state-icon"]
+def _deployed_card(manager, view=0):
+    return manager._dashboard_store.data["config"]["views"][view]["cards"][0]
 
 
-def _rendered(manager, view=0):
-    """Every state-icon on a deployed dashboard's floor, as
-    {entity: (left, top)} -- where the homeowner actually sees each device."""
-    card = manager._dashboard_store.data["config"]["views"][view]["cards"][0]
-    return {
-        e["entity"]: (e["style"]["left"], e["style"]["top"])
-        for e in _state_icons(card)
-    }
+def _placed(manager, view=0):
+    """{entity: room name} off a deployed dashboard's floor -- whose room's
+    controls the homeowner actually finds each device under."""
+    card = _deployed_card(manager, view)
+    return {e["entity"]: room["name"]
+            for room in card["rooms"] for e in room["entities"]}
 
 
 class OverrideLayerTest(unittest.TestCase):
@@ -1486,12 +1672,13 @@ class OverrideLayerTest(unittest.TestCase):
         # thermostat is on the upper floor now and nowhere else; the Loft's
         # centroid (0, 0) is (10*0+200, -10*0+150) = (200, 150) on 400x300,
         # i.e. dead centre.
-        self.assertEqual(_state_icons(views[0]["cards"][0]), [])
-        upstairs = _state_icons(views[1]["cards"][0])
-        self.assertEqual(len(upstairs), 1)
-        self.assertEqual(upstairs[0]["entity"], "climate.den_thermostat")
-        self.assertEqual(upstairs[0]["style"]["left"], "50.0%")
-        self.assertEqual(upstairs[0]["style"]["top"], "50.0%")
+        self.assertEqual(
+            _room_entities(views[0]["cards"][0]), {"Den": [], "Kitchen": []}
+        )
+        self.assertEqual(
+            _room_entities(views[1]["cards"][0]),
+            {"Loft": ["climate.den_thermostat"]},
+        )
 
     def test_a_correction_for_a_room_this_plan_does_not_have_is_dropped(self):
         hass = FakeHass(states=_two_thermostat_states())
@@ -1570,9 +1757,7 @@ class OverrideSurvivesRedeployTest(unittest.TestCase):
             # 1. Deploy. The estimate puts the thermostat in the Den, and the
             #    matcher agrees with it.
             _run(manager._async_run(_job(job_id=1)))
-            self.assertEqual(
-                _rendered(manager), {"climate.den_thermostat": DEN_POSITION}
-            )
+            self.assertEqual(_placed(manager), {"climate.den_thermostat": "Den"})
 
             # 2. The installer, standing in the house, says it is the
             #    Kitchen's thermostat.
@@ -1597,11 +1782,9 @@ class OverrideSurvivesRedeployTest(unittest.TestCase):
 
             _run(manager._async_run(_job(job_id=2, ha_map_url=REDEPLOY_HA_MAP_URL)))
 
-            # The correction won: the Kitchen's thermostat, drawn on the
-            # Kitchen, from a manifest that said neither.
-            self.assertEqual(
-                _rendered(manager), {"climate.kitchen_thermostat": KITCHEN_POSITION}
-            )
+            # The correction won: the Kitchen's thermostat, under the
+            # Kitchen's controls, from a manifest that said neither.
+            self.assertEqual(_placed(manager), {"climate.kitchen_thermostat": "Kitchen"})
             record = [d for d in api.reports[-1]["devices"]
                       if d["entity"] == "thermostat.den.01"][0]
             self.assertEqual(record["room"], "Kitchen")
@@ -1640,14 +1823,12 @@ class OverrideSurvivesRedeployTest(unittest.TestCase):
                 _run(second._async_run(_job(job_id=7,
                                             ha_map_url=REDEPLOY_HA_MAP_URL)))
                 card = shared["lovelace.home-3d"]["config"]["views"][0]["cards"][0]
-                icons = _state_icons(card)
+                grouped = _room_entities(card)
             finally:
                 floorplan_mod.Store = saved
 
-            self.assertEqual(len(icons), 1)
-            self.assertEqual(icons[0]["entity"], "climate.kitchen_thermostat")
             self.assertEqual(
-                (icons[0]["style"]["left"], icons[0]["style"]["top"]), KITCHEN_POSITION
+                grouped, {"Den": [], "Kitchen": ["climate.kitchen_thermostat"]}
             )
 
 
@@ -1679,9 +1860,7 @@ class OverrideDropTest(unittest.TestCase):
             self.assertEqual(
                 sorted(_run(manager.async_overrides())), ["thermostat.den.01"]
             )
-            self.assertEqual(
-                _rendered(manager), {"climate.kitchen_thermostat": KITCHEN_POSITION}
-            )
+            self.assertEqual(_placed(manager), {"climate.kitchen_thermostat": "Kitchen"})
 
     def test_a_deploy_with_no_corrections_reports_no_drops(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1704,24 +1883,18 @@ class OverrideServiceSupportTest(unittest.TestCase):
             api = FakeApi(assets=OVERRIDE_ASSETS)
             manager, hass = _manager(api, tmp, states=_two_thermostat_states())
             _run(manager._async_run(_job()))
-            self.assertEqual(
-                _rendered(manager), {"climate.den_thermostat": DEN_POSITION}
-            )
+            self.assertEqual(_placed(manager), {"climate.den_thermostat": "Den"})
 
             # Corrected and redrawn from the assets already on disk -- the
             # installer is at the tablet and must see it now, not at the next
             # deploy.
             _run(manager.async_set_override("thermostat.den.01", room="Kitchen"))
             self.assertTrue(_run(manager.async_reapply()))
-            self.assertEqual(
-                _rendered(manager), {"climate.kitchen_thermostat": KITCHEN_POSITION}
-            )
+            self.assertEqual(_placed(manager), {"climate.kitchen_thermostat": "Kitchen"})
 
             self.assertTrue(_run(manager.async_clear_override("thermostat.den.01")))
             self.assertTrue(_run(manager.async_reapply()))
-            self.assertEqual(
-                _rendered(manager), {"climate.den_thermostat": DEN_POSITION}
-            )
+            self.assertEqual(_placed(manager), {"climate.den_thermostat": "Den"})
 
     def test_a_correction_is_merged_rather_than_replaced(self):
         manager, _ = _manager(FakeApi(), states=_two_thermostat_states())
@@ -1749,6 +1922,343 @@ class OverrideServiceSupportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             manager, _ = _manager(FakeApi(), tmp)
             self.assertFalse(_run(manager.async_reapply()))
+
+
+# --- the room-first dashboard -------------------------------------------------
+#
+# Three rooms, and an ha_map that lists their devices in a DIFFERENT order
+# from hotspots.json on purpose: a fixture already in the right order cannot
+# tell correct grouping from accidental grouping. hotspots order is
+# Den, Kitchen, Primary Bath; the devices are Primary Bath, Den, Kitchen.
+
+THREE_ROOM_HOTSPOTS = {
+    "Floor_1": [
+        {
+            "name": "Den",
+            "sf": 200.0,
+            "centroid": [-10.0, -5.0],
+            "poly_ft": [[-15.0, -10.0], [-5.0, -10.0], [-5.0, 0.0], [-15.0, 0.0]],
+        },
+        {
+            "name": "Kitchen",
+            "sf": 150.0,
+            "centroid": [5.0, -5.0],
+            "poly_ft": [[0.0, -10.0], [10.0, -10.0], [10.0, 0.0], [0.0, 0.0]],
+        },
+        {
+            "name": "Primary Bath",
+            "sf": 90.0,
+            "centroid": [20.0, -5.0],
+            "poly_ft": [[15.0, -10.0], [25.0, -10.0], [25.0, 0.0], [15.0, 0.0]],
+        },
+    ]
+}
+
+THREE_ROOM_HA_MAP = {
+    "source": "Xactimate ESX sketch (surveyed)",
+    "units": "feet",
+    "devices": [
+        {
+            "entity": "light_vanity.primary_bath.01",
+            "domain": "light",
+            "cls": "light",
+            "room": "Primary Bath",
+            "floor": "1st Floor",
+            "floor_key": "Floor_1",
+            "xy_ft": [20.0, -5.0],
+            "source_line": "Light fixture - Primary Bath",
+        },
+        {
+            "entity": "thermostat.den.01",
+            "domain": "climate",
+            "cls": "thermostat",
+            "room": "Den",
+            "floor": "1st Floor",
+            "floor_key": "Floor_1",
+            "xy_ft": [-10.0, -5.0],
+            "source_line": "Thermostat - Den",
+        },
+        {
+            "entity": "light_recessed.kitchen.01",
+            "domain": "light",
+            "cls": "light_recessed",
+            "room": "Kitchen",
+            "floor": "1st Floor",
+            "floor_key": "Floor_1",
+            "xy_ft": [5.0, -5.0],
+            "source_line": "Light fixture - Kitchen",
+        },
+    ],
+}
+
+THREE_ROOM_HOTSPOTS_URL = "https://dispatch.example.com/assets/hotspots.3.json"
+THREE_ROOM_HA_MAP_URL = "https://dispatch.example.com/assets/ha_map.3.json"
+THREE_ROOM_ASSETS = dict(
+    ASSETS,
+    **{
+        THREE_ROOM_HOTSPOTS_URL: json.dumps(THREE_ROOM_HOTSPOTS),
+        THREE_ROOM_HA_MAP_URL: json.dumps(THREE_ROOM_HA_MAP),
+    },
+)
+
+
+def _three_room_states():
+    """Two climate entities and two lights, so no device can be bound by the
+    "only entity in its domain" rule -- every one has to earn its room."""
+    return [
+        FakeState("climate.den_thermostat", "Den Thermostat"),
+        FakeState("climate.kitchen_thermostat", "Kitchen Thermostat"),
+        FakeState("light.kitchen_spot", "Kitchen Spot"),
+        FakeState("light.primary_bath_vanity", "Primary Bath Vanity"),
+    ]
+
+
+def _three_room_job(job_id=301, **overrides):
+    return _job(
+        job_id,
+        hotspots_url=THREE_ROOM_HOTSPOTS_URL,
+        ha_map_url=THREE_ROOM_HA_MAP_URL,
+        **overrides,
+    )
+
+
+class RoomFirstDashboardTest(unittest.TestCase):
+    """The guard for the room metaphor itself, on the dashboard a real deploy
+    actually writes.
+
+    What it protects: the dashboard is built out of the custom room card (no
+    stock card can draw a room polygon as a hit target, let alone grey the
+    floor out around the room in focus); every room on the plan is tappable,
+    whether or not anything was matched into it; and a device is in its OWN
+    room's control list and in nobody else's. The last one is why the fixture
+    lists devices in a different order from the rooms -- "the kitchen light is
+    in the kitchen" is true of correct grouping and of a bug that puts every
+    device in whichever room came first, and only a shuffled fixture can tell
+    those apart.
+    """
+
+    def _deploy(self):
+        self.addCleanup(self._tmp_cleanup)
+        self._tmp = tempfile.TemporaryDirectory()
+        api = FakeApi(assets=THREE_ROOM_ASSETS)
+        manager, hass = _manager(api, self._tmp.name, states=_three_room_states())
+        _run(manager._async_run(_three_room_job()))
+        self.assertEqual(api.reports[-1]["status"], "done")
+        return manager
+
+    def _tmp_cleanup(self):
+        self._tmp.cleanup()
+
+    def test_the_dashboard_is_built_from_the_custom_room_card(self):
+        card = _deployed_card(self._deploy())
+        self.assertEqual(card["type"], "custom:ayvra-room-plan")
+        # The old loose-icon plan is gone, not merely hidden.
+        self.assertNotIn("picture-elements", json.dumps(card))
+        self.assertNotIn("state-icon", json.dumps(card))
+
+    def test_every_room_on_the_plan_is_a_tappable_room_on_the_card(self):
+        card = _deployed_card(self._deploy())
+        self.assertEqual(
+            [room["name"] for room in card["rooms"]],
+            ["Den", "Kitchen", "Primary Bath"],
+        )
+        for room in card["rooms"]:
+            self.assertGreaterEqual(len(room["poly"]), 3)
+            self.assertEqual(len(room["label"]), 2)
+
+    def test_a_device_is_in_its_own_rooms_controls_and_in_no_other_rooms(self):
+        grouped = _room_entities(_deployed_card(self._deploy()))
+
+        # The wrong answers first: a fixture that cannot distinguish them
+        # would pass the right answer by accident.
+        self.assertNotIn("light.kitchen_spot", grouped["Den"])
+        self.assertNotIn("light.kitchen_spot", grouped["Primary Bath"])
+        self.assertNotIn("climate.den_thermostat", grouped["Kitchen"])
+        self.assertNotIn("light.primary_bath_vanity", grouped["Den"])
+
+        # ...and then the right one.
+        self.assertIn("light.kitchen_spot", grouped["Kitchen"])
+        self.assertEqual(
+            grouped,
+            {
+                "Den": ["climate.den_thermostat"],
+                "Kitchen": ["light.kitchen_spot"],
+                "Primary Bath": ["light.primary_bath_vanity"],
+            },
+        )
+
+
+class RoomPlanAssetTest(unittest.TestCase):
+    """Shipping the card: the file a browser fetches, and the resource row
+    that makes it fetch it.
+
+    The card is JavaScript and this suite is pytest, so the card's own
+    behaviour is not unit-tested here (see the manual checks in
+    docs/user/deployment.md). What is testable from Python is exactly what
+    goes wrong silently: the file not being copied where /local/ serves it,
+    and the resource row being absent, duplicated, or stamped with a version
+    that never changes -- which leaves every wall tablet running the card it
+    downloaded months ago.
+    """
+
+    def test_the_resource_url_is_the_card_stamped_with_the_version(self):
+        self.assertEqual(
+            floorplan_mod.card_resource_url("1.8.0"),
+            "/local/ha_dispatch/floorplan/ayvra-room-plan.js?v=1.8.0",
+        )
+
+    def test_an_unknown_version_leaves_the_url_unstamped_rather_than_faking_one(self):
+        # A stamp that never changes reads as a stamp and is worse than none.
+        self.assertEqual(
+            floorplan_mod.card_resource_url(""),
+            "/local/ha_dispatch/floorplan/ayvra-room-plan.js",
+        )
+
+    def test_a_deploy_copies_the_card_next_to_the_plan_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[])
+            _run(manager._async_run(_job()))
+
+            shipped = os.path.join(
+                tmp, "www", "ha_dispatch", "floorplan", "ayvra-room-plan.js"
+            )
+            self.assertTrue(os.path.isfile(shipped))
+            with open(shipped) as handle:
+                source = handle.read()
+            # The real card, not a placeholder: its custom element is defined
+            # and its config contract is the one the generator emits.
+            self.assertIn('customElements.define("ayvra-room-plan"', source)
+            self.assertIn("setConfig", source)
+
+    def test_the_card_resource_is_registered_once_with_the_clients_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[], client_version="9.9.9")
+            _, lovelace_data = _wire_live_lovelace(hass)
+
+            _run(manager._async_run(_job()))
+
+            resources = lovelace_data.resources
+            self.assertEqual(
+                resources.async_items(),
+                [{"id": "res1", "type": "module",
+                  "url": "/local/ha_dispatch/floorplan/ayvra-room-plan.js?v=9.9.9"}],
+            )
+            # Lovelace reads its resource file lazily; an unloaded collection
+            # has to be loaded before its contents mean anything.
+            self.assertEqual(resources.load_calls, 1)
+
+    def test_redeploying_the_same_version_does_not_add_a_second_resource_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[], client_version="9.9.9")
+            _, lovelace_data = _wire_live_lovelace(hass)
+
+            _run(manager._async_run(_job(job_id=1)))
+            _run(manager._async_run(_job(job_id=2)))
+
+            resources = lovelace_data.resources
+            self.assertEqual(len(resources.async_items()), 1)
+            self.assertEqual(len(resources.create_calls), 1)
+            # Nothing changed, so nothing was written again either.
+            self.assertEqual(resources.update_calls, [])
+
+    def test_a_new_client_version_re_points_the_one_row_instead_of_adding_another(self):
+        # The caching caveat this feature exists for: HA caches frontend
+        # resources hard, so the URL has to change with the card -- and the
+        # row has to be the same row, or the browser loads two copies of the
+        # card and the older one may win.
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[], client_version="9.9.9")
+            _, lovelace_data = _wire_live_lovelace(hass)
+            _run(manager._async_run(_job(job_id=1)))
+
+            manager.coordinator.client_version = "9.10.0"
+            _run(manager._async_run(_job(job_id=2)))
+
+            resources = lovelace_data.resources
+            self.assertEqual(
+                [item["url"] for item in resources.async_items()],
+                ["/local/ha_dispatch/floorplan/ayvra-room-plan.js?v=9.10.0"],
+            )
+            self.assertEqual(len(resources.create_calls), 1)
+            self.assertEqual(len(resources.update_calls), 1)
+
+    def test_with_no_version_to_hand_the_url_is_still_stamped(self):
+        # An installation that cannot tell us its version still must not be
+        # served a stale card forever, so the stamp falls back to the
+        # manifest on disk (and, failing that, the copy's mtime). The exact
+        # value moves with the release, so only its presence is asserted
+        # here; the hand-written expectation lives in the test above.
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[], client_version=None)
+            _, lovelace_data = _wire_live_lovelace(hass)
+
+            _run(manager._async_run(_job()))
+
+            url = lovelace_data.resources.async_items()[0]["url"]
+            base, _, stamp = url.partition("?v=")
+            self.assertEqual(base, "/local/ha_dispatch/floorplan/ayvra-room-plan.js")
+            self.assertTrue(stamp)
+
+    def test_without_a_live_resource_collection_the_row_is_written_to_storage(self):
+        # YAML-mode lovelace, or a future core where the collection moved:
+        # the row is still recorded, and the homeowner is told a restart is
+        # what is needed rather than left with missing-card boxes.
+        notifications.reset()
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[], client_version="9.9.9")
+
+            _run(manager._async_run(_job()))
+
+            self.assertEqual(
+                manager._resources_store.data,
+                {"items": [{"id": "ha_dispatch_client_room_plan_card",
+                            "type": "module",
+                            "url": "/local/ha_dispatch/floorplan/"
+                                   "ayvra-room-plan.js?v=9.9.9"}]},
+            )
+            self.assertEqual(len(notifications.created), 1)
+            self.assertIn("Restart", notifications.created[0]["message"])
+
+    def test_the_storage_fallback_re_points_its_row_rather_than_appending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[], client_version="9.9.9")
+            _run(manager._async_run(_job(job_id=1)))
+            manager.coordinator.client_version = "9.10.0"
+            _run(manager._async_run(_job(job_id=2)))
+
+            items = manager._resources_store.data["items"]
+            self.assertEqual(
+                [item["url"] for item in items],
+                ["/local/ha_dispatch/floorplan/ayvra-room-plan.js?v=9.10.0"],
+            )
+
+    def test_a_card_that_cannot_be_copied_fails_the_deploy_out_loud(self):
+        # The card IS the dashboard now: views pointing at a custom element
+        # that is not there render "Custom element doesn't exist" on every
+        # floor, so this is a failed deploy, not a degraded one.
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, hass = _manager(api, tmp, states=[])
+
+            def explode(source, dest):
+                raise OSError("read-only file system")
+
+            saved = floorplan_mod._copy_card
+            floorplan_mod._copy_card = explode
+            try:
+                _run(manager._async_run(_job()))
+            finally:
+                floorplan_mod._copy_card = saved
+
+            self.assertEqual(api.reports[-1]["status"], "failed")
+            self.assertIn("room plan card", api.reports[-1]["detail"])
 
 
 class ServiceWiringTest(unittest.TestCase):

@@ -165,6 +165,38 @@ ssh straplocked@homeassistant.local "grep version /config/custom_components/ha_d
 
 The `VERSION` file and the `version` field in `manifest.json` must always stay in sync. The `bump_version.sh` script handles this automatically.
 
+## Checking the Home 3D room plan by hand
+
+The room-first plan card is JavaScript, so the automated suite can only prove
+that the file was copied, that its Lovelace resource is registered once with a
+version stamp, and that the dashboard config is shaped the way the card
+expects. These four checks are the part only a person can do, and are worth
+running after a floorplan deploy on a real installation:
+
+1. **The card loaded at all.** Open the *Home 3D* dashboard. Rooms outlined on
+   the plan means the resource loaded; a "Custom element doesn't exist:
+   ayvra-room-plan" box means it did not -- check
+   Settings -> Dashboards -> Resources for
+   `/local/ha_dispatch/floorplan/ayvra-room-plan.js?v=...`, and that the file
+   is in `/config/www/ha_dispatch/floorplan/`. If the file is there and the
+   resource is listed but the browser still 404s it, `/config/www` did not
+   exist when Home Assistant started -- it only registers `/local/` at
+   startup -- so restart once. This affects the plan images the same way.
+2. **A room taps.** Tapping inside a room dims the rest of the floor and opens
+   that room's panel. Tapping the plan *outside* any room does nothing, which
+   is correct -- rooms are the only hit targets.
+3. **The controls are live.** A light or switch in the panel toggles the real
+   device, a thermostat's +/- changes the real setpoint, and a sensor shows a
+   reading. Change something from another client and the panel follows it.
+4. **It closes both ways.** Escape closes the panel on a laptop; a tap outside
+   the panel closes it on a tablet. Both must work -- the installer's laptop
+   has a keyboard and the wall tablet does not.
+
+A room that reports "No devices are assigned to this room yet" is not a bug:
+the automatic placement is a best guess from an insurance estimate. Use the
+`assign_floorplan_device` service to put the device in the right room (see
+`docs/user/services-guide.md`); the plan redraws immediately.
+
 ## Caching and Clean Deploy
 
 Home Assistant aggressively caches certain files in memory. After deploying changes to these files, a normal restart may not be enough.
@@ -177,6 +209,7 @@ Home Assistant aggressively caches certain files in memory. After deploying chan
 | `strings.json` | Heavily cached | Needs restart |
 | Python files (`*.py`) | Moderately cached | Reload usually works |
 | `services.yaml` | Moderately cached | Reload usually works |
+| `www/ayvra-room-plan.js` | Cached by the **browser**, not HA | Served from `/local/`; the deploy registers it with a `?v=<version>` stamp so a new version is fetched, but a browser already holding the old URL may need one hard refresh |
 
 **Rule of thumb:** If you change `manifest.json`, expect to need a clean deploy.
 

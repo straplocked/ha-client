@@ -4,6 +4,35 @@ All notable changes to HA Dispatch Client will be documented in this file.
 
 ## [Unreleased]
 
+### Added -- the Home 3D plan is room-first now
+- Tapping a **room** is the interaction: the floor greys out around it and a
+  modal opens holding that room's own inventory -- a toggle for a light or
+  switch, a setpoint for a thermostat, a reading for a sensor. The loose
+  device icons scattered over the plan are gone; a room's inventory lives
+  inside the room. This is the product's primary UI metaphor, in the
+  customer's own words.
+- A new custom Lovelace card, `<ayvra-room-plan>`, ships with the integration
+  at `www/ayvra-room-plan.js` -- hand-written, dependency-free ES with no
+  build step. Rooms are drawn as real SVG polygons over the plan render, so a
+  tap lands inside the room's shape rather than its bounding box. The modal
+  closes on Escape and on a tap outside it, and rooms are reachable by
+  keyboard, because a wall tablet is touch-only but an installer's laptop is
+  not. Every reading and toggle state is read from Home Assistant rather than
+  guessed at locally.
+- A room with nothing matched into it still renders and still taps: it opens
+  a modal that says so, rather than quietly disappearing from the plan.
+- The deploy copies the card beside the plan images and registers it as a
+  Lovelace resource stamped with the client version, so a redeploy actually
+  serves the new card instead of the browser's cached copy -- and re-points
+  the one resource row rather than leaving a trail of them.
+
+### Changed
+- A device is placed by its **room**, not by its coordinates: a device the
+  pipeline could not anchor to a point is still perfectly placeable, and one
+  whose room is not on the floor being drawn is reported as
+  `no_room_on_plan` (replacing `unplaced`) and left off, rather than being
+  drawn at a guessed position.
+
 ### Added -- an installer can correct where a device sits, and it sticks
 - The automatic placement is a best guess from an insurance estimate. A new
   `assign_floorplan_device` service lets an installer standing in the house

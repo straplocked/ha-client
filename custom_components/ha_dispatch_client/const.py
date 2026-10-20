@@ -475,6 +475,45 @@ FLOORPLAN_REASON_OVERRIDE_ENTITY = "override_entity"
 FLOORPLAN_REASON_OVERRIDE_ROOM = "override_room"
 FLOORPLAN_REASON_OVERRIDE_DROPPED = "override_dropped"
 
+# The room-first Lovelace card, which is the primary UI metaphor of the whole
+# product: a floor's plan is drawn as tappable rooms, and tapping one opens a
+# modal holding that room's own inventory controls. There are no loose device
+# icons scattered over the plan any more -- a homeowner taps the kitchen, not
+# a 24px glyph that may or may not be the dishwasher.
+#
+# It has to be a custom card: no stock Lovelace card can draw a room polygon
+# as a hit target, let alone grey the rest of the floor out around the room in
+# focus. It is hand-written, dependency-free ES -- no node, no bundler, no
+# TypeScript, no build step -- because this repository has no JavaScript
+# toolchain and must stay installable by HACS exactly as it sits.
+FLOORPLAN_CARD_ELEMENT = "ayvra-room-plan"
+FLOORPLAN_CARD_TYPE = f"custom:{FLOORPLAN_CARD_ELEMENT}"
+FLOORPLAN_CARD_FILENAME = f"{FLOORPLAN_CARD_ELEMENT}.js"
+# Where the card ships inside the integration, relative to this package. The
+# deploy copies it from here into FLOORPLAN_ASSET_DIR, because /local/ (i.e.
+# config/www/) is the only directory Home Assistant serves back out over HTTP
+# without a bespoke static-path registration.
+FLOORPLAN_CARD_SOURCE_DIR = "www"
+
+# The Lovelace resource row that makes the browser load the card at all.
+# Registered as a "module" (an ES module, which is what the card is) and --
+# critically -- with a version query string: Home Assistant caches frontend
+# resources hard, exactly as it caches manifest.json and strings.json, so a
+# redeploy that reuses the bare URL serves the browser's old copy of the card
+# forever. The query string changes with the installed client version, which
+# is the only thing that changes when the card's code does. Matching ignores
+# the query string so a version bump updates the one row instead of leaving a
+# second, stale resource behind.
+FLOORPLAN_RESOURCE_TYPE = "module"
+FLOORPLAN_RESOURCES_STORAGE_KEY = "lovelace_resources"
+FLOORPLAN_RESOURCE_ID = f"{DOMAIN}_room_plan_card"
+
+# A device whose room is not on the floor being drawn. Under the room
+# metaphor a device is placed by its room, not by its coordinates: the plan
+# has no loose icons to anchor, so a device with no xy_ft is perfectly
+# placeable and a device whose room no longer exists on the plan is not.
+FLOORPLAN_REASON_NO_ROOM_ON_PLAN = "no_room_on_plan"
+
 FLOORPLAN_NOTIFICATION_ID = f"{DOMAIN}_floorplan"
 
 # ha_map.json's `cls` -- the render pipeline's own device class, invented from

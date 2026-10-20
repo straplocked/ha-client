@@ -10,6 +10,14 @@ view per floor -- a homeowner can actually tap on. The pipeline's 3D model
 and angled hero render are for the installer's preview on the Dispatch side
 and are not part of a deploy.
 
+Rooms are the interaction, not devices: each floor is drawn by this
+integration's own custom card (www/ayvra-room-plan.js), which turns every
+hotspots.json room into a tappable polygon and opens a modal holding that
+room's controls -- the product's primary UI metaphor. So a device's resolved
+entity is grouped into its room rather than pinned to a coordinate, and
+build_room_plan_card's docstring is the authoritative description of the
+config that card expects.
+
 Modelled on updates.py's polling shape, not tunnel.py's live-request relay: a
 floorplan deploy is a multi-step background job (download, write files, build
 a dashboard, confirm), not a request Dispatch is waiting on synchronously.
@@ -37,8 +45,8 @@ from __future__ import annotations
 import inspect
 import json
 import logging
-import math
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -53,6 +61,9 @@ from .const import (
     DOMAIN,
     FLOORPLAN_ASSET_DIR,
     FLOORPLAN_BACKPLATE_NAME,
+    FLOORPLAN_CARD_FILENAME,
+    FLOORPLAN_CARD_SOURCE_DIR,
+    FLOORPLAN_CARD_TYPE,
     FLOORPLAN_DASHBOARD_ICON,
     FLOORPLAN_DASHBOARD_STORAGE_KEY,
     FLOORPLAN_DASHBOARD_TITLE,
@@ -71,11 +82,15 @@ from .const import (
     FLOORPLAN_OVERRIDES_STORAGE_VERSION,
     FLOORPLAN_PLAN_BACKPLATE_NAME_FMT,
     FLOORPLAN_PLAN_TRANSFORM_NAME,
+    FLOORPLAN_REASON_NO_ROOM_ON_PLAN,
     FLOORPLAN_REASON_OVERRIDE_DROPPED,
     FLOORPLAN_REASON_OVERRIDE_ENTITY,
     FLOORPLAN_REASON_OVERRIDE_ROOM,
     FLOORPLAN_REPORT_STATUS_DONE,
     FLOORPLAN_REPORT_STATUS_FAILED,
+    FLOORPLAN_RESOURCE_ID,
+    FLOORPLAN_RESOURCE_TYPE,
+    FLOORPLAN_RESOURCES_STORAGE_KEY,
     FLOORPLAN_STORAGE_VERSION,
 )
 
@@ -886,7 +901,7 @@ def _project_exact(x: float, y: float, transform: Dict[str, Any]) -> Tuple[float
     return round(left, 1), round(top, 1)
 
 
-# --- device icons -------------------------------------------------------------
+# --- device icons, shown inside a room's controls -----------------------------
 
 # Finer-grained than domain: ha_map.json's `cls` field is the render
 # pipeline's own device class (devices.py's CATALOG), invented from the
@@ -935,7 +950,8 @@ def _domain_icon(device: Dict[str, Any]) -> Optional[str]:
     anything unmatched before this is called), so this is purely cosmetic --
     it just guarantees a light reads as a bulb and a thermostat reads as a
     thermostat instead of whichever generic glyph that entity happens to
-    carry.
+    carry. The icon is shown on the device's row inside its room's modal;
+    nothing is drawn loose on the plan any more.
     """
     icon = _ICON_BY_CLS.get(str(device.get("cls") or ""))
     if icon:
@@ -946,7 +962,7 @@ def _domain_icon(device: Dict[str, Any]) -> Optional[str]:
 # --- card building ----------------------------------------------------------
 
 
-def build_picture_elements_card(
+def build_room_plan_card(
     hass: HomeAssistant,
     rooms: List[Dict[str, Any]],
     devices: List[Dict[str, Any]],
@@ -954,34 +970,76 @@ def build_picture_elements_card(
     transform: Optional[Dict[str, Any]] = None,
     area_tokens: Optional[Dict[str, set[str]]] = None,
     decisions: Optional[List[Dict[str, Any]]] = None,
+    floor_key: str = "",
+    floor_name: str = "",
 ) -> Dict[str, Any]:
-    """Build one floor's picture-elements card: plan backplate, room labels,
-    device icons.
+    """Build one floor's room-first card config: the plan backplate, every
+    room as a tappable polygon, and each room's own inventory inside it.
 
-    `transform`, when given, is that floor's exact plan_transform.json entry
-    -- feet map onto the backplate's own pixels exactly, because it is a real
-    top-down orthographic render of the same scene. With no transform (an
-    older deploy job, or a level whose dashboard plan render did not come
-    through) this falls back to linearly rescaling the floor's own hotspot
-    bounding box.
+    THE CARD'S CONFIG CONTRACT. This is the authoritative description of the
+    shape www/ayvra-room-plan.js's setConfig() expects; that file's header
+    repeats it, and the two must be changed together or the dashboard renders
+    a card that silently ignores half its config:
 
-    Room hotspots have no entity behind them, so each degrades to a labeled
-    point at its centroid -- an icon element with a tooltip title, coloured
-    with a theme variable rather than a hard-coded hex so it reads in both
-    light and dark companion-app themes. Devices use `state-icon`, which
-    already reflects the bound entity's state and colour per the active
-    theme; an explicit domain-appropriate `icon` is layered on top so every
-    device reads as its own kind of thing rather than one generic glyph.
+        {
+          "type": "custom:ayvra-room-plan",
+          "image": "/local/ha_dispatch/floorplan/plan_Floor_1.png",
+          "aspect_ratio": "400:300",        # w:h of the backplate image
+          "floor_key": "Floor_1",           # hotspots.json's own key
+          "floor_name": "1st Floor",        # the human floor name
+          "rooms": [
+            {
+              "name": "Kitchen",
+              "poly": [[left, top], ...],   # percent of the backplate
+              "label": [left, top],         # percent, the room name anchor
+              "entities": [                 # may be empty, and often is
+                {"entity": "light.kitchen_spot",
+                 "name": "Light fixture - Kitchen",   # optional: the
+                 #   estimate's own line item, shown beside the entity's
+                 #   friendly name. Absent when the estimate had none; the
+                 #   card then shows the entity's name alone.
+                 "icon": "mdi:lightbulb-spot"},       # optional
+              ],
+            },
+          ],
+        }
+
+    Rooms, not devices, are what the plan draws: the room metaphor is the
+    primary one in this product ("tapping on the kitchen area opens a box
+    that then will offer the inventory controls"), so there are no loose
+    device icons scattered over the plan any more. A device's controls live
+    inside its room's modal, which is also why a device needs no coordinates
+    of its own -- `xy_ft` placed an icon, and nothing places an icon now. What
+    a device needs is a room that exists on this floor's plan; one whose room
+    does not is recorded as FLOORPLAN_REASON_NO_ROOM_ON_PLAN and left off,
+    same spirit as an unmatched entity being skipped rather than fabricated.
+
+    Coordinates go through the same projection the old picture-elements card
+    used: `transform`, when given, is that floor's exact plan_transform.json
+    entry, so feet land on the backplate's own pixels; without one (an older
+    deploy job) this falls back to rescaling the floor's hotspot bounding box.
+    Polygons are projected point by point, so a tap lands inside the room's
+    real shape rather than inside its bounding box.
+
+    Every room renders and every room taps, including one with nothing in it
+    -- the card says so in as many words. A room that is invisible because it
+    happens to be empty is a room the installer cannot check.
     """
     bounds: Optional[Tuple[float, float, float, float]] = None
     if transform is None:
         bounds = _bounding_box({"_": rooms})
         if bounds is None:
             _LOGGER.warning(
-                "Floorplan floor carried no usable coordinates; card has no elements"
+                "Floorplan floor carried no usable coordinates; card has no rooms"
             )
-            return {"type": "picture-elements", "image": image_url,
-                    "aspect_ratio": "8:5", "elements": []}
+            return {
+                "type": FLOORPLAN_CARD_TYPE,
+                "image": image_url,
+                "aspect_ratio": "8:5",
+                "floor_key": floor_key,
+                "floor_name": floor_name,
+                "rooms": [],
+            }
 
     def project(x: float, y: float) -> Tuple[float, float]:
         if transform is not None:
@@ -989,46 +1047,53 @@ def build_picture_elements_card(
         assert bounds is not None
         return _project(x, y, bounds)
 
-    elements: List[Dict[str, Any]] = []
+    entries: List[Dict[str, Any]] = []
+    # Keyed on the room name's word tokens, the same way a correction's room
+    # name is looked up (_rooms_by_floor): a device's room and a hotspot's
+    # room come from the same pipeline but have both been through a round
+    # trip, and "Great Room" must not miss "great room". Two rooms sharing a
+    # name on one floor both render; their devices all land in the first,
+    # because nothing in either manifest can tell them apart.
+    by_name: Dict[frozenset, Dict[str, Any]] = {}
 
     for room in rooms:
         if not isinstance(room, dict):
             continue
-        centroid = room.get("centroid")
         name = room.get("name")
-        if not centroid or len(centroid) < 2 or not name:
+        if not name:
             continue
-        left, top = project(centroid[0], centroid[1])
-        elements.append(
-            {
-                "type": "icon",
-                "icon": "mdi:floor-plan",
-                "title": str(name),
-                "style": {
-                    "top": f"{top}%",
-                    "left": f"{left}%",
-                    "color": "var(--primary-text-color)",
-                    "--mdc-icon-size": "20px",
-                },
-            }
-        )
+        poly: List[List[float]] = []
+        for point in room.get("poly_ft") or []:
+            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                left, top = project(float(point[0]), float(point[1]))
+                poly.append([left, top])
+        label: Optional[List[float]] = None
+        centroid = room.get("centroid")
+        if isinstance(centroid, (list, tuple)) and len(centroid) >= 2:
+            left, top = project(float(centroid[0]), float(centroid[1]))
+            label = [left, top]
+        if len(poly) < 3 and label is None:
+            # Neither a shape nor an anchor: there is nothing to draw and
+            # nothing to tap, so this is not a room on a plan.
+            _LOGGER.warning(
+                "Floorplan room %s has no usable geometry; leaving it off the plan",
+                name,
+            )
+            continue
 
-    # Multiple devices in one room are anchored to the same plan label (see
-    # ha-dispatch's SKILL.md, "Anchor to the plan LABEL, not a room cell"), so
-    # without some spread every icon in a room stacks exactly on top of the
-    # first. Fan later ones out a little -- the same polar jitter build.py
-    # uses for the 3D empties -- so the first device in a room keeps its
-    # exact anchor and the rest read as separate icons.
-    room_seen: Dict[str, int] = {}
+        entry: Dict[str, Any] = {
+            "name": str(name),
+            "poly": poly,
+            "label": label,
+            "entities": [],
+        }
+        entries.append(entry)
+        key = frozenset(_tokens(name))
+        if key and key not in by_name:
+            by_name[key] = entry
 
     for device in devices:
         if not isinstance(device, dict):
-            continue
-        xy = device.get("xy_ft")
-        if not xy or len(xy) < 2:
-            # The render pipeline could not anchor this device to a room, so
-            # there is nowhere on the plan to put it whatever it matches.
-            _decide(decisions, device, None, "unplaced")
             continue
 
         # A device that has already been through the planning layer (see
@@ -1039,7 +1104,25 @@ def build_picture_elements_card(
         # planned -- an older caller, or a test exercising the matcher
         # directly -- is matched here exactly as before.
         plan = device.get(_PLAN)
-        if isinstance(plan, dict):
+        plan = plan if isinstance(plan, dict) else None
+
+        room_entry = by_name.get(frozenset(_tokens(device.get("room"))))
+        if room_entry is None:
+            # The room this device claims is not on this floor's plan, so
+            # there is no room modal to put it in. Recorded with whatever the
+            # matcher had concluded, so the report can still say what it
+            # would have bound.
+            _decide(
+                decisions,
+                device,
+                None,
+                FLOORPLAN_REASON_NO_ROOM_ON_PLAN,
+                matched=(plan or {}).get("matched"),
+                override=(plan or {}).get("override"),
+            )
+            continue
+
+        if plan is not None:
             entity_id = _decide(
                 decisions,
                 device,
@@ -1056,29 +1139,25 @@ def build_picture_elements_card(
         if entity_id is None:
             continue
 
-        room_name = str(device.get("room") or "")
-        idx = room_seen.get(room_name, 0)
-        room_seen[room_name] = idx + 1
-        x, y = float(xy[0]), float(xy[1])
-        if idx:
-            angle, radius = 2.4 * idx, 0.8 + 0.5 * idx
-            x += math.cos(angle) * radius
-            y += math.sin(angle) * radius
+        # Two estimate line items can resolve to the same real entity (four
+        # recessed lights, one `light` group). The report keeps both records;
+        # the room's control list carries one row, because two identical rows
+        # are two chances to be confused by the same switch.
+        if any(e["entity"] == entity_id for e in room_entry["entities"]):
+            continue
 
-        left, top = project(x, y)
-        element: Dict[str, Any] = {
-            "type": "state-icon",
-            "entity": entity_id,
-            "style": {
-                "top": f"{top}%",
-                "left": f"{left}%",
-            },
-            "tap_action": {"action": "more-info"},
-        }
+        control: Dict[str, Any] = {"entity": entity_id}
+        # The estimate's own line item ("Heat/AC register - Kitchen"), which
+        # is what the installer is holding, shown beside the entity's real
+        # friendly name. Never the ha_map slug: it is not a Home Assistant
+        # entity id and must not be put in front of anyone as though it were.
+        source_line = str(device.get("source_line") or "").strip()
+        if source_line:
+            control["name"] = source_line
         icon = _domain_icon(device)
         if icon:
-            element["icon"] = icon
-        elements.append(element)
+            control["icon"] = icon
+        room_entry["entities"].append(control)
 
     aspect_ratio = "8:5"
     if transform is not None:
@@ -1087,11 +1166,73 @@ def build_picture_elements_card(
             aspect_ratio = f"{int(w)}:{int(h)}"
 
     return {
-        "type": "picture-elements",
+        "type": FLOORPLAN_CARD_TYPE,
         "image": image_url,
         "aspect_ratio": aspect_ratio,
-        "elements": elements,
+        "floor_key": floor_key,
+        "floor_name": floor_name,
+        "rooms": entries,
     }
+
+
+# --- the card asset and its Lovelace resource --------------------------------
+
+
+def card_resource_url(version: str) -> str:
+    """The card's Lovelace resource URL, stamped with `version`.
+
+    The stamp is the whole point. Home Assistant caches frontend resources as
+    hard as it caches manifest.json and strings.json (see the project's
+    CLAUDE.md), so a redeploy that re-registers the same bare URL leaves every
+    browser -- and every wall tablet, which never gets reloaded by hand --
+    running the card it downloaded months ago. The version the client is
+    actually running is the one thing that changes exactly when the card's
+    code does, so it is what the query string carries.
+
+    An empty version yields the bare URL rather than `?v=`: a stamp that
+    never changes is worse than none, because it reads as a stamp.
+    """
+    base = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{FLOORPLAN_CARD_FILENAME}"
+    stamp = str(version or "").strip()
+    return f"{base}?v={stamp}" if stamp else base
+
+
+def _same_resource(url: Any, other: Any) -> bool:
+    """Whether two resource URLs name the same file, ignoring the version.
+
+    What stops a redeploy leaving a trail of resource rows behind it: the URL
+    changes on every version, and a row matched on the full URL would never be
+    recognised as the one already there.
+    """
+    return str(url or "").split("?", 1)[0] == str(other or "").split("?", 1)[0]
+
+
+def _copy_card(source: Path, dest: Path) -> int:
+    """Copy the card beside the plan images; return the copy's mtime.
+
+    It ships inside the integration, which Home Assistant does not serve over
+    HTTP; /config/www (i.e. /local/...) is the one directory it does, and is
+    already where the plan renders live. The mtime is a last-resort cache
+    stamp for an installation that cannot tell us its own version.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, dest)
+    return int(dest.stat().st_mtime)
+
+
+def _read_manifest_version(path: Path) -> str:
+    """The `version` out of the integration's own manifest.json, or "".
+
+    Read off disk rather than from a constant for the same reason
+    updater.py's async_installed_version is: after a self-update swaps the
+    files, the manifest on disk is the truth about what is running -- and it
+    is what the card's cache stamp has to follow.
+    """
+    with open(path, "r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    if not isinstance(manifest, dict):
+        return ""
+    return str(manifest.get("version") or "")
 
 
 def _floor_title(key: str, transform: Optional[Dict[str, Any]]) -> str:
@@ -1177,13 +1318,22 @@ def build_dashboard_views(
         considered.extend(floor_devices)
 
         transform = plan_transform.get(key) if isinstance(plan_transform, dict) else None
-        card = build_picture_elements_card(
-            hass, rooms, floor_devices, image_url, transform, area_tokens, decisions
+        title = _floor_title(key, transform)
+        card = build_room_plan_card(
+            hass,
+            rooms,
+            floor_devices,
+            image_url,
+            transform,
+            area_tokens,
+            decisions,
+            floor_key=key,
+            floor_name=title,
         )
         number = len(views) + 1
         views.append(
             {
-                "title": _floor_title(key, transform),
+                "title": title,
                 "path": f"floor-{number}",
                 "icon": f"mdi:home-floor-{number}" if number <= 3 else "mdi:floor-plan",
                 "panel": True,
@@ -1304,6 +1454,13 @@ class HADispatchFloorplan:
         )
         self._dashboard_store = Store(
             hass, FLOORPLAN_STORAGE_VERSION, FLOORPLAN_DASHBOARD_STORAGE_KEY
+        )
+        # Lovelace's own resource registry -- the list that decides whether a
+        # browser loads the room-plan card at all. Same fallback shape as the
+        # two above: the live collection first, this file only if that is
+        # unreachable.
+        self._resources_store = Store(
+            hass, FLOORPLAN_STORAGE_VERSION, FLOORPLAN_RESOURCES_STORAGE_KEY
         )
 
         # The installer's corrections to the pipeline's automatic placement,
@@ -1448,6 +1605,7 @@ class HADispatchFloorplan:
         overrides = await self._async_overrides()
         decisions: List[Dict[str, Any]] = []
         try:
+            await self._async_install_card()
             hotspots, ha_map, plan_transform = await self._async_load_manifests(paths)
             devices, dropped = async_plan_devices(
                 self.hass, ha_map, hotspots, overrides
@@ -1475,6 +1633,168 @@ class HADispatchFloorplan:
             placed, len(decisions),
         )
         return True
+
+    # -- the card itself ------------------------------------------------------
+
+    async def _async_install_card(self) -> Tuple[str, bool]:
+        """Put the room-plan card where a browser can fetch it, and register
+        it. Returns (resource url, whether it is live without a restart).
+
+        Both halves are needed before the dashboard means anything: the card
+        is the dashboard now, and a Lovelace view referring to
+        `custom:ayvra-room-plan` with no resource loaded renders the
+        frontend's "Custom element doesn't exist" box on every floor. Copying
+        it is therefore fatal to the deploy if it fails; registration
+        degrades, because its fallback is correct after one restart.
+        """
+        directory = Path(self.hass.config.path(*FLOORPLAN_ASSET_DIR))
+        source = (
+            Path(__file__).resolve().parent
+            / FLOORPLAN_CARD_SOURCE_DIR
+            / FLOORPLAN_CARD_FILENAME
+        )
+        dest = directory / FLOORPLAN_CARD_FILENAME
+        try:
+            stamp = await self.hass.async_add_executor_job(_copy_card, source, dest)
+        except OSError as err:
+            raise FloorplanApplyError(
+                f"Could not install the room plan card: {err}"
+            ) from err
+
+        version = await self._async_card_version()
+        url = card_resource_url(version or f"m{stamp}")
+        went_live = await self._async_register_card_resource(url)
+        return url, went_live
+
+    async def _async_card_version(self) -> str:
+        """The version to stamp the card's URL with.
+
+        The coordinator's own client_version when setup has read it (the same
+        value the server is told, and the one a self-update changes), falling
+        back to the manifest beside this module.
+        """
+        version = getattr(self.coordinator, "client_version", None)
+        if version:
+            return str(version)
+        manifest = Path(__file__).resolve().parent / "manifest.json"
+        try:
+            return await self.hass.async_add_executor_job(
+                _read_manifest_version, manifest
+            )
+        except _SOFT_ERRORS as err:
+            _LOGGER.debug("Could not read the client version for the card URL: %s", err)
+            return ""
+
+    async def _async_register_card_resource(self, url: str) -> bool:
+        """Register (or re-point) the card's Lovelace resource row."""
+        if await self._async_register_card_resource_live(url):
+            return True
+        return await self._async_register_card_resource_file(url)
+
+    async def _async_register_card_resource_live(self, url: str) -> bool:
+        """Register through lovelace's live resource collection.
+
+        Same reasoning as _async_write_dashboard_live: the collection only
+        reads its file at startup, so writing the file by hand leaves the
+        resource unknown to the running frontend until a restart. Returns
+        False, having already said why, when the live path is unavailable.
+
+        An existing row whose URL differs only by its version stamp is
+        *updated*, never added alongside -- otherwise every redeploy would
+        leave another copy of the card in the resource list and the browser
+        would load several versions of it at once.
+        """
+        try:
+            from homeassistant.components.lovelace.const import LOVELACE_DATA
+        except ImportError as err:
+            _LOGGER.warning(
+                "Lovelace not importable (%s); the room-plan card resource was"
+                " not registered live",
+                err,
+            )
+            return False
+
+        lovelace_data = self.hass.data.get(LOVELACE_DATA)
+        resources = getattr(lovelace_data, "resources", None)
+        if resources is None or not hasattr(resources, "async_items"):
+            _LOGGER.warning(
+                "No live lovelace resource collection is available (a"
+                " YAML-mode dashboard setup has none); add %s to your"
+                " lovelace resources by hand if the Home 3D plan shows"
+                " \"Custom element doesn't exist\"",
+                url,
+            )
+            return False
+
+        try:
+            if not getattr(resources, "loaded", False):
+                loader = getattr(resources, "async_load", None)
+                if loader is not None:
+                    await loader()
+
+            existing = None
+            for item in resources.async_items():
+                if isinstance(item, dict) and _same_resource(item.get("url"), url):
+                    existing = item
+                    break
+
+            if existing is None:
+                await resources.async_create_item(
+                    {"res_type": FLOORPLAN_RESOURCE_TYPE, "url": url}
+                )
+                _LOGGER.info("Registered the room-plan card resource: %s", url)
+            elif existing.get("url") != url:
+                await resources.async_update_item(
+                    existing["id"],
+                    {"res_type": FLOORPLAN_RESOURCE_TYPE, "url": url},
+                )
+                _LOGGER.info(
+                    "Re-pointed the room-plan card resource to %s (was %s)",
+                    url, existing.get("url"),
+                )
+        except Exception as err:  # noqa: BLE001 - any failure falls back
+            _LOGGER.warning(
+                "Could not register the room-plan card resource live (%s);"
+                " writing it to storage instead",
+                err,
+            )
+            return False
+
+        return True
+
+    async def _async_register_card_resource_file(self, url: str) -> bool:
+        """Fallback: write the resource row straight to storage.
+
+        Correct but not live -- lovelace reads this file at startup -- so this
+        always returns False and the homeowner is told a restart is what is
+        needed, rather than left looking at a dashboard full of missing-card
+        boxes with no explanation.
+        """
+        registry = await _async_load_or_default(self._resources_store, {"items": []})
+        items = list(registry.get("items") or [])
+
+        for item in items:
+            if isinstance(item, dict) and _same_resource(item.get("url"), url):
+                item["url"] = url
+                item["type"] = FLOORPLAN_RESOURCE_TYPE
+                break
+        else:
+            items.append(
+                {
+                    "id": FLOORPLAN_RESOURCE_ID,
+                    "type": FLOORPLAN_RESOURCE_TYPE,
+                    "url": url,
+                }
+            )
+
+        registry["items"] = items
+        await self._resources_store.async_save(registry)
+        _LOGGER.warning(
+            "Wrote the room-plan card resource (%s) to storage; Home Assistant"
+            " has to restart before a browser will load it",
+            url,
+        )
+        return False
 
     # -- the poll loop --------------------------------------------------------
 
@@ -1525,6 +1845,9 @@ class HADispatchFloorplan:
         try:
             overrides = await self._async_overrides()
             paths = await self._async_download_assets(job)
+            # The card is the dashboard: it has to be on disk and registered
+            # before the views that reference it mean anything.
+            _card_url, card_live = await self._async_install_card()
             hotspots, ha_map, plan_transform = await self._async_load_manifests(paths)
             # Matching first, then the installer's corrections on top of it,
             # and only then the dashboard. A redeploy rebuilds everything
@@ -1548,7 +1871,7 @@ class HADispatchFloorplan:
                 raise FloorplanApplyError(
                     "No floor had a plan render to show; nothing to deploy"
                 )
-            went_live = await self._async_write_dashboard(views)
+            went_live = await self._async_write_dashboard(views) and card_live
         except Exception as err:  # noqa: BLE001 - always report, never crash the poll loop
             _LOGGER.error("Floorplan deploy %s failed: %s", job_id, err)
             await self._async_report(job_id, FLOORPLAN_REPORT_STATUS_FAILED, str(err))
@@ -1995,5 +2318,5 @@ __all__ = [
     "normalise_overrides",
     "build_dashboard_views",
     "build_dashboard_config",
-    "build_picture_elements_card",
+    "build_room_plan_card",
 ]

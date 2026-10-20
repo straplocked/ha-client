@@ -29,9 +29,12 @@ custom_components/ha_dispatch_client/
 ├── backups.py      # HADispatchBackups - reports the installation's own backups (+ sha256)
 ├── screen.py         # ScreenSockets - Remote Screen's loopback WebSocket, frames over the poll
 ├── repairs.py        # Approve/Deny dialog and the end-access off-switch
+├── floorplan.py      # HADispatchFloorplan - plan assets -> the room-first "Home 3D" dashboard
+├── www/
+│   └── ayvra-room-plan.js  # <ayvra-room-plan> - the room-first custom Lovelace card
 ├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
 ├── manifest.json     # Integration metadata
-├── services.yaml     # 9 service definitions with UI fields
+├── services.yaml     # 10 service definitions with UI fields
 └── strings.json      # UI text, translations, and repair flow copy
 ```
 
@@ -59,6 +62,24 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   manifests -- applying them before the manifest load loses every one of
   them. One whose device or room the new manifest no longer has is dropped,
   pruned and reported; neither silently retained nor silently discarded.
+- **Rooms are the UI metaphor, and the card is a custom one:** the Home 3D
+  dashboard draws each floor with `<ayvra-room-plan>`
+  (`www/ayvra-room-plan.js`), not a stock card -- tapping a room greys out the
+  rest of the floor and opens a modal holding **that room's** controls. There
+  are no loose device icons on the plan; a device is placed by its **room**,
+  not by coordinates, so one whose room is not on the floor is reported
+  `no_room_on_plan` and left off. The card is hand-written, dependency-free ES
+  -- **no node, no bundler, no TypeScript, no build step** -- because this repo
+  has no JavaScript toolchain and must stay HACS-installable as it sits; its
+  expected config shape is documented in `floorplan.py::build_room_plan_card`'s
+  docstring and repeated in the card's header, and the two must change
+  together. The deploy copies the card into `FLOORPLAN_ASSET_DIR` (only
+  `/config/www` is served over HTTP) and registers it as a Lovelace resource
+  **with a `?v=<client version>` query string**: Home Assistant caches
+  frontend resources as hard as it caches `manifest.json`, so a bare URL
+  leaves every wall tablet running the card it downloaded months ago. The row
+  is matched ignoring that query string, so a version bump re-points the one
+  resource instead of adding another.
 - **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. Full design: `docs/technical/remote-access.md`. A `screen` session (Remote Screen) carries the frontend itself to a headless browser on the Dispatch side: its own local policy (no `/auth`, no raw socket, writes only to `/api`), the admin user, and `screen.py` swapping our token into the browser's WebSocket `auth` frame so a real credential never leaves the house.
 
 ### API Endpoints (server-side)
