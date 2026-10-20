@@ -18,6 +18,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 import sys
 import tempfile
 import types
@@ -2605,3 +2606,130 @@ class RotationControlSourceTest(unittest.TestCase):
         source = self._card_source()
         self.assertIn("rotation: normaliseRotation(config.rotation)", source)
         self.assertIn("stored === null ? this._config.rotation : stored", source)
+
+
+class FocusTreatmentSourceTest(unittest.TestCase):
+    """The focus treatment's half of the contract, read off the shipped card.
+
+    Be clear about what this class is and is not. The focus treatment is CSS
+    inside a JavaScript custom element: the grey-out, the full-colour copy of
+    the focused room, the docked sheet and the transition are all things a
+    BROWSER does, and pytest cannot see any of them. Nothing here claims to.
+
+    What it does pin are the three decisions that are invisible in a diff and
+    expensive to lose: that no colour is hardcoded past a theme variable (the
+    card would then fight a dark theme), that the grey-out is applied to the
+    plan layer and never to the layer holding the focused room (the focused
+    room would then be greyed with everything else, which is the opposite of
+    what the customer asked for), and that a device asking for less motion
+    gets none. Each is a string in the file, and a string is what is checked.
+
+    The behaviour itself was verified by rendering the card in a headless
+    browser and measuring the result; what that run covered, and what still
+    needs a human at a tablet, is written down in docs/user/deployment.md.
+    """
+
+    @staticmethod
+    def _source():
+        return open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "custom_components", "ha_dispatch_client", "www", "ayvra-room-plan.js",
+        )).read()
+
+    @classmethod
+    def _stylesheet(cls, source=None):
+        """The card's stylesheet, with its comments removed."""
+        styles = (source or cls._source()).split("const STYLES = `", 1)[1]
+        styles = styles.split("\n`;", 1)[0]
+        return re.sub(r"/\*.*?\*/", "", styles, flags=re.S)
+
+    @staticmethod
+    def _rules(stylesheet):
+        """[(selector, declarations)] -- enough of a parser for flat CSS."""
+        rules = []
+        for chunk in stylesheet.split("}"):
+            if "{" not in chunk:
+                continue
+            selector, declarations = chunk.split("{", 1)
+            rules.append((" ".join(selector.split()), declarations))
+        return rules
+
+    def test_every_colour_the_card_paints_is_a_theme_variable(self):
+        # A card that hardcodes even one colour is a card that looks wrong in
+        # whichever theme the homeowner did not have on the day it was built.
+        # Colour literals are allowed in exactly one place -- as the fallback
+        # inside a var() on :host, for a Home Assistant that is missing that
+        # theme variable entirely.
+        stylesheet = self._stylesheet()
+        host = stylesheet.split(":host {", 1)[1].split("\n  }", 1)[0]
+        elsewhere = stylesheet.replace(host, "")
+        literals = re.compile(r"#[0-9a-fA-F]{3,8}|\brgba?\(")
+        self.assertEqual(
+            literals.findall(elsewhere), [],
+            "a colour is painted outside :host instead of through a variable",
+        )
+        for line in host.splitlines():
+            if literals.search(line):
+                self.assertIn(
+                    "var(", line,
+                    f"colour literal that is not a var() fallback: {line.strip()}",
+                )
+
+    def test_the_themes_own_variables_are_what_those_fallbacks_fall_back_from(self):
+        # Hand-written, not read out of the file: these are Home Assistant's
+        # own theme variable names, and deriving from them is what makes the
+        # card follow the homeowner's theme instead of declaring its own.
+        host = self._stylesheet().split(":host {", 1)[1].split("\n  }", 1)[0]
+        for variable in (
+            "--primary-text-color",
+            "--secondary-text-color",
+            "--card-background-color",
+            "--secondary-background-color",
+            "--divider-color",
+            "--primary-color",
+            "--text-primary-color",
+        ):
+            self.assertIn(variable, host)
+
+    def test_the_grey_out_treats_the_plan_and_never_the_focused_room(self):
+        # "An active in focus room to retain the main colors and almost have
+        # the rest of the UI grey out." The honest reading is that the focused
+        # room is not treated AT ALL, which only holds while the filter stays
+        # off the layer that carries it.
+        filtered = [
+            selector for selector, declarations in self._rules(self._stylesheet())
+            if "filter:" in declarations
+        ]
+        self.assertTrue(filtered, "nothing is filtered; the grey-out is gone")
+        for selector in filtered:
+            # `.wrap.focused .layer.plan` is the grey-out itself and is meant
+            # to be here; what must never pick up a filter is the layer that
+            # carries the focused room's full-colour copy.
+            self.assertIn(".layer.plan", selector)
+            self.assertNotIn("focus-layer", selector)
+            self.assertNotIn("focus-plate", selector)
+
+    def test_the_focused_room_is_an_untreated_copy_of_the_same_backplate(self):
+        # Same picture, same box, same rotating layer, cut to the room's own
+        # outline: that is what makes the full-colour room land on the room it
+        # was cut from without anything having to be kept in step by hand.
+        source = self._source()
+        self.assertIn('focusPlate.className = "focus-plate";', source)
+        self.assertIn("focusPlate.src = this._config.image;", source)
+        self.assertIn("focusLayer.appendChild(focusPlate);", source)
+        self.assertIn("this._els.focusPlate.style.clipPath = clip;", source)
+
+    def test_a_device_that_asks_for_less_motion_gets_none(self):
+        stylesheet = self._stylesheet()
+        self.assertIn("@media (prefers-reduced-motion: reduce)", stylesheet)
+        reduced = stylesheet.split("@media (prefers-reduced-motion: reduce) {", 1)[1]
+        self.assertIn("--ayvra-plan-motion: 0ms;", reduced)
+
+    def test_the_controls_sit_on_the_backdrop_rather_than_over_the_room(self):
+        # The sheet docks to an edge, and the edge is chosen from where the
+        # room ended up ON SCREEN -- which at 90 or 270 degrees is not where
+        # its coordinates say it is.
+        source = self._source()
+        self.assertIn("rotatePercentPoint(anchor[0], anchor[1], this._rotation)", source)
+        for dock in ("dock-left", "dock-right", "dock-top", "dock-bottom"):
+            self.assertIn(dock, self._stylesheet(source))

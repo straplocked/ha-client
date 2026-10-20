@@ -170,7 +170,7 @@ The `VERSION` file and the `version` field in `manifest.json` must always stay i
 The room-first plan card is JavaScript, so the automated suite can only prove
 that the file was copied, that its Lovelace resource is registered once with a
 version stamp, and that the dashboard config is shaped the way the card
-expects. These five checks are the part only a person can do, and are worth
+expects. These six checks are the part only a person can do, and are worth
 running after a floorplan deploy on a real installation:
 
 1. **The card loaded at all.** Open the *Home 3D* dashboard. Rooms outlined on
@@ -202,6 +202,26 @@ running after a floorplan deploy on a real installation:
    that browser under
    `ayvra.room-plan.rotation.home-3d.<floor key>`. A browser with site data
    blocked -- some kiosk launchers -- still rotates, it just forgets on reload.
+6. **The focus treatment, in BOTH themes.** Switch the homeowner's theme to
+   light, tap a room, and look at three things: the rest of the floor is
+   *desaturated and dimmed* rather than painted over -- you should still be
+   able to read the shape of the house around the room -- the room in focus
+   keeps its full colour and looks exactly as it did before the tap, and the
+   room's controls sit on that dimmed backdrop, docked to the edge furthest
+   from the room so the room itself stays visible. Then switch to a dark
+   theme and do it again: the sheet, its text and the room-name chips must all
+   still be legible, at every rotation. The card declares no colour of its
+   own; it derives everything from the theme, so a theme with unusual
+   variables is where this would show up first. A device set to "reduce
+   motion" should land on exactly the same picture with no transition.
+
+The card's colours can be tuned per theme without touching the integration;
+every one of them is a CSS custom property on the card:
+`--ayvra-room-plan-ink`, `-ink-soft`, `-surface`, `-surface-alt`, `-divider`,
+`-accent`, `-on-accent`, `-radius`, plus the focus treatment itself:
+`-grey` (0-1 desaturation), `-dim` (brightness of the unfocused plan),
+`-contrast`, `-veil` (how much of the dimmed plan reads through the controls)
+and `-motion` (the transition's duration).
 
 Rotation is per panel and per floor, and it is deliberately not synchronised:
 one tablet per floor, each oriented to the wall it is mounted on. The angle the

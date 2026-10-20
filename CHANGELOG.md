@@ -26,6 +26,35 @@ All notable changes to HA Dispatch Client will be documented in this file.
   serves the new card instead of the browser's cached copy -- and re-points
   the one resource row rather than leaving a trail of them.
 
+### Added -- the room in focus keeps its colours; the rest of the floor greys out
+- Tapping a room now **desaturates and dims the rest of the plan** instead of
+  covering it with a flat scrim, and the focused room is not treated at all --
+  it looks exactly as it did before the tap, because what is drawn over the
+  greyed floor is an untreated copy of the same backplate clipped to that
+  room's own outline. The shape of the house stays readable around the room
+  an installer is standing in, which a scrim takes away.
+- The room's controls **sit on that dimmed backdrop**, as a sheet docked
+  edge-to-edge to the side of the plan furthest from the room in focus, rather
+  than a floating box in the middle that covers the room it belongs to. At 90
+  and 270 degrees the sheet docks below or above instead, because that is
+  where the space is.
+- The transition is animated and is **skipped entirely** for a device asking
+  for reduced motion; the end state is identical either way.
+- **Every colour the card paints is now a CSS custom property derived from a
+  Home Assistant theme variable**, so the plan follows the homeowner's light
+  or dark theme instead of declaring its own. Room names became chips of
+  theme ink on a theme surface: the thing behind them is a photographic render
+  the card has never seen, and a glow over it is legible in one theme only.
+  A theme can retune any of it -- `--ayvra-room-plan-grey`, `-dim`, `-veil`,
+  `-accent` and the rest are documented in `docs/user/deployment.md`.
+
+### Fixed
+- The focused room's outline was drawn square and out of register with the
+  room at every rotation: its `<svg>` is a replaced element and, with no width
+  or height of its own, took the 1:1 ratio of its `viewBox` instead of the
+  plan's box. Found by rendering the card in a headless browser and measuring
+  the pixels, not by reading it.
+
 ### Added -- the plan can be turned to match the wall it is mounted on
 - Each floor's view can be **rotated in quarter turns**, so an installer who
   has just mounted a tablet can walk up to it and orient the plan to the way

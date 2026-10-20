@@ -9,10 +9,53 @@
  *
  * So: the floor's plan render is the backplate, each room from hotspots.json
  * is an SVG polygon drawn over it (a real shape, so a tap lands inside the
- * room rather than inside its bounding box), and tapping a room dims the
- * whole floor, re-draws that one room in full colour on top of the dimming,
+ * room rather than inside its bounding box), and tapping a room greys out the
+ * whole floor, re-draws that one room in full colour on top of the greying,
  * and opens a panel holding only that room's inventory. There are no loose
  * device icons on the plan at all.
+ *
+ * THE FOCUS TREATMENT, again in the customer's words: "ideally we want an
+ * active in focus room to retain the main colors and almost have the rest of
+ * the UI grey out (kind of like a modal background) ... The interface controls
+ * can then go on the modal background." Read honestly, that means the focused
+ * room is not treated AT ALL and everything else is, so the room looks exactly
+ * as it did before the tap. The mechanism:
+ *
+ *   - the plan layer (picture, room tints, room names) gets a CSS
+ *     grayscale + brightness + contrast filter, so the house keeps its SHAPE
+ *     while losing its colour. A flat scrim was the alternative and was
+ *     rejected: it mutes the focused room's surroundings into mush, and an
+ *     installer standing in a room still has to recognise the house around it.
+ *   - the focus layer above it holds an UNTREATED copy of the same backplate,
+ *     clipped with clip-path to the focused room's own outline, in the same
+ *     box inside the same rotating layer. It cannot land anywhere but on top
+ *     of the room it was cut from, at any rotation, because nothing about it
+ *     is computed separately -- same image, same box, same transform.
+ *   - the controls dock to the edge of the plan FURTHEST from the focused
+ *     room, edge-to-edge on the greyed-out plan rather than in a floating box
+ *     that ignores it, so they sit on the modal background as asked and the
+ *     room they belong to stays visible.
+ *   - the transition is animated, and skipped entirely under
+ *     prefers-reduced-motion (the end states are identical either way).
+ *
+ * COLOUR AND THEME. Every colour the card paints is a custom property on
+ * :host, each one derived from a Home Assistant theme variable, so the card
+ * follows the homeowner's light or dark theme rather than fighting it. A theme
+ * can override any of them by its public name:
+ *
+ *   --ayvra-room-plan-ink / -ink-soft / -surface / -surface-alt / -divider
+ *   --ayvra-room-plan-accent / -on-accent / -radius
+ *   --ayvra-room-plan-grey / -dim / -contrast   the unfocused treatment
+ *   --ayvra-room-plan-veil                      how much plan reads through
+ *                                               the controls
+ *   --ayvra-room-plan-motion                    the transition's duration
+ *
+ * The modal's legibility rests on one pairing Home Assistant guarantees in
+ * whichever theme is live: --primary-text-color reads on
+ * --card-background-color. That is why the controls and the room names are
+ * theme ink on a theme surface rather than light text with a glow -- the thing
+ * behind them is a photographic render this card has never seen, and a dark
+ * floor, a white worktop and a window all appear in it.
  *
  * Hand-written, dependency-free ES module on purpose: this repository has no
  * JavaScript toolchain -- no node, no bundler, no TypeScript, no build step --
@@ -63,8 +106,10 @@
  * (image-shaped) box inside a stage sized to the post-rotation one -- the
  * picture fills the card instead of being letterboxed away from the shapes --
  * and each room label is counter-rotated by the same angle so the text stays
- * upright and readable at every step. The scrim and the room panel are
- * siblings of the layer, never inside it, so the modal never comes up sideways.
+ * upright and readable at every step. The room panel and the rotate control
+ * are siblings of the layer, never inside it, so the modal never comes up
+ * sideways; the focused room's full-colour copy is INSIDE a layer, because it
+ * has to turn with the plan it was cut out of.
  *
  * A quarter turn in percent-of-the-backplate space is exactly
  *   90: (l, t) -> (100 - t, l)   180: (l, t) -> (100 - l, 100 - t)
@@ -78,7 +123,7 @@
  * Assistant actually believes rather than what it last asked for.
  */
 
-const ROOM_PLAN_VERSION = "1.1.0";
+const ROOM_PLAN_VERSION = "1.2.0";
 
 // Domains whose single meaningful action is "flip it".
 const TOGGLE_DOMAINS = new Set([
@@ -118,6 +163,26 @@ function normaliseRotation(value) {
   return ROTATIONS.indexOf(number) === -1 ? 0 : number;
 }
 
+// A quarter turn in the card's percent-of-the-backplate space. The normative
+// definition of this lives in floorplan.py's rotate_percent_point(), which is
+// tested there; this is the same four cases, and the two must agree. The card
+// does not rotate its geometry with it -- one CSS transform turns the whole
+// layer, which is what keeps the picture and the polygons in register -- but
+// the modal needs to know where on the SCREEN the focused room ended up, so it
+// can dock itself to the far edge and leave that room visible.
+function rotatePercentPoint(left, top, degrees) {
+  switch (normaliseRotation(degrees)) {
+    case 90:
+      return [100 - top, left];
+    case 180:
+      return [100 - left, 100 - top];
+    case 270:
+      return [top, 100 - left];
+    default:
+      return [left, top];
+  }
+}
+
 function clampPercent(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -140,15 +205,65 @@ function aspectRatio(ratio) {
 }
 
 const STYLES = `
+  /* COLOUR. Every colour this card paints is one of the custom properties
+     declared here, and every one of them derives from a Home Assistant theme
+     variable, so the card follows the homeowner's light or dark theme instead
+     of fighting it. A theme can override any of them by its --ayvra-room-plan-*
+     name without touching this file. HA guarantees that --primary-text-color
+     reads on --card-background-color in whichever theme is live, and the modal
+     leans on exactly that pairing -- which is why the controls stay legible in
+     both themes without this file knowing which one it is in. */
   :host {
     display: block;
+
+    --ayvra-plan-ink: var(--ayvra-room-plan-ink, var(--primary-text-color, #212121));
+    --ayvra-plan-ink-soft: var(--ayvra-room-plan-ink-soft, var(--secondary-text-color, #5f6368));
+    --ayvra-plan-surface: var(--ayvra-room-plan-surface, var(--card-background-color, #ffffff));
+    --ayvra-plan-surface-alt: var(--ayvra-room-plan-surface-alt, var(--secondary-background-color, #e8eaed));
+    --ayvra-plan-divider: var(--ayvra-room-plan-divider, var(--divider-color, #d6d9df));
+    --ayvra-plan-accent: var(--ayvra-room-plan-accent, var(--primary-color, #03a9f4));
+    --ayvra-plan-on-accent: var(--ayvra-room-plan-on-accent, var(--text-primary-color, #ffffff));
+    --ayvra-plan-radius: var(--ayvra-room-plan-radius, var(--ha-card-border-radius, 12px));
+
+    /* THE FOCUS TREATMENT, in the customer's words: "an active in focus room
+       to retain the main colors and almost have the rest of the UI grey out".
+       So the rest of the plan is desaturated and dimmed -- not covered over.
+       A flat scrim would mute the focused room's surroundings into mush, and
+       an installer standing in a room still needs to read the shape of the
+       house around it. These are numbers rather than colours on purpose: the
+       backplate is a render that looks the same whichever theme is live, so
+       the treatment is relative to the picture, not to the theme. */
+    --ayvra-plan-grey: var(--ayvra-room-plan-grey, 1);
+    --ayvra-plan-dim: var(--ayvra-room-plan-dim, 0.42);
+    --ayvra-plan-contrast: var(--ayvra-room-plan-contrast, 0.9);
+    /* How much of the dimmed plan still reads through the controls. They sit
+       ON the dimmed backdrop, as asked, rather than in a floating box that
+       ignores it -- but legibility wins the argument, so the veil is opaque
+       enough to carry HA's own ink-on-surface contrast and only the veil is
+       translucent; the text and the controls above it are not. */
+    --ayvra-plan-veil: var(--ayvra-room-plan-veil, 0.88);
+    --ayvra-plan-motion: var(--ayvra-room-plan-motion, 220ms);
+    --ayvra-plan-ease: cubic-bezier(0.2, 0, 0.2, 1);
+  }
+  /* A homeowner who has asked their device not to animate things gets the same
+     interface with the transition skipped -- the end states are identical. */
+  @media (prefers-reduced-motion: reduce) {
+    :host {
+      --ayvra-plan-motion: 0ms;
+    }
+    .layer.plan,
+    .focus-layer,
+    .panel,
+    polygon.room {
+      transition: none;
+    }
   }
   .wrap {
     position: relative;
     width: 100%;
     overflow: hidden;
-    border-radius: var(--ha-card-border-radius, 12px);
-    background: var(--card-background-color, #fff);
+    border-radius: var(--ayvra-plan-radius);
+    background: var(--ayvra-plan-surface);
   }
   .stage {
     position: relative;
@@ -172,25 +287,52 @@ const STYLES = `
   }
   .layer.focus-layer {
     pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--ayvra-plan-motion) var(--ayvra-plan-ease);
   }
-  .plate {
+  .wrap.focused .layer.focus-layer {
+    opacity: 1;
+  }
+  /* The grey-out itself: the plan layer -- picture, room tints, labels and all
+     -- loses its colour and its brightness, and the focus layer above it holds
+     an UNTREATED copy of the same picture clipped to the focused room, so that
+     one room looks exactly as it did before the tap. */
+  .layer.plan {
+    filter: grayscale(0) brightness(1) contrast(1);
+    transition: filter var(--ayvra-plan-motion) var(--ayvra-plan-ease);
+  }
+  .wrap.focused .layer.plan {
+    filter: grayscale(var(--ayvra-plan-grey)) brightness(var(--ayvra-plan-dim))
+      contrast(var(--ayvra-plan-contrast));
+  }
+  .plate,
+  .focus-plate {
     width: 100%;
     height: 100%;
     object-fit: fill;
     display: block;
   }
-  svg.rooms {
+  .focus-plate {
+    pointer-events: none;
+  }
+  /* Both SVGs are sized explicitly. An <svg> is a REPLACED element: left over
+     to "inset: 0" alone it takes its intrinsic ratio instead of its parent's
+     box, and a viewBox of "0 0 100 100" is square -- which drew the focused
+     room's outline as a square, offset from the room it belongs to, at every
+     rotation. Measured in a headless browser, not guessed. */
+  svg.rooms,
+  svg.focus {
     width: 100%;
     height: 100%;
   }
   polygon.room {
-    fill: var(--primary-color, #03a9f4);
+    fill: var(--ayvra-plan-accent);
     fill-opacity: 0.10;
-    stroke: var(--primary-color, #03a9f4);
+    stroke: var(--ayvra-plan-accent);
     stroke-opacity: 0.55;
     stroke-width: 0.4;
     cursor: pointer;
-    transition: fill-opacity 120ms ease-in-out;
+    transition: fill-opacity var(--ayvra-plan-motion) var(--ayvra-plan-ease);
     outline: none;
   }
   polygon.room:hover,
@@ -201,80 +343,132 @@ const STYLES = `
     stroke-opacity: 1;
     stroke-width: 0.8;
   }
+  /* Room names are chips rather than bare text with a glow, because the thing
+     behind them is a photographic render this card has never seen: ink on the
+     theme's own surface is the only pairing that is legible over a dark floor,
+     a white worktop and a window, in both themes, at every rotation. */
   .label {
     position: absolute;
-    transform: translate(-50%, -50%);
     inset: auto;
+    transform: translate(-50%, -50%);
     pointer-events: none;
+    box-sizing: border-box;
+    padding: 0.14rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--ayvra-plan-divider);
+    background: var(--ayvra-plan-surface);
+    color: var(--ayvra-plan-ink);
     font-size: 0.78rem;
     font-weight: 500;
-    line-height: 1.1;
+    line-height: 1.15;
     text-align: center;
-    color: var(--primary-text-color, #212121);
-    text-shadow: 0 0 3px var(--card-background-color, #fff),
-      0 0 6px var(--card-background-color, #fff);
     white-space: nowrap;
+  }
+  .label.hidden {
+    visibility: hidden;
   }
   .label .count {
     display: block;
     font-size: 0.66rem;
     font-weight: 400;
-    opacity: 0.75;
+    color: var(--ayvra-plan-ink-soft);
   }
-  /* The grey-out: one dimming sheet over the whole floor, with the room in
-     focus re-drawn above it in full colour. */
-  .scrim {
-    background: var(--ayvra-room-plan-scrim, rgba(16, 18, 22, 0.72));
-    opacity: 0;
+  .focus-label {
+    border-color: var(--ayvra-plan-accent);
+    font-weight: 600;
+  }
+  /* Invisible on purpose. The dimmed plan IS the modal background, so nothing
+     is painted over it; this sheet exists only to catch the tap that closes
+     the room, which is what "tap outside" means when the outside is the house. */
+  .catcher {
+    background: transparent;
     pointer-events: none;
-    transition: opacity 160ms ease-in-out;
   }
-  .wrap.focused .scrim {
-    opacity: 1;
+  .wrap.focused .catcher {
     pointer-events: auto;
   }
-  svg.focus {
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 160ms ease-in-out;
-  }
-  .wrap.focused svg.focus {
-    opacity: 1;
-  }
   polygon.focus-room {
-    fill: var(--primary-color, #03a9f4);
-    fill-opacity: 0.22;
-    stroke: var(--primary-color, #03a9f4);
-    stroke-opacity: 1;
-    stroke-width: 0.7;
+    fill: none;
+    stroke: var(--ayvra-plan-accent);
+    stroke-opacity: 0.95;
+    stroke-width: 0.6;
   }
+  /* The modal's controls sit ON the dimmed backdrop: a sheet docked to one
+     edge of the plan, edge-to-edge, no floating card and no drop shadow, with
+     the dimmed house still reading through it. It docks to the edge FURTHEST
+     from the focused room so the room it belongs to stays visible. */
   .panel {
     position: absolute;
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%, -50%);
     inset: auto;
-    width: min(26rem, calc(100% - 2rem));
-    max-height: calc(100% - 2rem);
-    display: none;
+    display: flex;
     flex-direction: column;
     box-sizing: border-box;
-    padding: 0;
-    border-radius: 14px;
-    background: var(--card-background-color, #fff);
-    color: var(--primary-text-color, #212121);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
     overflow: hidden;
+    color: var(--ayvra-plan-ink);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--ayvra-plan-motion) var(--ayvra-plan-ease),
+      transform var(--ayvra-plan-motion) var(--ayvra-plan-ease),
+      visibility 0s linear var(--ayvra-plan-motion);
   }
+  .panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--ayvra-plan-surface);
+    opacity: var(--ayvra-plan-veil);
+  }
+  .panel > * {
+    position: relative;
+  }
+  .wrap.dock-left .panel,
+  .wrap.dock-right .panel {
+    top: 0;
+    bottom: 0;
+    width: min(21rem, 58%);
+  }
+  .wrap.dock-right .panel {
+    right: 0;
+    border-left: 1px solid var(--ayvra-plan-divider);
+    transform: translateX(8%);
+  }
+  .wrap.dock-left .panel {
+    left: 0;
+    border-right: 1px solid var(--ayvra-plan-divider);
+    transform: translateX(-8%);
+  }
+  .wrap.dock-top .panel,
+  .wrap.dock-bottom .panel {
+    left: 0;
+    right: 0;
+    max-height: 62%;
+  }
+  .wrap.dock-bottom .panel {
+    bottom: 0;
+    border-top: 1px solid var(--ayvra-plan-divider);
+    transform: translateY(8%);
+  }
+  .wrap.dock-top .panel {
+    top: 0;
+    border-bottom: 1px solid var(--ayvra-plan-divider);
+    transform: translateY(-8%);
+  }
+  /* After the dock rules on purpose: same specificity, so this is what
+     brings the docked sheet home from its off-edge starting offset. */
   .wrap.focused .panel {
-    display: flex;
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    transition: opacity var(--ayvra-plan-motion) var(--ayvra-plan-ease),
+      transform var(--ayvra-plan-motion) var(--ayvra-plan-ease),
+      visibility 0s;
   }
   .panel header {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.85rem 0.6rem 0.85rem 1rem;
-    border-bottom: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
+    border-bottom: 1px solid var(--ayvra-plan-divider);
   }
   .panel header h2 {
     margin: 0;
@@ -286,7 +480,7 @@ const STYLES = `
     display: block;
     font-size: 0.72rem;
     font-weight: 400;
-    opacity: 0.7;
+    color: var(--ayvra-plan-ink-soft);
   }
   .close {
     flex: 0 0 auto;
@@ -302,7 +496,7 @@ const STYLES = `
   }
   .close:hover,
   .close:focus-visible {
-    background: var(--secondary-background-color, rgba(0, 0, 0, 0.06));
+    background: var(--ayvra-plan-surface-alt);
   }
   .body {
     overflow-y: auto;
@@ -313,7 +507,7 @@ const STYLES = `
     margin: 0;
     padding: 1rem;
     font-size: 0.9rem;
-    opacity: 0.8;
+    color: var(--ayvra-plan-ink-soft);
   }
   .row {
     display: flex;
@@ -324,7 +518,7 @@ const STYLES = `
     box-sizing: border-box;
   }
   .row + .row {
-    border-top: 1px solid var(--divider-color, rgba(0, 0, 0, 0.08));
+    border-top: 1px solid var(--ayvra-plan-divider);
   }
   .row .name {
     flex: 1;
@@ -346,7 +540,7 @@ const STYLES = `
   .row .name .secondary {
     display: block;
     font-size: 0.72rem;
-    opacity: 0.7;
+    color: var(--ayvra-plan-ink-soft);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -354,10 +548,7 @@ const STYLES = `
   .row .value {
     flex: 0 0 auto;
     font-variant-numeric: tabular-nums;
-    opacity: 0.85;
-  }
-  .row.off .name .primary {
-    opacity: 0.85;
+    color: var(--ayvra-plan-ink-soft);
   }
   .controls {
     flex: 0 0 auto;
@@ -369,17 +560,17 @@ const STYLES = `
     min-width: 2.4rem;
     height: 2.4rem;
     padding: 0 0.6rem;
-    border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.2));
+    border: 1px solid var(--ayvra-plan-divider);
     border-radius: 8px;
-    background: var(--secondary-background-color, rgba(0, 0, 0, 0.04));
-    color: inherit;
+    background: var(--ayvra-plan-surface-alt);
+    color: var(--ayvra-plan-ink);
     font: inherit;
     cursor: pointer;
   }
   button.control[aria-pressed="true"] {
-    background: var(--primary-color, #03a9f4);
-    border-color: var(--primary-color, #03a9f4);
-    color: var(--text-primary-color, #fff);
+    background: var(--ayvra-plan-accent);
+    border-color: var(--ayvra-plan-accent);
+    color: var(--ayvra-plan-on-accent);
   }
   button.control:disabled {
     opacity: 0.45;
@@ -406,10 +597,10 @@ const STYLES = `
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.2));
+    border: 1px solid var(--ayvra-plan-divider);
     border-radius: 50%;
-    background: var(--card-background-color, #fff);
-    color: var(--primary-text-color, #212121);
+    background: var(--ayvra-plan-surface);
+    color: var(--ayvra-plan-ink);
     font-size: 1.3rem;
     line-height: 1;
     cursor: pointer;
@@ -418,11 +609,11 @@ const STYLES = `
   .rotate:hover,
   .rotate:focus-visible {
     opacity: 1;
-    border-color: var(--primary-color, #03a9f4);
-    color: var(--primary-color, #03a9f4);
+    border-color: var(--ayvra-plan-accent);
+    color: var(--ayvra-plan-accent);
   }
   /* Out of the way while a room has focus: the modal is the whole interface
-     at that point, and the scrim is meant to read as covering everything. */
+     at that point, and the plan behind it is deliberately quiet. */
   .wrap.focused .rotate {
     display: none;
   }
@@ -620,15 +811,35 @@ class AyvraRoomPlan extends HTMLElement {
       labels.appendChild(label);
     });
 
-    const scrim = document.createElement("div");
-    scrim.className = "scrim";
-    // Tapping outside the panel closes it -- the scrim *is* the outside.
-    scrim.addEventListener("click", () => this._closeRoom());
+    // No sheet of colour is painted over the plan: the grey-out is a filter on
+    // the plan layer itself, so the house keeps its shape while losing its
+    // colour. This invisible sheet only catches the tap that closes the room,
+    // which is what "tap outside" means when the outside is the house.
+    const catcher = document.createElement("div");
+    catcher.className = "catcher";
+    catcher.addEventListener("click", () => this._closeRoom());
 
     // Its own layer, because the focused room has to be drawn ON TOP of the
     // scrim (that is the grey-out effect) while still turning with the plan.
     const focusLayer = document.createElement("div");
     focusLayer.className = "layer focus-layer";
+    // The focused room "retains the main colors" by being an UNTREATED copy of
+    // the same backplate, clipped to that room's own outline and drawn over the
+    // desaturated one. The copy sits in the same box, inside the same rotating
+    // layer, scaled the same way, so it cannot land anywhere but exactly on
+    // top of the room it was cut from -- registration is structural, not
+    // asserted. The focused room is not tinted, lightened or outlined-over:
+    // it simply looks the way the whole plan looked a moment ago.
+    let focusPlate = null;
+    if (this._config.image) {
+      focusPlate = document.createElement("img");
+      focusPlate.className = "focus-plate";
+      focusPlate.src = this._config.image;
+      focusPlate.alt = "";
+      focusPlate.setAttribute("aria-hidden", "true");
+      focusLayer.appendChild(focusPlate);
+    }
+
     const focusSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     focusSvg.setAttribute("class", "focus");
     focusSvg.setAttribute("viewBox", "0 0 100 100");
@@ -636,6 +847,21 @@ class AyvraRoomPlan extends HTMLElement {
     const focusRoom = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
     focusRoom.setAttribute("class", "focus-room");
     focusSvg.appendChild(focusRoom);
+
+    // The focused room's name, redrawn above the dimming so it reads at full
+    // contrast while its dimmed twin in the plan layer is hidden.
+    const focusLabels = document.createElement("div");
+    focusLabels.style.position = "absolute";
+    focusLabels.style.inset = "0";
+    focusLabels.style.pointerEvents = "none";
+    const focusLabel = document.createElement("div");
+    focusLabel.className = "label focus-label";
+    const focusLabelName = document.createElement("span");
+    focusLabel.appendChild(focusLabelName);
+    const focusLabelCount = document.createElement("span");
+    focusLabelCount.className = "count";
+    focusLabel.appendChild(focusLabelCount);
+    focusLabels.appendChild(focusLabel);
 
     const panel = document.createElement("div");
     panel.className = "panel";
@@ -676,8 +902,9 @@ class AyvraRoomPlan extends HTMLElement {
     plan.appendChild(svg);
     plan.appendChild(labels);
     focusLayer.appendChild(focusSvg);
+    focusLayer.appendChild(focusLabels);
     stage.appendChild(plan);
-    stage.appendChild(scrim);
+    stage.appendChild(catcher);
     stage.appendChild(focusLayer);
     stage.appendChild(panel);
     wrap.appendChild(stage);
@@ -697,6 +924,10 @@ class AyvraRoomPlan extends HTMLElement {
       rotate,
       layers: [plan, focusLayer],
       labelNodes,
+      focusPlate,
+      focusLabel,
+      focusLabelName,
+      focusLabelCount,
     };
     this._shapes = this._config.rooms.map((room) => this._roomShape(room));
     this._built = true;
@@ -782,9 +1013,11 @@ class AyvraRoomPlan extends HTMLElement {
     // Labels ride the layer, so they are already in the right place; only
     // their glyphs need to come back upright. Counter-rotated about each
     // label's own centre, which is the anchor it is translated onto.
+    const upright = `translate(-50%, -50%) rotate(${-degrees}deg)`;
     this._els.labelNodes.forEach((node) => {
-      node.style.transform = `translate(-50%, -50%) rotate(${-degrees}deg)`;
+      node.style.transform = upright;
     });
+    this._els.focusLabel.style.transform = upright;
 
     const label = `Rotate the plan (currently ${degrees}\u00b0)`;
     this._els.rotate.setAttribute("aria-label", label);
@@ -816,6 +1049,36 @@ class AyvraRoomPlan extends HTMLElement {
 
   // -- the modal ------------------------------------------------------------
 
+  // Which edge the controls dock to: the one furthest from the room in focus,
+  // measured where that room actually sits ON SCREEN, which is the rotated
+  // position. The customer asked for the controls to go on the dimmed
+  // background rather than over the room they belong to, so a room in the
+  // left half of the plan hands the sheet to the right-hand edge, and a tall
+  // panel (a portrait plan, or a landscape one turned a quarter) docks the
+  // sheet below or above the room instead of beside it.
+  _dockFor(index) {
+    const shape = this._shapes[index];
+    const room = this._config.rooms[index];
+    const anchor = room && room.label ? room.label : this._centroid(shape);
+    const point = rotatePercentPoint(anchor[0], anchor[1], this._rotation);
+    const ratio = this._aspect > 0 ? this._aspect : 0.625;
+    const quarter = this._rotation === 90 || this._rotation === 270;
+    const tall = (quarter ? 1 / ratio : ratio) > 1;
+    // A sheet beside the plan needs room for a device name, a reading and its
+    // buttons on one line. On a phone-width card there is no such room, so the
+    // sheet goes across the bottom (or the top) where it has the full width --
+    // measured, because the card can be narrow in a wide window.
+    const narrow = this._els.wrap.getBoundingClientRect().width < 560;
+    if (tall || narrow) {
+      return point[1] < 50 ? "dock-bottom" : "dock-top";
+    }
+    return point[0] < 50 ? "dock-right" : "dock-left";
+  }
+
+  _clipFor(shape) {
+    return `polygon(${shape.map((p) => `${p[0]}% ${p[1]}%`).join(", ")})`;
+  }
+
   _openRoom(index) {
     const room = this._config.rooms[index];
     if (!room || !this._built) {
@@ -829,8 +1092,31 @@ class AyvraRoomPlan extends HTMLElement {
       "points",
       shape.map((p) => `${p[0]},${p[1]}`).join(" ")
     );
+    // The untreated copy of the backplate, cut to this room's own outline. In
+    // percent of the same box the polygon is drawn in, so the two agree by
+    // construction. Both spellings, because a wall tablet may be running a
+    // WebView old enough to want the prefixed one.
+    if (this._els.focusPlate) {
+      const clip = this._clipFor(shape);
+      this._els.focusPlate.style.clipPath = clip;
+      this._els.focusPlate.style.webkitClipPath = clip;
+    }
+    // The room's name at full contrast above the dimming, and its dimmed twin
+    // in the plan layer hidden so the two cannot show through each other.
+    const anchor = room.label || this._centroid(shape);
+    this._els.focusLabel.style.left = `${anchor[0]}%`;
+    this._els.focusLabel.style.top = `${anchor[1]}%`;
+    this._els.focusLabelName.textContent = room.name;
+    this._els.focusLabelCount.textContent = room.entities.length
+      ? `${room.entities.length} device${room.entities.length === 1 ? "" : "s"}`
+      : "no devices";
+    this._els.labelNodes.forEach((node, at) => {
+      node.classList.toggle("hidden", at === index);
+    });
+
     this._els.heading.textContent = room.name;
     this._els.panel.setAttribute("aria-label", room.name);
+    this._dock(this._dockFor(index));
     this._els.wrap.classList.add("focused");
     this._renderRoom(room);
     this._els.close.focus({ preventScroll: true });
@@ -843,10 +1129,28 @@ class AyvraRoomPlan extends HTMLElement {
     this._activeRoom = null;
     this._rows = [];
     this._els.wrap.classList.remove("focused");
+    // The dock class stays on through the closing transition: taking it off
+    // now would snap the sheet back to the middle of the card as it faded.
+    this._els.labelNodes.forEach((node) => node.classList.remove("hidden"));
     this._els.body.textContent = "";
     if (this._returnFocusTo && typeof this._returnFocusTo.focus === "function") {
       this._returnFocusTo.focus({ preventScroll: true });
     }
+  }
+
+  _dock(dock) {
+    const wrap = this._els.wrap;
+    ["dock-left", "dock-right", "dock-top", "dock-bottom"].forEach((name) => {
+      if (name !== dock) {
+        wrap.classList.remove(name);
+      }
+    });
+    wrap.classList.add(dock);
+    // Read a layout property so the browser takes the docked-but-hidden
+    // position as the transition's starting point; without this the sheet
+    // would fade in without ever moving, because both class changes would
+    // land in the same style recalculation.
+    void this._els.panel.offsetWidth;
   }
 
   _renderRoom(room) {
