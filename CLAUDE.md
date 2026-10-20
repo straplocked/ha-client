@@ -47,6 +47,18 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
 - **Config entry storage:** Server URL, installation_id, access_token, client_id stored in config entry data
 - **Signed self-update:** `updater.py` replaces the integration's own files and restarts HA. Releases must carry an Ed25519 signature verified against a key pinned in `const.py::RELEASE_SIGNING_KEYS` — the server never holds that key, so it can decide whether/when to offer an update but never what code runs. That dict ships **empty**, so self-update fails closed until a key is deliberately pinned. Never add a placeholder.
 - **Component inventory is a full snapshot, never a delta:** `components.py` reports everything the installation is running on every report. The server retires anything absent -- omission *is* removal -- so an agent that sent only what changed would retire almost the whole inventory on its second report. There is deliberately no memory of the previous report in that module. Slugs must be **stable** because the server keys on `(kind, slug)`: they come from the integration domain, the Supervisor add-on slug, or the HACS repository, and **never** from a config entry title or a display name, which users rename. `failing` is set only where Home Assistant actually knows -- a config entry in a failed setup state, or an add-on Supervisor could not start; a *stopped* add-on is not a failure. Cadence is 30 minutes, **not** the 60 s metrics poll, with a forced report immediately after a self-update because the transition is what opens the fleet's observation window. A whole kind being absent is normal: most installs are Core-only. Full design: `docs/technical/component-inventory.md`.
+- **Installer corrections outrank the matcher, and survive a redeploy:** the
+  render pipeline's automatic placement is weak until there is a definitive
+  inventory per project, so `floorplan.py::async_plan_devices` runs the
+  matcher first and then lays the installer's own corrections over it as a
+  **separate layer** -- never folded into `async_match_entity`, because the
+  deploy report has to be able to say which placements a human had to fix
+  (`matched` is the matcher's conclusion, `bound` is what the plan shows).
+  Corrections are keyed by `ha_map.json`'s device slug, the one identifier a
+  redeploy cannot change, and re-applied on top of the **freshly downloaded**
+  manifests -- applying them before the manifest load loses every one of
+  them. One whose device or room the new manifest no longer has is dropped,
+  pruned and reported; neither silently retained nor silently discarded.
 - **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. Full design: `docs/technical/remote-access.md`. A `screen` session (Remote Screen) carries the frontend itself to a headless browser on the Dispatch side: its own local policy (no `/auth`, no raw socket, writes only to `/api`), the admin user, and `screen.py` swapping our token into the browser's WebSocket `auth` frame so a real credential never leaves the house.
 
 ### API Endpoints (server-side)
@@ -74,7 +86,7 @@ that this installation has vanished. It maps to `RemoteAccessUnavailable`, and
 must never map to `InstallationGoneError` -- the re-enrolment handler would
 re-register a healthy installation once a minute, forever.
 
-### Services (9 total)
+### Services (10 total)
 
 | Service | Purpose |
 |---------|---------|
@@ -87,6 +99,7 @@ re-register a healthy installation once a minute, forever.
 | `install_update` | Install the client release the server is offering (restarts HA) |
 | `respond_to_access_request` | Approve or decline a remote access request |
 | `revoke_access` | End a live remote access session (omit the id to end all) |
+| `assign_floorplan_device` | Correct a Home 3D device's room, pin its entity, or clear the correction |
 
 ## Development Commands
 

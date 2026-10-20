@@ -4,6 +4,29 @@ All notable changes to HA Dispatch Client will be documented in this file.
 
 ## [Unreleased]
 
+### Added -- an installer can correct where a device sits, and it sticks
+- The automatic placement is a best guess from an insurance estimate. A new
+  `assign_floorplan_device` service lets an installer standing in the house
+  put a device in the room it is really in, pin it to a specific entity when
+  the automatic match got it wrong (or found nothing at all), or clear the
+  correction and hand the device back to the matcher. The plan is redrawn
+  immediately from the assets already on disk -- no round trip to Dispatch.
+- Corrections survive a redeploy, which is the whole point: a deploy rebuilds
+  the dashboard from freshly downloaded manifests, and corrections are laid
+  over those *new* manifests. They are keyed by `ha_map.json`'s own device
+  slug, the one identifier a redeploy cannot change -- not by list position
+  (a fresh manifest reorders freely) and not by the entity the last deploy
+  bound (which is exactly what a correction changes).
+- Matching and corrections are two separate layers, so the deploy report can
+  say which placements a human had to fix: an overridden device reports
+  `override_room` or `override_entity`, and every record now carries
+  `matched` (what the matcher concluded) alongside `bound` (what the plan
+  shows) plus the correction that separated them.
+- A correction whose device is no longer in the manifest, or whose room is no
+  longer on the plan, is dropped, pruned from the store and reported with the
+  deploy as `override_dropped`. Silently retaining dead corrections forever is
+  how this becomes unmaintainable; silently discarding a live one is worse.
+
 ### Fixed — indoor temperature displays showed the outdoor temperature
 - A Home 3D room's temperature readout could bind to any sensor in the house:
   `ha_map.json`'s `cls` reached the client and was then used only to pick an

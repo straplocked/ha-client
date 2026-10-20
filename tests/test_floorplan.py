@@ -1320,3 +1320,491 @@ class PollLoopTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- the installer's corrections ---------------------------------------------
+#
+# The automatic placement is "weak at BEST" until there is a definitive
+# inventory per project, so an installer standing in the house has to be able
+# to correct it -- and a correction is worthless unless it survives the next
+# redeploy, which rebuilds the whole dashboard from freshly downloaded
+# manifests. These assert on where a device actually ends up rendered, not on
+# what the override store reads back: a test that reads back what it just
+# wrote proves only that Store works.
+
+# Two thermostats, one per room, so the matcher has a real choice -- the
+# "only entity in its domain" rule would otherwise bind whichever one exists
+# and nothing a correction did could be told apart from it.
+def _two_thermostat_states():
+    return [
+        FakeState("climate.den_thermostat", "Den Thermostat"),
+        FakeState("climate.kitchen_thermostat", "Kitchen Thermostat"),
+    ]
+
+
+# Positions are hand-computed from PLAN_TRANSFORM (10 px per foot, origin at
+# (200, 150) on a 400x300 image), never from the code's own projection:
+#   Den     centroid (-10, -5) -> (10*-10+200, -10*-5+150) = (100, 200)
+#                              -> (25.0%, 66.7%)
+#   Kitchen centroid (  5, -5) -> (10*  5+200, -10*-5+150) = (250, 200)
+#                              -> (62.5%, 66.7%)
+DEN_POSITION = ("25.0%", "66.7%")
+KITCHEN_POSITION = ("62.5%", "66.7%")
+
+# A second deploy's ha_map.json: the same two device slugs, listed in the
+# opposite order, with the thermostat still placed in the Den. A correction
+# keyed on anything but the slug -- a list position, or the entity the last
+# deploy bound -- would not survive this.
+REDEPLOY_HA_MAP = {
+    "source": "Xactimate ESX sketch (surveyed)",
+    "units": "feet",
+    "devices": [
+        {
+            "entity": "light_recessed.kitchen.01",
+            "domain": "light",
+            "cls": "light_recessed",
+            "room": "Kitchen",
+            "floor": "1st Floor",
+            "floor_key": "Floor_1",
+            "xy_ft": [5.0, -5.0],
+        },
+        {
+            "entity": "thermostat.den.01",
+            "domain": "climate",
+            "cls": "thermostat",
+            "room": "Den",
+            "floor": "1st Floor",
+            "floor_key": "Floor_1",
+            "xy_ft": [-10.0, -5.0],
+        },
+    ],
+}
+REDEPLOY_HA_MAP_URL = "https://dispatch.example.com/assets/ha_map.2.json"
+OVERRIDE_ASSETS = dict(ASSETS, **{REDEPLOY_HA_MAP_URL: json.dumps(REDEPLOY_HA_MAP)})
+
+
+def _state_icons(card):
+    return [e for e in card["elements"] if e["type"] == "state-icon"]
+
+
+def _rendered(manager, view=0):
+    """Every state-icon on a deployed dashboard's floor, as
+    {entity: (left, top)} -- where the homeowner actually sees each device."""
+    card = manager._dashboard_store.data["config"]["views"][view]["cards"][0]
+    return {
+        e["entity"]: (e["style"]["left"], e["style"]["top"])
+        for e in _state_icons(card)
+    }
+
+
+class OverrideLayerTest(unittest.TestCase):
+    """The correction layer on its own: matching first, a human on top."""
+
+    def test_a_device_with_no_correction_is_planned_exactly_as_the_matcher_said(self):
+        hass = FakeHass(states=_two_thermostat_states())
+        devices, dropped = floorplan_mod.async_plan_devices(hass, HA_MAP, HOTSPOTS, {})
+        self.assertEqual(dropped, [])
+        plan = devices[0]["_ha_dispatch_plan"]
+        self.assertEqual(plan["bound"], "climate.den_thermostat")
+        self.assertEqual(plan["matched"], "climate.den_thermostat")
+        self.assertEqual(plan["reason"], "room_word")
+        self.assertIsNone(plan["override"])
+
+    def test_a_corrected_device_is_re_matched_in_the_room_it_was_moved_to(self):
+        hass = FakeHass(states=_two_thermostat_states())
+        overrides = {"thermostat.den.01": {"room": "Kitchen", "floor_key": "Floor_1",
+                                           "bound_entity": None}}
+        devices, dropped = floorplan_mod.async_plan_devices(
+            hass, HA_MAP, HOTSPOTS, overrides
+        )
+        self.assertEqual(dropped, [])
+        device = devices[0]
+        self.assertEqual(device["room"], "Kitchen")
+        # Re-anchored to the Kitchen's own centroid: a device belongs to a
+        # room, so leaving it on the Den's coordinates would render it in the
+        # Den while claiming the Kitchen.
+        self.assertEqual(device["xy_ft"], [5.0, -5.0])
+        plan = device["_ha_dispatch_plan"]
+        self.assertEqual(plan["bound"], "climate.kitchen_thermostat")
+        # ...and the report can still say what the matcher had concluded.
+        self.assertEqual(plan["matched"], "climate.den_thermostat")
+        self.assertEqual(plan["reason"], "override_room")
+        self.assertEqual(plan["override"]["was_room"], "Den")
+
+    def test_a_pinned_entity_outranks_every_matching_rule(self):
+        hass = FakeHass(
+            states=_two_thermostat_states() + [FakeState("climate.ecobee_3", "Ecobee 3")]
+        )
+        overrides = {"thermostat.den.01": {"room": None, "floor_key": None,
+                                           "bound_entity": "climate.ecobee_3"}}
+        devices, _ = floorplan_mod.async_plan_devices(hass, HA_MAP, HOTSPOTS, overrides)
+        plan = devices[0]["_ha_dispatch_plan"]
+        self.assertEqual(plan["bound"], "climate.ecobee_3")
+        self.assertEqual(plan["matched"], "climate.den_thermostat")
+        self.assertEqual(plan["reason"], "override_entity")
+
+    def test_a_pin_is_the_only_thing_that_can_place_a_device_the_matcher_skipped(self):
+        # Two lights, neither sharing a room word: the matcher refuses, which
+        # is the rule. A human naming the entity is the one way past it.
+        states = [FakeState("light.hue_lamp_3", "Hue lamp 3"),
+                  FakeState("light.hue_lamp_4", "Hue lamp 4")]
+        hass = FakeHass(states=states)
+        devices, _ = floorplan_mod.async_plan_devices(hass, HA_MAP, HOTSPOTS, {})
+        self.assertIsNone(devices[1]["_ha_dispatch_plan"]["bound"])
+
+        overrides = {"light_recessed.kitchen.01": {"room": None, "floor_key": None,
+                                                   "bound_entity": "light.hue_lamp_4"}}
+        devices, _ = floorplan_mod.async_plan_devices(hass, HA_MAP, HOTSPOTS, overrides)
+        self.assertEqual(devices[1]["_ha_dispatch_plan"]["bound"], "light.hue_lamp_4")
+
+    def test_a_room_name_matches_however_the_installer_capitalised_it(self):
+        hass = FakeHass(states=_two_thermostat_states())
+        overrides = {"thermostat.den.01": {"room": "  kitchen ", "floor_key": None,
+                                           "bound_entity": None}}
+        devices, dropped = floorplan_mod.async_plan_devices(
+            hass, HA_MAP, HOTSPOTS, overrides
+        )
+        self.assertEqual(dropped, [])
+        # Re-spelled as hotspots.json spells it, not as it was typed.
+        self.assertEqual(devices[0]["room"], "Kitchen")
+
+    def test_a_correction_can_move_a_device_to_another_floor_entirely(self):
+        hass = FakeHass(states=_two_thermostat_states())
+        overrides = {"thermostat.den.01": {"room": "Loft", "floor_key": "Floor_2",
+                                           "bound_entity": "climate.den_thermostat"}}
+        devices, dropped = floorplan_mod.async_plan_devices(
+            hass, HA_MAP, TWO_FLOOR_HOTSPOTS, overrides
+        )
+        self.assertEqual(dropped, [])
+        self.assertEqual(devices[0]["floor_key"], "Floor_2")
+        views = floorplan_mod.build_dashboard_views(
+            hass, TWO_FLOOR_HOTSPOTS, dict(HA_MAP, devices=devices),
+            {"Floor_1": "/local/plan_Floor_1.png", "Floor_2": "/local/plan_Floor_2.png"},
+            TWO_FLOOR_TRANSFORM,
+        )
+        # Lowest floor first, so view 0 is Floor_1 and view 1 is Floor_2. The
+        # thermostat is on the upper floor now and nowhere else; the Loft's
+        # centroid (0, 0) is (10*0+200, -10*0+150) = (200, 150) on 400x300,
+        # i.e. dead centre.
+        self.assertEqual(_state_icons(views[0]["cards"][0]), [])
+        upstairs = _state_icons(views[1]["cards"][0])
+        self.assertEqual(len(upstairs), 1)
+        self.assertEqual(upstairs[0]["entity"], "climate.den_thermostat")
+        self.assertEqual(upstairs[0]["style"]["left"], "50.0%")
+        self.assertEqual(upstairs[0]["style"]["top"], "50.0%")
+
+    def test_a_correction_for_a_room_this_plan_does_not_have_is_dropped(self):
+        hass = FakeHass(states=_two_thermostat_states())
+        overrides = {"thermostat.den.01": {"room": "Wine Cellar", "floor_key": None,
+                                           "bound_entity": None}}
+        devices, dropped = floorplan_mod.async_plan_devices(
+            hass, HA_MAP, HOTSPOTS, overrides
+        )
+        self.assertEqual(
+            [(d["entity"], d["why"]) for d in dropped],
+            [("thermostat.den.01", "unknown_room")],
+        )
+        # The matcher's own conclusion stands rather than the device vanishing.
+        self.assertEqual(devices[0]["room"], "Den")
+        self.assertEqual(devices[0]["_ha_dispatch_plan"]["bound"], "climate.den_thermostat")
+
+    def test_a_plan_annotation_arriving_in_the_manifest_is_never_trusted(self):
+        # ha_map.json comes from the server; it must not be able to forge a
+        # placement decision by naming this module's own annotation key.
+        hass = FakeHass(states=_two_thermostat_states())
+        ha_map = {"devices": [dict(HA_MAP["devices"][0],
+                                   _ha_dispatch_plan={"bound": "climate.anything",
+                                                      "reason": "forged"})]}
+        devices, _ = floorplan_mod.async_plan_devices(hass, ha_map, HOTSPOTS, {})
+        plan = devices[0]["_ha_dispatch_plan"]
+        self.assertEqual(plan["bound"], "climate.den_thermostat")
+        self.assertEqual(plan["reason"], "room_word")
+
+
+class OverrideNormalisationTest(unittest.TestCase):
+    def test_the_stored_shape_is_the_contract_shape(self):
+        self.assertEqual(
+            floorplan_mod.normalise_override(
+                {"room": "Kitchen", "floor_key": "Floor_1", "bound_entity": "climate.k"}
+            ),
+            {"room": "Kitchen", "floor_key": "Floor_1", "bound_entity": "climate.k"},
+        )
+
+    def test_a_partial_correction_keeps_the_keys_it_does_not_set(self):
+        self.assertEqual(
+            floorplan_mod.normalise_override({"bound_entity": "climate.k"}),
+            {"room": None, "floor_key": None, "bound_entity": "climate.k"},
+        )
+
+    def test_a_correction_that_corrects_nothing_is_not_one(self):
+        self.assertIsNone(floorplan_mod.normalise_override({}))
+        self.assertIsNone(floorplan_mod.normalise_override({"room": "  "}))
+        self.assertIsNone(floorplan_mod.normalise_override("Kitchen"))
+
+    def test_junk_read_back_from_disk_does_not_become_a_correction(self):
+        self.assertEqual(
+            floorplan_mod.normalise_overrides(
+                {"thermostat.den.01": {"room": "Kitchen"}, "": {"room": "Den"},
+                 "camera.porch.01": None, "lock.front.01": {}}
+            ),
+            {"thermostat.den.01": {"room": "Kitchen", "floor_key": None,
+                                   "bound_entity": None}},
+        )
+        self.assertEqual(floorplan_mod.normalise_overrides(["Kitchen"]), {})
+
+
+class OverrideSurvivesRedeployTest(unittest.TestCase):
+    """The guard this feature exists for.
+
+    A redeploy rebuilds the dashboard from manifests that have just been
+    downloaded afresh. If a correction is not laid over the *new* manifests,
+    the installer's work is destroyed by the next deploy -- which is the one
+    thing this feature promises cannot happen.
+    """
+
+    def test_a_correction_still_wins_after_a_redeploy_rebinds_the_device(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=OVERRIDE_ASSETS)
+            manager, hass = _manager(api, tmp, states=_two_thermostat_states())
+
+            # 1. Deploy. The estimate puts the thermostat in the Den, and the
+            #    matcher agrees with it.
+            _run(manager._async_run(_job(job_id=1)))
+            self.assertEqual(
+                _rendered(manager), {"climate.den_thermostat": DEN_POSITION}
+            )
+
+            # 2. The installer, standing in the house, says it is the
+            #    Kitchen's thermostat.
+            _run(manager.async_set_override("thermostat.den.01", room="Kitchen",
+                                            floor_key="Floor_1"))
+
+            # 3. Deploy again, with a fresh ha_map that reorders the devices
+            #    and still places this one in the Den. Before asserting the
+            #    correction wins, prove the fresh manifest really would bind
+            #    it elsewhere: if it would not, this test could not tell the
+            #    difference between a correction being applied and nothing
+            #    happening at all.
+            plain_devices, _ = floorplan_mod.async_plan_devices(
+                hass, REDEPLOY_HA_MAP, HOTSPOTS, {}
+            )
+            uncorrected = [d for d in plain_devices
+                           if d["entity"] == "thermostat.den.01"][0]
+            self.assertEqual(
+                uncorrected["_ha_dispatch_plan"]["bound"], "climate.den_thermostat"
+            )
+            self.assertEqual(uncorrected["xy_ft"], [-10.0, -5.0])
+
+            _run(manager._async_run(_job(job_id=2, ha_map_url=REDEPLOY_HA_MAP_URL)))
+
+            # The correction won: the Kitchen's thermostat, drawn on the
+            # Kitchen, from a manifest that said neither.
+            self.assertEqual(
+                _rendered(manager), {"climate.kitchen_thermostat": KITCHEN_POSITION}
+            )
+            record = [d for d in api.reports[-1]["devices"]
+                      if d["entity"] == "thermostat.den.01"][0]
+            self.assertEqual(record["room"], "Kitchen")
+            self.assertEqual(record["bound"], "climate.kitchen_thermostat")
+            self.assertEqual(record["reason"], "override_room")
+            # The report names what the matcher had concluded instead, so the
+            # installer can see which placements a human had to fix.
+            self.assertEqual(record["matched"], "climate.den_thermostat")
+            self.assertEqual(record["override"]["was_room"], "Den")
+
+    def test_a_correction_read_back_from_disk_survives_a_restart(self):
+        # The store is the only thing carrying a correction across a restart,
+        # so a fresh manager must find it there.
+        shared = {}
+
+        class SharedStore:
+            def __init__(self, hass, version, key):
+                self.key = key
+
+            async def async_load(self):
+                return shared.get(self.key)
+
+            async def async_save(self, data):
+                shared[self.key] = data
+
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=OVERRIDE_ASSETS)
+            saved = floorplan_mod.Store
+            floorplan_mod.Store = SharedStore
+            try:
+                first, _ = _manager(api, tmp, states=_two_thermostat_states())
+                _run(first.async_set_override("thermostat.den.01", room="Kitchen"))
+
+                second, _ = _manager(api, tmp, states=_two_thermostat_states())
+                _run(second.async_load())
+                _run(second._async_run(_job(job_id=7,
+                                            ha_map_url=REDEPLOY_HA_MAP_URL)))
+                card = shared["lovelace.home-3d"]["config"]["views"][0]["cards"][0]
+                icons = _state_icons(card)
+            finally:
+                floorplan_mod.Store = saved
+
+            self.assertEqual(len(icons), 1)
+            self.assertEqual(icons[0]["entity"], "climate.kitchen_thermostat")
+            self.assertEqual(
+                (icons[0]["style"]["left"], icons[0]["style"]["top"]), KITCHEN_POSITION
+            )
+
+
+class OverrideDropTest(unittest.TestCase):
+    """A correction the plan has moved past is dropped and said out loud."""
+
+    def test_a_correction_for_a_device_this_manifest_no_longer_has_is_dropped_and_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=OVERRIDE_ASSETS)
+            manager, hass = _manager(api, tmp, states=_two_thermostat_states())
+
+            _run(manager.async_set_override("camera.porch.09", room="Kitchen",
+                                            floor_key="Floor_1"))
+            _run(manager.async_set_override("thermostat.den.01", room="Kitchen",
+                                            floor_key="Floor_1"))
+
+            _run(manager._async_run(_job()))
+
+            report = api.reports[-1]
+            dropped = [d for d in report["devices"]
+                       if d["reason"] == "override_dropped"]
+            self.assertEqual([d["entity"] for d in dropped], ["camera.porch.09"])
+            self.assertEqual(dropped[0]["override"]["dropped"], "unknown_device")
+            self.assertIsNone(dropped[0]["bound"])
+            self.assertIn("1 installer correction(s) dropped", report["detail"])
+
+            # Retaining it forever is how this becomes unmaintainable; the
+            # correction for a device that IS still there is untouched.
+            self.assertEqual(
+                sorted(_run(manager.async_overrides())), ["thermostat.den.01"]
+            )
+            self.assertEqual(
+                _rendered(manager), {"climate.kitchen_thermostat": KITCHEN_POSITION}
+            )
+
+    def test_a_deploy_with_no_corrections_reports_no_drops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=OVERRIDE_ASSETS)
+            manager, hass = _manager(api, tmp, states=_two_thermostat_states())
+            _run(manager._async_run(_job()))
+            report = api.reports[-1]
+            self.assertNotIn("dropped", report["detail"])
+            self.assertEqual(
+                [d["reason"] for d in report["devices"] if "override" in d["reason"]], []
+            )
+            self.assertEqual(report["detail"], "Home 3D dashboard deployed; 1 of 2 devices placed")
+
+
+class OverrideServiceSupportTest(unittest.TestCase):
+    """What the assign_floorplan_device service calls into."""
+
+    def test_setting_and_clearing_a_correction_moves_the_device_and_puts_it_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=OVERRIDE_ASSETS)
+            manager, hass = _manager(api, tmp, states=_two_thermostat_states())
+            _run(manager._async_run(_job()))
+            self.assertEqual(
+                _rendered(manager), {"climate.den_thermostat": DEN_POSITION}
+            )
+
+            # Corrected and redrawn from the assets already on disk -- the
+            # installer is at the tablet and must see it now, not at the next
+            # deploy.
+            _run(manager.async_set_override("thermostat.den.01", room="Kitchen"))
+            self.assertTrue(_run(manager.async_reapply()))
+            self.assertEqual(
+                _rendered(manager), {"climate.kitchen_thermostat": KITCHEN_POSITION}
+            )
+
+            self.assertTrue(_run(manager.async_clear_override("thermostat.den.01")))
+            self.assertTrue(_run(manager.async_reapply()))
+            self.assertEqual(
+                _rendered(manager), {"climate.den_thermostat": DEN_POSITION}
+            )
+
+    def test_a_correction_is_merged_rather_than_replaced(self):
+        manager, _ = _manager(FakeApi(), states=_two_thermostat_states())
+        _run(manager.async_set_override("thermostat.den.01", room="Kitchen",
+                                        floor_key="Floor_1"))
+        _run(manager.async_set_override("thermostat.den.01",
+                                        bound_entity="climate.ecobee_3"))
+        self.assertEqual(
+            _run(manager.async_overrides())["thermostat.den.01"],
+            {"room": "Kitchen", "floor_key": "Floor_1",
+             "bound_entity": "climate.ecobee_3"},
+        )
+
+    def test_clearing_a_correction_nobody_made_changes_nothing(self):
+        manager, _ = _manager(FakeApi())
+        self.assertFalse(_run(manager.async_clear_override("thermostat.den.01")))
+        self.assertEqual(_run(manager.async_overrides()), {})
+
+    def test_a_correction_needs_a_device_slug(self):
+        manager, _ = _manager(FakeApi())
+        self.assertFalse(_run(manager.async_set_override("  ", room="Kitchen")))
+        self.assertEqual(_run(manager.async_overrides()), {})
+
+    def test_reapplying_before_anything_has_been_deployed_fails_quietly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager, _ = _manager(FakeApi(), tmp)
+            self.assertFalse(_run(manager.async_reapply()))
+
+
+class ServiceWiringTest(unittest.TestCase):
+    """Every service is registered, torn down, and described in both files.
+
+    __init__.py cannot be imported here (voluptuous is not installed in the
+    dev environment), so this reads it rather than running it -- enough to
+    catch the half-wired service, which is the failure that actually happens:
+    a handler with no services.yaml entry has no UI fields, and one missing
+    from SERVICES is never torn down when the last config entry unloads.
+    """
+
+    @staticmethod
+    def _init_source():
+        import os as _os
+        return open(_os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+            "custom_components", "ha_dispatch_client", "__init__.py",
+        )).read()
+
+    @staticmethod
+    def _component(name):
+        import os as _os
+        return _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+            "custom_components", "ha_dispatch_client", name,
+        )
+
+    def test_every_registered_service_is_declared_torn_down_and_described(self):
+        import ast
+        import re
+        import yaml
+
+        source = self._init_source()
+        declared = None
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "SERVICES":
+                declared = [el.value for el in node.value.elts]
+        self.assertIsNotNone(declared, "SERVICES tuple not found in __init__.py")
+
+        registered = re.findall(r'async_register\(\s*DOMAIN,\s*"([a-z_]+)"', source)
+        with open(self._component("services.yaml")) as handle:
+            documented = yaml.safe_load(handle)
+        with open(self._component("strings.json")) as handle:
+            described = json.load(handle)["services"]
+
+        self.assertEqual(sorted(registered), sorted(declared))
+        self.assertEqual(sorted(documented), sorted(declared))
+        self.assertEqual(sorted(described), sorted(declared))
+
+    def test_the_assignment_service_offers_the_fields_the_correction_needs(self):
+        import yaml
+        with open(self._component("services.yaml")) as handle:
+            documented = yaml.safe_load(handle)["assign_floorplan_device"]
+        self.assertEqual(
+            sorted(documented["fields"]),
+            ["clear", "device", "entity_id", "floor_key", "room"],
+        )
+        self.assertTrue(documented["fields"]["device"]["required"])

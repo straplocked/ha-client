@@ -24,6 +24,13 @@ filed under (see async_match_entity); anything with no confident match is
 left off the dashboard rather than fabricated onto it, per the rule: device
 icons bound to real entities where a matching entity exists, skip the ones
 that don't.
+
+That automatic placement is, in the customer's own words, "weak at BEST"
+until there is a definitive inventory per project, so an installer standing
+in the house can correct it: see async_plan_devices for the correction layer
+that sits on top of the matcher, and HADispatchFloorplan's own store for why
+a correction has to survive a redeploy, which rebuilds the whole dashboard
+from freshly downloaded manifests.
 """
 from __future__ import annotations
 
@@ -58,8 +65,15 @@ from .const import (
     FLOORPLAN_NOTIFICATION_ID,
     FLOORPLAN_OUTDOOR_DOMAINS,
     FLOORPLAN_OUTDOOR_TOKENS,
+    FLOORPLAN_OVERRIDE_DROP_NO_DEVICE,
+    FLOORPLAN_OVERRIDE_DROP_NO_ROOM,
+    FLOORPLAN_OVERRIDES_STORAGE_KEY,
+    FLOORPLAN_OVERRIDES_STORAGE_VERSION,
     FLOORPLAN_PLAN_BACKPLATE_NAME_FMT,
     FLOORPLAN_PLAN_TRANSFORM_NAME,
+    FLOORPLAN_REASON_OVERRIDE_DROPPED,
+    FLOORPLAN_REASON_OVERRIDE_ENTITY,
+    FLOORPLAN_REASON_OVERRIDE_ROOM,
     FLOORPLAN_REPORT_STATUS_DONE,
     FLOORPLAN_REPORT_STATUS_FAILED,
     FLOORPLAN_STORAGE_VERSION,
@@ -207,6 +221,12 @@ def _outdoor_marker(state: Any, area_tokens: Dict[str, set[str]]) -> Optional[st
     return hits[0] if hits else None
 
 
+# Sentinel for _decide's `matched`: "the matcher's own conclusion is the
+# binding, nobody corrected it". Distinct from None, which is a real
+# conclusion ("the matcher found nothing").
+_SAME_AS_BOUND = object()
+
+
 def _decide(
     decisions: Optional[List[Dict[str, Any]]],
     device: Dict[str, Any],
@@ -216,6 +236,8 @@ def _decide(
     via: Optional[str] = None,
     candidates: Any = (),
     rejected: Any = (),
+    matched: Any = _SAME_AS_BOUND,
+    override: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Record one device's match outcome, and hand `bound` straight back.
 
@@ -227,6 +249,15 @@ def _decide(
     working from. `rejected` says which of those candidates were ruled out
     before the room words were ever scored, and why -- "a wrong number" and
     "no number at all" look identical on a plan otherwise.
+
+    `matched` and `override` keep the two layers apart. The automatic
+    placement is weak enough that an installer standing in the house has to
+    be able to correct it (see async_plan_devices), and a report that cannot
+    say which records are the matcher's own conclusions and which a human
+    overruled is a report nobody can learn from: `matched` is always what
+    the matcher concluded, `bound` is what the dashboard actually shows, and
+    `override` is the correction that separated them (None when nobody
+    corrected anything, which is the overwhelming majority of records).
     """
     if decisions is not None:
         decisions.append(
@@ -244,6 +275,8 @@ def _decide(
                     str(getattr(c, "entity_id", c)) for c in list(candidates)[:_DECISION_CANDIDATES]
                 ],
                 "rejected": list(rejected)[:_DECISION_CANDIDATES],
+                "matched": bound if matched is _SAME_AS_BOUND else matched,
+                "override": override,
             }
         )
     return bound
@@ -427,6 +460,347 @@ def async_match_entity(
         decisions, device, None, "no_shared_word",
         candidates=candidates, rejected=rejected,
     )
+
+
+# --- installer corrections, applied on top of matching ----------------------
+
+# This module's own annotation on a device record: the outcome of planning
+# that device -- the matcher's conclusion, the correction (if any) laid over
+# it, and the record fields the deploy report wants. Prefixed and stripped
+# from anything arriving in ha_map.json so a manifest can never forge one.
+_PLAN = "_ha_dispatch_plan"
+
+
+def normalise_override(value: Any) -> Optional[Dict[str, Any]]:
+    """One stored correction, in the shape the whole system agreed on, or
+    None if there is nothing usable in it.
+
+    {"room": <room name as hotspots.json spells it>,
+     "floor_key": <level key>,
+     "bound_entity": <real HA entity id, or None>}
+
+    Tolerant on input because this is read back from disk and also handed
+    straight in from a service call: anything missing becomes None rather
+    than raising, and a record naming neither a room, a floor nor an entity
+    is not a correction at all.
+    """
+    if not isinstance(value, dict):
+        return None
+    room = str(value.get("room") or "").strip()
+    floor_key = str(value.get("floor_key") or "").strip()
+    bound = value.get("bound_entity")
+    bound = str(bound).strip() if bound else ""
+    if not room and not floor_key and not bound:
+        return None
+    return {
+        "room": room or None,
+        "floor_key": floor_key or None,
+        "bound_entity": bound or None,
+    }
+
+
+def normalise_overrides(value: Any) -> Dict[str, Dict[str, Any]]:
+    """Every stored correction, keyed by ha_map.json's device slug.
+
+    Keyed by the slug and nothing else: a redeploy's manifest may reorder
+    its devices and may bind a device to a different entity, and a
+    correction keyed on either of those would be lost exactly when it
+    matters most.
+    """
+    if not isinstance(value, dict):
+        return {}
+    result: Dict[str, Dict[str, Any]] = {}
+    for slug, raw in value.items():
+        key = str(slug or "").strip()
+        override = normalise_override(raw)
+        if key and override is not None:
+            result[key] = override
+    return result
+
+
+def _rooms_by_floor(
+    hotspots_by_floor: Dict[str, List[Dict[str, Any]]]
+) -> Dict[str, Dict[frozenset, Dict[str, Any]]]:
+    """Each floor's rooms, indexed by the word-token set of their names.
+
+    Tokens rather than the raw string: a correction's room name is typed by
+    an installer or picked from a list that has been through a round trip,
+    so "Great Room", "great room" and "Great  Room" have to be the same
+    room. The same tokeniser the matcher uses, for the same reason.
+    """
+    index: Dict[str, Dict[frozenset, Dict[str, Any]]] = {}
+    for floor_key, rooms in (hotspots_by_floor or {}).items():
+        if not isinstance(rooms, list):
+            continue
+        by_name: Dict[frozenset, Dict[str, Any]] = {}
+        for room in rooms:
+            if not isinstance(room, dict):
+                continue
+            key = frozenset(_tokens(room.get("name")))
+            if key and key not in by_name:
+                by_name[key] = room
+        index[str(floor_key)] = by_name
+    return index
+
+
+def _find_room(
+    rooms_by_floor: Dict[str, Dict[frozenset, Dict[str, Any]]],
+    room: str,
+    floor_key: str,
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """The (floor key, hotspot) a correction's room names on this plan.
+
+    A correction that names a floor is looked up only on that floor; one
+    that names only a room is looked up across the plan, because a room
+    name is unique enough in a house that an installer who typed one meant
+    the one room that has it.
+    """
+    key = frozenset(_tokens(room))
+    if not key:
+        return None
+    floors = (
+        [str(floor_key)] if floor_key and str(floor_key) in rooms_by_floor
+        else list(rooms_by_floor)
+    )
+    for candidate in floors:
+        hotspot = rooms_by_floor.get(candidate, {}).get(key)
+        if hotspot is not None:
+            return candidate, hotspot
+    return None
+
+
+def _match_record(
+    hass: HomeAssistant, device: Dict[str, Any], area_tokens: Dict[str, set[str]]
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Run the matcher over one device and hand back both its conclusion and
+    the record it would have written -- candidates, rejections and all.
+
+    Goes through async_match_entity untouched, with a scratch decision list,
+    rather than reaching inside it: the correction layer must not change what
+    the matcher concludes, only what is done with it afterwards.
+    """
+    scratch: List[Dict[str, Any]] = []
+    bound = async_match_entity(hass, device, area_tokens, scratch)
+    return bound, (scratch[0] if scratch else {})
+
+
+def _plan_from_record(bound: Optional[str], record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "bound": bound,
+        "matched": bound,
+        "reason": str(record.get("reason") or ""),
+        "via": record.get("via"),
+        "candidates": list(record.get("candidates") or ()),
+        "rejected": list(record.get("rejected") or ()),
+        "override": None,
+    }
+
+
+def async_plan_devices(
+    hass: HomeAssistant,
+    ha_map: Dict[str, Any],
+    hotspots_by_floor: Dict[str, List[Dict[str, Any]]],
+    overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+    area_tokens: Optional[Dict[str, set[str]]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Resolve every device in ha_map.json, then lay the installer's own
+    corrections over the result. Returns (devices, dropped corrections).
+
+    Two layers, deliberately not one. The matcher runs first and unchanged
+    (async_match_entity), so what it concluded is still on the record; a
+    correction is then applied on top, and the device's plan annotation
+    carries both -- `matched` is the matcher's conclusion and `bound` is what
+    the dashboard will actually show. Folding corrections into the matcher
+    would make the deploy report unable to say which placements a human had
+    to fix, which is the one thing the installer's screen needs to show while
+    the automatic placement is as weak as it currently is.
+
+    A correction that names a room moves the device onto that room's floor
+    and re-anchors it to that room's centroid, then re-runs the matcher
+    against the corrected room -- the installer's room is better information
+    than the estimate's, so it deserves the same matching rules rather than
+    a different weaker path. A correction that pins an entity id skips
+    matching for that device entirely: a human naming an entity outranks
+    every rule here, and is also the only thing that can place a device the
+    matcher could not resolve at all (an unmatched device is still omitted
+    rather than fabricated onto the plan).
+
+    `dropped` is every correction this manifest has moved past: its device
+    slug is no longer in ha_map.json, or the room it names is no longer on
+    the plan. They are reported with the deploy and pruned from the store --
+    a correction that cannot be applied and cannot be seen is how this
+    becomes unmaintainable.
+    """
+    devices_in = [d for d in (ha_map.get("devices") or []) if isinstance(d, dict)]
+    if area_tokens is None:
+        area_tokens = area_tokens_by_entity(hass)
+    corrections = normalise_overrides(overrides)
+    rooms_by_floor = _rooms_by_floor(hotspots_by_floor)
+
+    planned: List[Dict[str, Any]] = []
+    dropped: List[Dict[str, Any]] = []
+    seen_slugs: set[str] = set()
+
+    for raw in devices_in:
+        device = {k: v for k, v in raw.items() if k != _PLAN}
+        slug = str(device.get("entity") or "")
+        seen_slugs.add(slug)
+
+        bound, record = _match_record(hass, device, area_tokens)
+        plan = _plan_from_record(bound, record)
+
+        correction = corrections.get(slug) if slug else None
+        if correction is not None:
+            device, plan = _apply_override(
+                hass, device, plan, correction, rooms_by_floor, area_tokens, dropped
+            )
+
+        device[_PLAN] = plan
+        planned.append(device)
+
+    for slug, correction in corrections.items():
+        if slug not in seen_slugs:
+            _LOGGER.warning(
+                "Dropping the installer's correction for %s: this plan no longer "
+                "has that device",
+                slug,
+            )
+            dropped.append(
+                {
+                    "entity": slug,
+                    "why": FLOORPLAN_OVERRIDE_DROP_NO_DEVICE,
+                    "override": dict(correction),
+                }
+            )
+
+    return planned, dropped
+
+
+def _apply_override(
+    hass: HomeAssistant,
+    device: Dict[str, Any],
+    plan: Dict[str, Any],
+    correction: Dict[str, Any],
+    rooms_by_floor: Dict[str, Dict[frozenset, Dict[str, Any]]],
+    area_tokens: Dict[str, set[str]],
+    dropped: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Lay one correction over one already-matched device.
+
+    Hands back the corrected device record and its plan annotation, or the
+    originals untouched when the correction names a room this plan no longer
+    has -- in which case the whole correction goes, entity pin included, the
+    matcher's own conclusion stands, and the correction is added to
+    `dropped`. All of it rather than the room alone: honouring a pin whose
+    room has gone would draw that entity in whichever room the estimate
+    guessed, which is a confidently wrong answer where reverting is merely
+    the old one, said out loud.
+    """
+    slug = str(device.get("entity") or "")
+    room = str(correction.get("room") or "").strip()
+    floor_key = str(correction.get("floor_key") or "").strip()
+    pinned = str(correction.get("bound_entity") or "").strip()
+
+    applied = dict(correction)
+    applied["was_room"] = str(device.get("room") or "")
+    applied["was_floor_key"] = str(device.get("floor_key") or "")
+
+    corrected = dict(device)
+    if room:
+        found = _find_room(rooms_by_floor, room, floor_key)
+        if found is None:
+            _LOGGER.warning(
+                "Dropping the installer's correction for %s: this plan has no room "
+                "called %s",
+                slug, room,
+            )
+            dropped.append(
+                {
+                    "entity": slug,
+                    "why": FLOORPLAN_OVERRIDE_DROP_NO_ROOM,
+                    "override": applied,
+                }
+            )
+            return device, plan
+        found_floor, hotspot = found
+        corrected["room"] = str(hotspot.get("name") or room)
+        corrected["floor_key"] = found_floor
+        centroid = hotspot.get("centroid")
+        if isinstance(centroid, (list, tuple)) and len(centroid) >= 2:
+            # A device belongs to a room, not to a coordinate: re-anchor it to
+            # the room it was corrected into, or it would render in the room
+            # the estimate guessed while claiming to be in this one.
+            corrected["xy_ft"] = [float(centroid[0]), float(centroid[1])]
+    elif floor_key:
+        # A floor with no room named: the device keeps its own coordinates
+        # (every level's transform maps the same world frame) and its own
+        # room label, and only moves to another floor's view.
+        corrected["floor_key"] = floor_key
+
+    if pinned:
+        _LOGGER.info(
+            "Floorplan device %s bound to %s: the installer pinned it (the matcher "
+            "had concluded %s)",
+            slug, pinned, plan.get("matched"),
+        )
+        plan = dict(
+            plan,
+            bound=pinned,
+            reason=FLOORPLAN_REASON_OVERRIDE_ENTITY,
+            via="pinned_entity",
+            override=applied,
+        )
+        return corrected, plan
+
+    bound, record = _match_record(hass, corrected, area_tokens)
+    _LOGGER.info(
+        "Floorplan device %s re-matched in %s after the installer moved it: %s "
+        "(the matcher had concluded %s)",
+        slug, corrected.get("room"), bound, plan.get("matched"),
+    )
+    plan = dict(
+        plan,
+        bound=bound,
+        reason=FLOORPLAN_REASON_OVERRIDE_ROOM,
+        via=record.get("via"),
+        candidates=list(record.get("candidates") or ()),
+        rejected=list(record.get("rejected") or ()),
+        override=applied,
+    )
+    return corrected, plan
+
+
+def dropped_override_decisions(
+    dropped: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Dropped corrections, in the deploy report's own device-record shape.
+
+    Carried on the same list the matcher's decisions ride, because the
+    installer who made the correction reads that list: a correction that
+    vanished without a word looks exactly like one that was never made.
+    """
+    records: List[Dict[str, Any]] = []
+    for entry in dropped:
+        override = dict(entry.get("override") or {})
+        override["dropped"] = str(entry.get("why") or "")
+        records.append(
+            {
+                "entity": str(entry.get("entity") or ""),
+                "label": str(entry.get("entity") or ""),
+                "room": str(override.get("room") or ""),
+                "floor": str(override.get("floor_key") or ""),
+                "domain": "",
+                "cls": "",
+                "bound": None,
+                "reason": FLOORPLAN_REASON_OVERRIDE_DROPPED,
+                "via": str(entry.get("why") or ""),
+                "candidates": [],
+                "rejected": [],
+                "matched": None,
+                "override": override,
+            }
+        )
+    return records
 
 
 # --- coordinate mapping ----------------------------------------------------
@@ -657,7 +1031,28 @@ def build_picture_elements_card(
             _decide(decisions, device, None, "unplaced")
             continue
 
-        entity_id = async_match_entity(hass, device, area_tokens, decisions)
+        # A device that has already been through the planning layer (see
+        # async_plan_devices) carries its outcome with it: the matcher has
+        # run, and an installer's correction may have overruled it. Matching
+        # it again here would re-run the matcher against the corrected room
+        # and quietly discard the correction. A device that has not been
+        # planned -- an older caller, or a test exercising the matcher
+        # directly -- is matched here exactly as before.
+        plan = device.get(_PLAN)
+        if isinstance(plan, dict):
+            entity_id = _decide(
+                decisions,
+                device,
+                plan.get("bound"),
+                str(plan.get("reason") or ""),
+                via=plan.get("via"),
+                candidates=plan.get("candidates") or (),
+                rejected=plan.get("rejected") or (),
+                matched=plan.get("matched"),
+                override=plan.get("override"),
+            )
+        else:
+            entity_id = async_match_entity(hass, device, area_tokens, decisions)
         if entity_id is None:
             continue
 
@@ -843,6 +1238,45 @@ def _read_json(path: Path) -> Any:
         return json.load(handle)
 
 
+def _discover_assets(directory: Path) -> Dict[str, Any]:
+    """The assets the last deploy left on disk, in _async_download_assets'
+    own result shape.
+
+    So a correction can redraw the dashboard without the server: the
+    filenames are fixed by const.py, and a per-floor plan render carries its
+    own level key in its name (FLOORPLAN_PLAN_BACKPLATE_NAME_FMT), which is
+    the only thing that has to be recovered rather than assumed.
+    """
+    paths: Dict[str, Any] = {"image_url": None, "plan_image_urls": {}}
+    if not directory.is_dir():
+        return paths
+
+    for name, key in (
+        (FLOORPLAN_HOTSPOTS_NAME, "hotspots"),
+        (FLOORPLAN_HA_MAP_NAME, "ha_map"),
+        (FLOORPLAN_PLAN_TRANSFORM_NAME, "plan_transform"),
+    ):
+        candidate = directory / name
+        if candidate.is_file():
+            paths[key] = candidate
+
+    if (directory / FLOORPLAN_BACKPLATE_NAME).is_file():
+        paths["image_url"] = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{FLOORPLAN_BACKPLATE_NAME}"
+
+    prefix, suffix = FLOORPLAN_PLAN_BACKPLATE_NAME_FMT.split("{level_key}", 1)
+    plan_image_urls: Dict[str, str] = {}
+    for entry in sorted(directory.iterdir()):
+        name = entry.name
+        if not entry.is_file() or not name.startswith(prefix) or not name.endswith(suffix):
+            continue
+        level_key = name[len(prefix):len(name) - len(suffix)]
+        if level_key:
+            plan_image_urls[level_key] = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{name}"
+    paths["plan_image_urls"] = plan_image_urls
+
+    return paths
+
+
 # --- orchestration ------------------------------------------------------------
 
 
@@ -872,6 +1306,17 @@ class HADispatchFloorplan:
             hass, FLOORPLAN_STORAGE_VERSION, FLOORPLAN_DASHBOARD_STORAGE_KEY
         )
 
+        # The installer's corrections to the pipeline's automatic placement,
+        # in this integration's own store rather than Lovelace's: a redeploy
+        # overwrites the dashboard config wholesale, so a correction kept in
+        # there would last exactly until the next deploy, which is the one
+        # moment it has to survive. Loaded lazily (async_load, or the first
+        # deploy) -- nothing here touches the disk at construction time.
+        self._overrides_store = Store(
+            hass, FLOORPLAN_OVERRIDES_STORAGE_VERSION, FLOORPLAN_OVERRIDES_STORAGE_KEY
+        )
+        self._overrides: Optional[Dict[str, Dict[str, Any]]] = None
+
     @property
     def api(self):
         """The API client, which the coordinator may have re-tokened."""
@@ -885,6 +1330,151 @@ class HADispatchFloorplan:
     def async_disable(self) -> None:
         """Stop trying: this server does not offer floorplan deploys."""
         self.available = False
+
+    # -- the installer's corrections ------------------------------------------
+
+    async def async_load(self) -> None:
+        """Read the stored corrections, so the first deploy already has them."""
+        await self._async_overrides()
+
+    async def _async_overrides(self) -> Dict[str, Dict[str, Any]]:
+        """The stored corrections, read from disk once and then cached.
+
+        Lazy rather than required: a deploy that arrives before setup has
+        called async_load must still apply the corrections the installer
+        already made, and the only thing worse than a correction that does
+        not survive a redeploy is one that survives it intermittently.
+        """
+        if self._overrides is None:
+            loaded = await _async_load_or_default(self._overrides_store, {})
+            self._overrides = normalise_overrides(loaded.get("overrides"))
+        return self._overrides
+
+    async def _async_save_overrides(self) -> None:
+        await self._overrides_store.async_save(
+            {"overrides": dict(self._overrides or {})}
+        )
+
+    async def async_set_override(
+        self,
+        slug: str,
+        room: Optional[str] = None,
+        floor_key: Optional[str] = None,
+        bound_entity: Optional[str] = None,
+    ) -> bool:
+        """Record where an installer says a device actually is.
+
+        Merged into whatever correction that device already had, so moving a
+        device and then pinning its entity takes two calls rather than
+        forcing the second to restate the first. Keyed by ha_map.json's
+        device slug -- the one identifier a redeploy cannot change.
+        """
+        key = str(slug or "").strip()
+        if not key:
+            return False
+        overrides = await self._async_overrides()
+        merged = dict(overrides.get(key) or {})
+        if room is not None:
+            merged["room"] = room
+        if floor_key is not None:
+            merged["floor_key"] = floor_key
+        if bound_entity is not None:
+            merged["bound_entity"] = bound_entity
+        correction = normalise_override(merged)
+        if correction is None:
+            return await self.async_clear_override(key)
+        overrides[key] = correction
+        await self._async_save_overrides()
+        _LOGGER.info("Recorded a floorplan correction for %s: %s", key, correction)
+        return True
+
+    async def async_clear_override(self, slug: str) -> bool:
+        """Forget a correction, putting that device back under the matcher."""
+        key = str(slug or "").strip()
+        overrides = await self._async_overrides()
+        if key not in overrides:
+            return False
+        overrides.pop(key)
+        await self._async_save_overrides()
+        _LOGGER.info("Cleared the floorplan correction for %s", key)
+        return True
+
+    async def async_overrides(self) -> Dict[str, Dict[str, Any]]:
+        """A copy of the stored corrections, for diagnostics and tests."""
+        return {k: dict(v) for k, v in (await self._async_overrides()).items()}
+
+    async def _async_drop_overrides(self, dropped: List[Dict[str, Any]]) -> None:
+        """Prune the corrections this deploy's manifests have moved past."""
+        if not dropped:
+            return
+        overrides = await self._async_overrides()
+        removed = [
+            str(entry.get("entity") or "")
+            for entry in dropped
+            if str(entry.get("entity") or "") in overrides
+        ]
+        for slug in removed:
+            overrides.pop(slug, None)
+        if removed:
+            await self._async_save_overrides()
+            _LOGGER.warning(
+                "Dropped %d installer correction(s) this plan has moved past: %s",
+                len(removed), ", ".join(removed),
+            )
+
+    async def async_reapply(self) -> bool:
+        """Rebuild the dashboard from the assets already on disk.
+
+        What makes a correction usable by somebody standing in the house: the
+        installer taps a device into the right room and the plan redraws,
+        instead of waiting for Dispatch to push the whole deploy again. The
+        manifests are read back out of /config/www/ha_dispatch/floorplan/,
+        exactly where the last deploy left them, so this needs nothing from
+        the server at all.
+        """
+        directory = Path(self.hass.config.path(*FLOORPLAN_ASSET_DIR))
+        try:
+            paths = await self.hass.async_add_executor_job(_discover_assets, directory)
+        except OSError as err:
+            _LOGGER.warning("Could not read the floorplan assets on disk: %s", err)
+            return False
+        if "hotspots" not in paths or "ha_map" not in paths:
+            _LOGGER.warning(
+                "No floorplan has been deployed to this installation yet; "
+                "nothing to re-apply a correction to"
+            )
+            return False
+
+        overrides = await self._async_overrides()
+        decisions: List[Dict[str, Any]] = []
+        try:
+            hotspots, ha_map, plan_transform = await self._async_load_manifests(paths)
+            devices, dropped = async_plan_devices(
+                self.hass, ha_map, hotspots, overrides
+            )
+            views = build_dashboard_views(
+                self.hass,
+                hotspots,
+                dict(ha_map, devices=devices),
+                paths.get("plan_image_urls") or {},
+                plan_transform,
+                fallback_image_url=paths.get("image_url"),
+                decisions=decisions,
+            )
+            if not views:
+                raise FloorplanApplyError("No floor had a plan render to show")
+            await self._async_write_dashboard(views)
+        except Exception as err:  # noqa: BLE001 - a service call must not raise
+            _LOGGER.error("Could not re-apply floorplan corrections: %s", err)
+            return False
+
+        await self._async_drop_overrides(dropped)
+        placed = sum(1 for d in decisions if d.get("bound"))
+        _LOGGER.info(
+            "Home 3D dashboard rebuilt from the assets on disk; %d of %d devices placed",
+            placed, len(decisions),
+        )
+        return True
 
     # -- the poll loop --------------------------------------------------------
 
@@ -931,13 +1521,24 @@ class HADispatchFloorplan:
         job_id = str(job.get("id") or "")
 
         decisions: List[Dict[str, Any]] = []
+        dropped: List[Dict[str, Any]] = []
         try:
+            overrides = await self._async_overrides()
             paths = await self._async_download_assets(job)
             hotspots, ha_map, plan_transform = await self._async_load_manifests(paths)
+            # Matching first, then the installer's corrections on top of it,
+            # and only then the dashboard. A redeploy rebuilds everything
+            # from manifests that have just been downloaded afresh, so this
+            # is the point where a correction either survives or is lost --
+            # it has to be laid over the *new* manifests, not folded into
+            # whatever the last deploy happened to conclude.
+            devices, dropped = async_plan_devices(
+                self.hass, ha_map, hotspots, overrides
+            )
             views = build_dashboard_views(
                 self.hass,
                 hotspots,
-                ha_map,
+                dict(ha_map, devices=devices),
                 paths.get("plan_image_urls") or {},
                 plan_transform,
                 fallback_image_url=paths.get("image_url"),
@@ -955,14 +1556,23 @@ class HADispatchFloorplan:
             return
 
         placed = sum(1 for d in decisions if d.get("bound"))
+        total = len(decisions)
+        detail = f"Home 3D dashboard deployed; {placed} of {total} devices placed"
+        if dropped:
+            # Said out loud, in the one place the installer who made the
+            # correction will look. A correction silently retained forever is
+            # unmaintainable; a correction silently discarded is worse.
+            await self._async_drop_overrides(dropped)
+            decisions.extend(dropped_override_decisions(dropped))
+            detail += f"; {len(dropped)} installer correction(s) dropped"
         _LOGGER.info(
             "Floorplan deploy %s applied; Home 3D dashboard updated, %d of %d devices placed",
-            job_id, placed, len(decisions),
+            job_id, placed, total,
         )
         await self._async_report(
             job_id,
             FLOORPLAN_REPORT_STATUS_DONE,
-            f"Home 3D dashboard deployed; {placed} of {len(decisions)} devices placed",
+            detail,
             devices=decisions,
         )
         self._notify_success(went_live)
@@ -1378,7 +1988,11 @@ __all__ = [
     "HADispatchFloorplan",
     "async_all_managers",
     "async_match_entity",
+    "async_plan_devices",
     "area_tokens_by_entity",
+    "dropped_override_decisions",
+    "normalise_override",
+    "normalise_overrides",
     "build_dashboard_views",
     "build_dashboard_config",
     "build_picture_elements_card",

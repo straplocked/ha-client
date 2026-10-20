@@ -18,7 +18,10 @@ from .const import (
 from .api_client import HADispatchApiClient
 from .coordinator import HADispatchCoordinator
 from .backups import HADispatchBackups
-from .floorplan import HADispatchFloorplan
+from .floorplan import (
+    HADispatchFloorplan,
+    async_all_managers as async_all_floorplan_managers,
+)
 from .remote_access import (
     HADispatchRemoteAccess,
     async_all_managers,
@@ -41,6 +44,7 @@ SERVICES = (
     "install_update",
     "respond_to_access_request",
     "revoke_access",
+    "assign_floorplan_device",
 )
 
 # Set once the pending-update record has been resolved, so a second config
@@ -98,6 +102,20 @@ SERVICE_REVOKE_ACCESS_SCHEMA = vol.Schema({
     # to stop actually means.
     vol.Optional("session_id"): vol.Any(cv.positive_int, cv.string),
     vol.Optional("note"): cv.string,
+})
+
+SERVICE_ASSIGN_FLOORPLAN_DEVICE_SCHEMA = vol.Schema({
+    # ha_map.json's own device slug (e.g. thermostat.great_room.01), which is
+    # the pipeline's invented identifier and NOT a Home Assistant entity id.
+    # Keyed on it because it is the one thing a redeploy cannot change.
+    vol.Required("device"): cv.string,
+    vol.Optional("room"): cv.string,
+    vol.Optional("floor_key"): cv.string,
+    # A real entity id this time: the installer naming what the device
+    # actually is, which outranks every matching rule in floorplan.py.
+    vol.Optional("entity_id"): cv.entity_id,
+    # Puts the device back under the automatic matcher.
+    vol.Optional("clear", default=False): cv.boolean,
 })
 
 
@@ -386,6 +404,48 @@ def setup_services(hass: HomeAssistant):
             closed += await manager.async_revoke(session_id, note=note)
         _LOGGER.info("Closed %s remote access session(s)", closed)
 
+    async def handle_assign_floorplan_device(call: ServiceCall):
+        """Handle assign_floorplan_device service call.
+
+        The automatic placement is weak until there is a definitive inventory
+        per project, so an installer standing in the house is the best source
+        of truth available. This records what they say and redraws the plan
+        straight away; floorplan.py persists it and re-applies it on top of
+        every later redeploy's freshly downloaded manifests.
+        """
+        managers = async_all_floorplan_managers(hass)
+        if not managers:
+            _LOGGER.error("No HA Dispatch installations configured")
+            return
+
+        slug = call.data["device"]
+        if call.data.get("clear"):
+            cleared = sum(
+                [await manager.async_clear_override(slug) for manager in managers]
+            )
+            if not cleared:
+                _LOGGER.warning("No floorplan correction was recorded for %s", slug)
+        else:
+            room = call.data.get("room")
+            floor_key = call.data.get("floor_key")
+            entity_id = call.data.get("entity_id")
+            if room is None and floor_key is None and entity_id is None:
+                _LOGGER.error(
+                    "Nothing to assign for %s: name a room, a floor or an entity, "
+                    "or pass clear to forget the correction",
+                    slug,
+                )
+                return
+            for manager in managers:
+                await manager.async_set_override(
+                    slug, room=room, floor_key=floor_key, bound_entity=entity_id
+                )
+
+        # Redraw now rather than at the next deploy: the installer is
+        # standing at the tablet and has to see whether they got it right.
+        for manager in managers:
+            await manager.async_reapply()
+
     # Register all services
     hass.services.async_register(
         DOMAIN,
@@ -439,6 +499,12 @@ def setup_services(hass: HomeAssistant):
         "revoke_access",
         handle_revoke_access,
         schema=SERVICE_REVOKE_ACCESS_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "assign_floorplan_device",
+        handle_assign_floorplan_device,
+        schema=SERVICE_ASSIGN_FLOORPLAN_DEVICE_SCHEMA
     )
 
     _LOGGER.info("HA Dispatch Client services registered successfully")
@@ -509,6 +575,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # updates above, and just as unable to raise.
     floorplan = HADispatchFloorplan(hass, coordinator)
     coordinator.floorplan = floorplan
+    # The installer's own room/entity corrections, read before the first poll
+    # so a deploy arriving immediately already has them to lay over the new
+    # manifests rather than placing everything from the estimate alone.
+    await floorplan.async_load()
 
     # Backup reporting: this installation's own backups, so the server can
     # notice a schedule that stopped or an archive that shrank.

@@ -442,6 +442,39 @@ FLOORPLAN_DASHBOARDS_STORAGE_KEY = "lovelace_dashboards"
 FLOORPLAN_DASHBOARD_STORAGE_KEY = f"lovelace.{FLOORPLAN_DASHBOARD_URL_PATH}"
 FLOORPLAN_STORAGE_VERSION = 1
 
+# The installer's own corrections to where a device sits, persisted in this
+# integration's own Store (not Lovelace's). The render pipeline's automatic
+# placement is, in the customer's words, "weak at BEST" until a definitive
+# inventory exists per project, so an installer standing in the house is the
+# best source of truth available -- and a correction is worthless if the next
+# redeploy, which rebuilds the whole dashboard from freshly downloaded
+# manifests, throws it away. Keyed by ha_map.json's own device slug (e.g.
+# `thermostat.great_room.01`), which is stable across a redeploy; never by the
+# bound Home Assistant entity id, which is exactly what a correction changes,
+# nor by a position in the manifest's device list, which reorders freely.
+# Each value is {"room", "floor_key", "bound_entity"} -- a room name as
+# hotspots.json spells it, the level key it belongs to, and a real HA entity
+# id to pin (or None to leave the matcher's own conclusion in place).
+FLOORPLAN_OVERRIDES_STORAGE_KEY = "ha_dispatch_client.floorplan_overrides"
+FLOORPLAN_OVERRIDES_STORAGE_VERSION = 1
+
+# Why an installer's correction was thrown away at redeploy time. Dropped
+# rather than kept: a manifest that no longer lists the device, or a plan
+# that no longer has the room, has moved on, and an override nobody can see
+# and nothing can apply is how this becomes unmaintainable. Both are reported
+# with the deploy so Dispatch can tell the installer their correction is gone.
+FLOORPLAN_OVERRIDE_DROP_NO_DEVICE = "unknown_device"
+FLOORPLAN_OVERRIDE_DROP_NO_ROOM = "unknown_room"
+
+# Reasons a device record carries when a human, not the matcher, decided
+# where it goes. Distinct from the matcher's own reasons ("room_word",
+# "only_entity", ...) on purpose: the deploy report has to be able to say
+# which conclusions were automatic and which were corrected, and each
+# overridden record also carries what the matcher had concluded instead.
+FLOORPLAN_REASON_OVERRIDE_ENTITY = "override_entity"
+FLOORPLAN_REASON_OVERRIDE_ROOM = "override_room"
+FLOORPLAN_REASON_OVERRIDE_DROPPED = "override_dropped"
+
 FLOORPLAN_NOTIFICATION_ID = f"{DOMAIN}_floorplan"
 
 # ha_map.json's `cls` -- the render pipeline's own device class, invented from
