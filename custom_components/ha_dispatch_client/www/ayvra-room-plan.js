@@ -25,11 +25,15 @@
  * holds the authoritative description of this shape, and the two must be
  * changed together. Summary:
  *
- *   type:        "custom:ayvra-room-plan"
- *   image:       backplate URL for this floor
- *   aspect_ratio "400:300" (w:h of the backplate)
- *   floor_key:   hotspots.json's own key for this floor ("Floor_1")
- *   floor_name:  human floor name ("1st Floor")
+ *   type:           "custom:ayvra-room-plan"
+ *   image:          backplate URL for this floor
+ *   aspect_ratio    "400:300" (w:h of the backplate)
+ *   floor_key:      hotspots.json's own key for this floor ("Floor_1")
+ *   floor_name:     human floor name ("1st Floor")
+ *   rotation:       0 | 90 | 180 | 270, clockwise -- the DEFAULT this panel
+ *                   starts at, from plan_transform.json's plan_rotation_deg
+ *   dashboard_path: the dashboard's url_path ("home-3d"), used only to key
+ *                   this panel's rotation override in localStorage
  *   rooms: [{
  *     name:     "Kitchen",
  *     poly:     [[left, top], ...]  percent of the backplate, clockwise
@@ -37,13 +41,44 @@
  *     entities: [{entity, name, icon}, ...]  may be empty
  *   }]
  *
+ * ROTATION. Why it exists, in the customer's own words: "when an installer
+ * mounts an ipad or tablet (there will be one per floor) they need to be able
+ * to walk up to it and configure and make sure that their orientation matches
+ * where they are. This will help them not need to mentally flip an image in
+ * their head." So every panel in the house can be oriented differently, by
+ * hand, at the panel, with no redeploy: `rotation` is only where a panel
+ * STARTS, the rotate control steps it 0 -> 90 -> 180 -> 270 clockwise, and
+ * the choice is remembered per panel under
+ *   ayvra.room-plan.rotation.<dashboard_path>.<floor_key>
+ * in localStorage. A kiosk browser with site data blocked still rotates; it
+ * just does not remember, which is why every storage call is in a try/catch.
+ *
+ * The one bug this feature could introduce is the backplate, the polygons and
+ * the tap targets coming out of register with each other, so they are not
+ * rotated separately at all: the image, the room polygons and the room labels
+ * sit inside ONE `.layer` div and that div is what turns, as a single CSS
+ * transform. Nothing can drift from anything else because nothing moves
+ * relative to anything else. Two things are handled explicitly: at 90 and 270
+ * the plan's aspect ratio inverts, so the layer is sized to the pre-rotation
+ * (image-shaped) box inside a stage sized to the post-rotation one -- the
+ * picture fills the card instead of being letterboxed away from the shapes --
+ * and each room label is counter-rotated by the same angle so the text stays
+ * upright and readable at every step. The scrim and the room panel are
+ * siblings of the layer, never inside it, so the modal never comes up sideways.
+ *
+ * A quarter turn in percent-of-the-backplate space is exactly
+ *   90: (l, t) -> (100 - t, l)   180: (l, t) -> (100 - l, 100 - t)
+ *   270: (l, t) -> (t, 100 - l)
+ * which is floorplan.py's rotate_percent_point() -- the normative definition,
+ * tested there, and the reason one transform on one element is sufficient.
+ *
  * Nothing in here keeps its own copy of entity state: every reading and every
  * toggle position is read out of the `hass` object handed in by the frontend,
  * and every write goes through hass.callService, so the card shows what Home
  * Assistant actually believes rather than what it last asked for.
  */
 
-const ROOM_PLAN_VERSION = "1.0.0";
+const ROOM_PLAN_VERSION = "1.1.0";
 
 // Domains whose single meaningful action is "flip it".
 const TOGGLE_DOMAINS = new Set([
@@ -69,6 +104,20 @@ function domainOf(entityId) {
   return String(entityId || "").split(".")[0];
 }
 
+// The only rotations this product has, decided with the customer: quarter
+// turns, never 45-degree or arbitrary angles.
+const ROTATIONS = [0, 90, 180, 270];
+
+// Anything that is not one of the four is no rotation. A stored value from an
+// older card, a hand-edited localStorage entry and a malformed config all
+// land here. Slightly more lenient than floorplan.py's plan_rotation() in one
+// way, on purpose: a numeric STRING is accepted, because localStorage only
+// ever hands back strings and "90" from there has to mean 90.
+function normaliseRotation(value) {
+  const number = Number(value);
+  return ROTATIONS.indexOf(number) === -1 ? 0 : number;
+}
+
 function clampPercent(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -77,17 +126,17 @@ function clampPercent(value) {
   return Math.min(100, Math.max(0, number));
 }
 
-function aspectPadding(ratio) {
-  // "400:300" -> 75% bottom padding, the classic intrinsic-ratio box. Done
-  // with padding rather than the `aspect-ratio` property so the card keeps
-  // its shape on the older WebViews a wall tablet may be running.
+function aspectRatio(ratio) {
+  // "400:300" -> 0.75, the backplate's height/width. Used as a padding-bottom
+  // percentage rather than the `aspect-ratio` property so the card keeps its
+  // shape on the older WebViews a wall tablet may be running.
   const parts = String(ratio || "").split(":");
   const width = Number(parts[0]);
   const height = Number(parts[1]);
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-    return 62.5; // 8:5, the fallback the generator uses when it has no transform
+    return 0.625; // 8:5, the fallback the generator uses when it has no transform
   }
-  return (height / width) * 100;
+  return height / width;
 }
 
 const STYLES = `
@@ -109,6 +158,20 @@ const STYLES = `
   .stage > * {
     position: absolute;
     inset: 0;
+  }
+  /* Everything that has to stay registered with the backplate lives in a
+     layer, and the layer is what rotates. One transform, one coordinate
+     system: the picture, the polygons, the tap targets and the label anchors
+     cannot come apart because none of them moves relative to the others. */
+  .layer {
+    transform-origin: 50% 50%;
+  }
+  .layer > * {
+    position: absolute;
+    inset: 0;
+  }
+  .layer.focus-layer {
+    pointer-events: none;
   }
   .plate {
     width: 100%;
@@ -332,6 +395,37 @@ const STYLES = `
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
+  /* The rotate control. Sized for a thumb, because it is used exactly once
+     per panel: by an installer standing at a freshly mounted tablet. */
+  .rotate {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    width: 2.75rem;
+    height: 2.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.2));
+    border-radius: 50%;
+    background: var(--card-background-color, #fff);
+    color: var(--primary-text-color, #212121);
+    font-size: 1.3rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.9;
+  }
+  .rotate:hover,
+  .rotate:focus-visible {
+    opacity: 1;
+    border-color: var(--primary-color, #03a9f4);
+    color: var(--primary-color, #03a9f4);
+  }
+  /* Out of the way while a room has focus: the modal is the whole interface
+     at that point, and the scrim is meant to read as covering everything. */
+  .wrap.focused .rotate {
+    display: none;
+  }
 `;
 
 class AyvraRoomPlan extends HTMLElement {
@@ -343,6 +437,8 @@ class AyvraRoomPlan extends HTMLElement {
     this._activeRoom = null;
     this._rows = [];
     this._built = false;
+    this._rotation = 0;
+    this._aspect = 0.625;
     this._onKeyDown = (event) => {
       if (event.key === "Escape" || event.key === "Esc") {
         if (this._activeRoom !== null) {
@@ -391,8 +487,19 @@ class AyvraRoomPlan extends HTMLElement {
       aspect_ratio: config.aspect_ratio ? String(config.aspect_ratio) : "8:5",
       floor_key: config.floor_key ? String(config.floor_key) : "",
       floor_name: config.floor_name ? String(config.floor_name) : "",
+      // The deployed default. A plan from before ha-dispatch grew the field
+      // carries nothing here, which is 0, which is how it has always drawn.
+      rotation: normaliseRotation(config.rotation),
+      dashboard_path: config.dashboard_path ? String(config.dashboard_path) : "",
       rooms,
     };
+    this._aspect = aspectRatio(this._config.aspect_ratio);
+    // This panel's own choice beats the deploy's default, and keeps beating
+    // it across redeploys -- that is the entire point of the override. It is
+    // re-read here rather than once at construction so a redeploy (which
+    // calls setConfig again) cannot quietly reset a mounted tablet.
+    const stored = this._readStoredRotation();
+    this._rotation = stored === null ? this._config.rotation : stored;
     this._activeRoom = null;
     this._built = false;
     this._build();
@@ -443,7 +550,11 @@ class AyvraRoomPlan extends HTMLElement {
     wrap.className = "wrap";
     const stage = document.createElement("div");
     stage.className = "stage";
-    stage.style.paddingBottom = `${aspectPadding(this._config.aspect_ratio)}%`;
+
+    // The rotating layer. The backplate, the room polygons and the room
+    // labels all go in here together and never anywhere else.
+    const plan = document.createElement("div");
+    plan.className = "layer plan";
 
     if (this._config.image) {
       const plate = document.createElement("img");
@@ -452,7 +563,7 @@ class AyvraRoomPlan extends HTMLElement {
       plate.alt = this._config.floor_name
         ? `${this._config.floor_name} floor plan`
         : "Floor plan";
-      stage.appendChild(plate);
+      plan.appendChild(plate);
     }
 
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -464,6 +575,7 @@ class AyvraRoomPlan extends HTMLElement {
     labels.style.position = "absolute";
     labels.style.inset = "0";
     labels.style.pointerEvents = "none";
+    const labelNodes = [];
 
     this._config.rooms.forEach((room, index) => {
       const shape = this._roomShape(room);
@@ -504,6 +616,7 @@ class AyvraRoomPlan extends HTMLElement {
         ? `${room.entities.length} device${room.entities.length === 1 ? "" : "s"}`
         : "no devices";
       label.appendChild(count);
+      labelNodes.push(label);
       labels.appendChild(label);
     });
 
@@ -512,6 +625,10 @@ class AyvraRoomPlan extends HTMLElement {
     // Tapping outside the panel closes it -- the scrim *is* the outside.
     scrim.addEventListener("click", () => this._closeRoom());
 
+    // Its own layer, because the focused room has to be drawn ON TOP of the
+    // scrim (that is the grey-out effect) while still turning with the plan.
+    const focusLayer = document.createElement("div");
+    focusLayer.className = "layer focus-layer";
     const focusSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     focusSvg.setAttribute("class", "focus");
     focusSvg.setAttribute("viewBox", "0 0 100 100");
@@ -547,18 +664,131 @@ class AyvraRoomPlan extends HTMLElement {
     body.className = "body";
     panel.appendChild(body);
 
-    stage.appendChild(svg);
-    stage.appendChild(labels);
+    const rotate = document.createElement("button");
+    rotate.className = "rotate";
+    rotate.type = "button";
+    rotate.textContent = "\u27f3";
+    rotate.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this._stepRotation();
+    });
+
+    plan.appendChild(svg);
+    plan.appendChild(labels);
+    focusLayer.appendChild(focusSvg);
+    stage.appendChild(plan);
     stage.appendChild(scrim);
-    stage.appendChild(focusSvg);
+    stage.appendChild(focusLayer);
     stage.appendChild(panel);
     wrap.appendChild(stage);
+    wrap.appendChild(rotate);
     card.appendChild(wrap);
     root.appendChild(card);
 
-    this._els = { wrap, svg, focusRoom, panel, body, heading: headingName, close };
+    this._els = {
+      wrap,
+      stage,
+      svg,
+      focusRoom,
+      panel,
+      body,
+      heading: headingName,
+      close,
+      rotate,
+      layers: [plan, focusLayer],
+      labelNodes,
+    };
     this._shapes = this._config.rooms.map((room) => this._roomShape(room));
     this._built = true;
+    this._applyRotation();
+  }
+
+  // -- rotation -------------------------------------------------------------
+
+  _storageKey() {
+    // The contract's key, exactly: one entry per dashboard per floor, which
+    // is one entry per mounted panel, which is what the installer is setting.
+    return `ayvra.room-plan.rotation.${this._config.dashboard_path}.${this._config.floor_key}`;
+  }
+
+  _readStoredRotation() {
+    // A kiosk browser with site data blocked throws on the mere property
+    // access, so even getting at localStorage is inside the try.
+    try {
+      const raw = window.localStorage.getItem(this._storageKey());
+      if (raw === null || raw === undefined || raw === "") {
+        return null;
+      }
+      const degrees = Number(raw);
+      return ROTATIONS.indexOf(degrees) === -1 ? null : degrees;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  _writeStoredRotation(degrees) {
+    try {
+      window.localStorage.setItem(this._storageKey(), String(degrees));
+    } catch (err) {
+      // Rotate now, forget later: a panel that cannot remember is still a
+      // panel the installer can orient, and is not a reason to fail.
+    }
+  }
+
+  _stepRotation() {
+    const next = ROTATIONS[(ROTATIONS.indexOf(this._rotation) + 1) % ROTATIONS.length];
+    this._rotation = next === undefined ? 0 : next;
+    this._writeStoredRotation(this._rotation);
+    this._applyRotation();
+  }
+
+  _applyRotation() {
+    if (!this._els) {
+      return;
+    }
+    const degrees = normaliseRotation(this._rotation);
+    const ratio = this._aspect > 0 ? this._aspect : 0.625;
+    const quarter = degrees === 90 || degrees === 270;
+
+    // The stage is the box the card actually occupies, so it carries the
+    // POST-rotation shape: a 4:3 plan turned a quarter is 3:4 on the wall.
+    this._els.stage.style.paddingBottom = `${(quarter ? 100 / ratio : ratio * 100)}%`;
+
+    this._els.layers.forEach((layer) => {
+      if (quarter) {
+        // The layer keeps the PRE-rotation (image-shaped) box, centred in the
+        // stage, so after the turn it lands exactly on the stage's edges.
+        // Without this swap the picture would be letterboxed inside a box of
+        // the wrong shape while the polygons stretched to the box -- the one
+        // way these can come out of register.
+        layer.style.left = "50%";
+        layer.style.top = "50%";
+        layer.style.right = "auto";
+        layer.style.bottom = "auto";
+        layer.style.width = `${100 / ratio}%`;
+        layer.style.height = `${ratio * 100}%`;
+        layer.style.transform = `translate(-50%, -50%) rotate(${degrees}deg)`;
+      } else {
+        layer.style.left = "0";
+        layer.style.top = "0";
+        layer.style.right = "0";
+        layer.style.bottom = "0";
+        layer.style.width = "";
+        layer.style.height = "";
+        layer.style.transform = degrees === 180 ? "rotate(180deg)" : "";
+      }
+    });
+
+    // Labels ride the layer, so they are already in the right place; only
+    // their glyphs need to come back upright. Counter-rotated about each
+    // label's own centre, which is the anchor it is translated onto.
+    this._els.labelNodes.forEach((node) => {
+      node.style.transform = `translate(-50%, -50%) rotate(${-degrees}deg)`;
+    });
+
+    const label = `Rotate the plan (currently ${degrees}\u00b0)`;
+    this._els.rotate.setAttribute("aria-label", label);
+    this._els.rotate.setAttribute("title", label);
   }
 
   _roomShape(room) {

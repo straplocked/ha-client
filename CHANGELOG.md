@@ -26,6 +26,26 @@ All notable changes to HA Dispatch Client will be documented in this file.
   serves the new card instead of the browser's cached copy -- and re-points
   the one resource row rather than leaving a trail of them.
 
+### Added -- the plan can be turned to match the wall it is mounted on
+- Each floor's view can be **rotated in quarter turns**, so an installer who
+  has just mounted a tablet can walk up to it and orient the plan to the way
+  they are facing instead of mentally flipping the image. A round rotate
+  button on the plan steps 0 -> 90 -> 180 -> 270 clockwise.
+- The choice is remembered **per panel**, in that browser, under
+  `ayvra.room-plan.rotation.<dashboard>.<floor>` -- one tablet per floor, each
+  oriented to its own wall, and turning one never moves another. A kiosk
+  browser with site data blocked still rotates; it just forgets on reload.
+- The angle a panel *starts* at comes from the import: `plan_rotation_deg` in
+  each level's `plan_transform.json` entry (0/90/180/270, clockwise). Absent
+  or malformed means no rotation, so every plan deployed before the field
+  existed renders exactly as it did. A panel's own setting always wins over
+  the default, and survives redeploys.
+- Rotation turns the whole coordinate system, not just the picture: the
+  backplate, the room outlines, the tap targets and the label anchors all live
+  in one layer and turn as one transform, so they stay registered at every
+  angle. At 90 and 270 the card's box inverts with the plan rather than
+  letterboxing it, and room names are counter-rotated so they stay upright.
+
 ### Changed
 - A device is placed by its **room**, not by its coordinates: a device the
   pipeline could not anchor to a point is still perfectly placeable, and one

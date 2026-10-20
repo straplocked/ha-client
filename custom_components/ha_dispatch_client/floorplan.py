@@ -88,6 +88,8 @@ from .const import (
     FLOORPLAN_REASON_OVERRIDE_ROOM,
     FLOORPLAN_REPORT_STATUS_DONE,
     FLOORPLAN_REPORT_STATUS_FAILED,
+    FLOORPLAN_ROTATION_KEY,
+    FLOORPLAN_ROTATIONS,
     FLOORPLAN_RESOURCE_ID,
     FLOORPLAN_RESOURCE_TYPE,
     FLOORPLAN_RESOURCES_STORAGE_KEY,
@@ -901,6 +903,101 @@ def _project_exact(x: float, y: float, transform: Dict[str, Any]) -> Tuple[float
     return round(left, 1), round(top, 1)
 
 
+# --- view rotation ------------------------------------------------------------
+
+
+def plan_rotation(transform: Optional[Dict[str, Any]]) -> int:
+    """This floor's DEFAULT view rotation, in degrees clockwise.
+
+    Read out of the level's own plan_transform.json entry under
+    FLOORPLAN_ROTATION_KEY ("plan_rotation_deg"), which ha-dispatch writes at
+    import. Why it exists, in the customer's own words: "when an installer
+    mounts an ipad or tablet (there will be one per floor) they need to be
+    able to walk up to it and configure and make sure that their orientation
+    matches where they are. This will help them not need to mentally flip an
+    image in their head."
+
+    This is only the default the panel starts from. The installer standing at
+    the tablet steps it with the card's own rotate control and that choice is
+    remembered per panel in the browser, so one house's three tablets can all
+    be oriented differently off one deploy -- which is the whole requirement,
+    and why rotation is never baked into the geometry here.
+
+    Only exactly 0, 90, 180 or 270 is honoured, per the cross-repo contract.
+    Everything else is 0: absent (every plan deployed before ha-dispatch grew
+    the field), a string, null, 45, 450, -90, True, NaN. Deliberately strict
+    rather than clever -- quietly reinterpreting -90 as 270 would make this
+    client and the server disagree about what the file says, and a plan that
+    silently renders at an angle nobody chose is worse than one that renders
+    the way it always did.
+    """
+    if not isinstance(transform, dict):
+        return 0
+    value = transform.get(FLOORPLAN_ROTATION_KEY)
+    if value is None:
+        return 0
+    # bool is an int subclass in Python, and True == 1 is not a rotation.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _LOGGER.warning(
+            "Ignoring a non-numeric %s (%r); the plan renders unrotated",
+            FLOORPLAN_ROTATION_KEY,
+            value,
+        )
+        return 0
+    if isinstance(value, float) and not value.is_integer():
+        _LOGGER.warning(
+            "Ignoring a fractional %s (%r); only 0/90/180/270 are legal",
+            FLOORPLAN_ROTATION_KEY,
+            value,
+        )
+        return 0
+    degrees = int(value)
+    if degrees not in FLOORPLAN_ROTATIONS:
+        _LOGGER.warning(
+            "Ignoring an out-of-contract %s (%r); only 0/90/180/270 are legal",
+            FLOORPLAN_ROTATION_KEY,
+            value,
+        )
+        return 0
+    return degrees
+
+
+def rotate_percent_point(
+    left: float, top: float, degrees: Any
+) -> Tuple[float, float]:
+    """Rotate one (left%, top%) point clockwise by `degrees` within the card's
+    own 0-100 percent space. THE NORMATIVE DEFINITION of what this feature's
+    rotation means, in one place, in four lines.
+
+    Percent-of-the-backplate is the one coordinate space in which a quarter
+    turn needs no knowledge of the image's aspect ratio at all: a point at
+    (l%, t%) of a w-by-h plan is the same physical spot as ((100-t)%, l%) of
+    that plan turned a quarter clockwise, whose box is h-by-w. That identity
+    is why the card can rotate the backplate, the room polygons, the labels
+    and the tap targets as ONE transform on ONE element and have them stay
+    registered with each other -- and it is what this function pins down.
+
+    It is a specification, not a step in the deploy: nothing in the render
+    path calls it, because the browser does the rotating (see
+    www/ayvra-room-plan.js, which cites this function by name) and the card
+    config always carries unrotated geometry. It is here, tested, and
+    exported so that the contract shared by this repo, the card and the
+    ha-dispatch importer has exactly one executable answer to "which way is
+    clockwise, and where does the top-left corner end up" -- the question a
+    second implementation gets wrong silently.
+
+    Anything other than 90/180/270 -- including a malformed value that got
+    past plan_rotation -- is treated as no rotation.
+    """
+    if degrees == 90:
+        return (100.0 - top, left)
+    if degrees == 180:
+        return (100.0 - left, 100.0 - top)
+    if degrees == 270:
+        return (top, 100.0 - left)
+    return (left, top)
+
+
 # --- device icons, shown inside a room's controls -----------------------------
 
 # Finer-grained than domain: ha_map.json's `cls` field is the render
@@ -972,6 +1069,8 @@ def build_room_plan_card(
     decisions: Optional[List[Dict[str, Any]]] = None,
     floor_key: str = "",
     floor_name: str = "",
+    rotation: int = 0,
+    dashboard_path: str = FLOORPLAN_DASHBOARD_URL_PATH,
 ) -> Dict[str, Any]:
     """Build one floor's room-first card config: the plan backplate, every
     room as a tappable polygon, and each room's own inventory inside it.
@@ -987,6 +1086,13 @@ def build_room_plan_card(
           "aspect_ratio": "400:300",        # w:h of the backplate image
           "floor_key": "Floor_1",           # hotspots.json's own key
           "floor_name": "1st Floor",        # the human floor name
+          "rotation": 90,                   # 0/90/180/270 clockwise, the
+          #   DEFAULT this panel starts at; plan_transform.json's own
+          #   "plan_rotation_deg" for this floor. See plan_rotation().
+          "dashboard_path": "home-3d",      # the dashboard's url_path, which
+          #   the card needs only to key its per-panel rotation override in
+          #   localStorage ("ayvra.room-plan.rotation.<path>.<floor_key>").
+          #   Passed rather than hardcoded in the JS so the two cannot drift.
           "rooms": [
             {
               "name": "Kitchen",
@@ -1021,6 +1127,15 @@ def build_room_plan_card(
     Polygons are projected point by point, so a tap lands inside the room's
     real shape rather than inside its bounding box.
 
+    `rotation` is carried, never applied. The geometry in this config is
+    always in the backplate's own un-rotated frame, because the backplate is
+    a PNG this client cannot turn: pre-rotating the polygons here would slide
+    every room off the picture underneath them, which is precisely the bug
+    this feature could introduce. The card turns the image, the polygons, the
+    labels and the tap targets together as one transform, starting from this
+    default and honouring whatever the installer last set at that panel --
+    see rotate_percent_point() for what a quarter turn means.
+
     Every room renders and every room taps, including one with nothing in it
     -- the card says so in as many words. A room that is invisible because it
     happens to be empty is a room the installer cannot check.
@@ -1038,6 +1153,8 @@ def build_room_plan_card(
                 "aspect_ratio": "8:5",
                 "floor_key": floor_key,
                 "floor_name": floor_name,
+                "rotation": int(rotation) if rotation in FLOORPLAN_ROTATIONS else 0,
+                "dashboard_path": dashboard_path,
                 "rooms": [],
             }
 
@@ -1171,6 +1288,11 @@ def build_room_plan_card(
         "aspect_ratio": aspect_ratio,
         "floor_key": floor_key,
         "floor_name": floor_name,
+        # Clamped here as well as at the source: build_room_plan_card is
+        # public and a caller that has not been through plan_rotation must
+        # not be able to put 45 in front of the card.
+        "rotation": int(rotation) if rotation in FLOORPLAN_ROTATIONS else 0,
+        "dashboard_path": dashboard_path,
         "rooms": entries,
     }
 
@@ -1292,6 +1414,12 @@ def build_dashboard_views(
     image when that floor has no plan render of its own (a deploy job from
     before per-floor plans).
 
+    Each floor's view rotation default comes from its own plan_transform.json
+    entry (plan_rotation); a floor whose entry predates the field, or carries
+    something that is not one of 0/90/180/270, renders unrotated exactly as
+    it always did. The default is all this side decides -- the installer at
+    the panel has the last word, per panel.
+
     `decisions`, when given, collects one record per device in ha_map.json
     -- bound, or skipped with the reason -- for the deploy report. A device
     on a floor that has no view, or on no known floor at all, is recorded
@@ -1329,6 +1457,8 @@ def build_dashboard_views(
             decisions,
             floor_key=key,
             floor_name=title,
+            rotation=plan_rotation(transform),
+            dashboard_path=FLOORPLAN_DASHBOARD_URL_PATH,
         )
         number = len(views) + 1
         views.append(
@@ -1888,6 +2018,16 @@ class HADispatchFloorplan:
             await self._async_drop_overrides(dropped)
             decisions.extend(dropped_override_decisions(dropped))
             detail += f"; {len(dropped)} installer correction(s) dropped"
+        # Named in the report because an installer looking at a plan that is
+        # not oriented the way they expect needs to know whether the import
+        # asked for that, or whether somebody turned that one tablet.
+        rotated = sorted(
+            f"{key} {plan_rotation(plan_transform.get(key))}deg"
+            for key in (plan_transform if isinstance(plan_transform, dict) else {})
+            if plan_rotation(plan_transform.get(key))
+        )
+        if rotated:
+            detail += f"; plan rotated by default: {', '.join(rotated)}"
         _LOGGER.info(
             "Floorplan deploy %s applied; Home 3D dashboard updated, %d of %d devices placed",
             job_id, placed, total,
@@ -2319,4 +2459,6 @@ __all__ = [
     "build_dashboard_views",
     "build_dashboard_config",
     "build_room_plan_card",
+    "plan_rotation",
+    "rotate_percent_point",
 ]

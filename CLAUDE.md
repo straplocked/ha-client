@@ -80,6 +80,23 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   leaves every wall tablet running the card it downloaded months ago. The row
   is matched ignoring that query string, so a version bump re-points the one
   resource instead of adding another.
+- **View rotation is a display-time concern, never a baked one:** each floor's
+  default comes from `plan_transform.json`'s `plan_rotation_deg` (an integer,
+  one of 0/90/180/270, clockwise; absent or invalid means 0 -- read by
+  `floorplan.py::plan_rotation`) and rides the card config as `rotation`. The
+  installer at the panel has the last word: the card's rotate control steps
+  quarter turns and remembers the choice **per panel** in `localStorage` under
+  `ayvra.room-plan.rotation.<dashboard_url_path>.<floor_key>`, because there
+  is one tablet per floor and each is mounted on a different wall. Geometry in
+  the card config is therefore **always un-rotated** -- the backplate is a PNG
+  this client cannot turn, so pre-rotating the polygons would slide every room
+  off the picture underneath it. In the card, the image, the polygons, the tap
+  targets and the label anchors sit in **one** `.layer` div and that div is
+  what rotates, as a single CSS transform, so they cannot come out of
+  register; at 90/270 the layer keeps the image-shaped box inside a stage
+  sized to the inverted one, and each label is counter-rotated so text stays
+  upright. `floorplan.py::rotate_percent_point` is the normative definition of
+  a quarter turn in percent space, tested there and cited by the card.
 - **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. Full design: `docs/technical/remote-access.md`. A `screen` session (Remote Screen) carries the frontend itself to a headless browser on the Dispatch side: its own local policy (no `/auth`, no raw socket, writes only to `/api`), the admin user, and `screen.py` swapping our token into the browser's WebSocket `auth` frame so a real credential never leaves the house.
 
 ### API Endpoints (server-side)

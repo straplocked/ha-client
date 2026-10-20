@@ -416,6 +416,22 @@ FLOORPLAN_PLAN_TRANSFORM_NAME = "plan_transform.json"
 # hotspots.json / plan_transform.json (e.g. "plan_Floor_1.png").
 FLOORPLAN_PLAN_BACKPLATE_NAME_FMT = "plan_{level_key}.png"
 
+# Per-floor view rotation, read out of that level's own plan_transform.json
+# entry (beside "name" and "elev"). THE CROSS-REPO CONTRACT, decided before
+# this batch and not ours to rename: ha-dispatch writes the key at import,
+# ha-client reads it as the DEFAULT, and a per-panel override set by hand at
+# the tablet wins over it.
+#
+# An integer, one of 0/90/180/270, clockwise, applied at DISPLAY time -- the
+# plan render itself is never re-rendered and the coordinates in the card
+# config are never pre-rotated, because the backplate is a PNG this client
+# cannot rotate: baking the polygons while the image stayed put is exactly
+# how the shapes come unregistered from the picture underneath. Anything
+# else -- absent, a string, 45, null, 450, True -- means 0, so every plan
+# deployed before ha-dispatch grew this field keeps rendering as it did.
+FLOORPLAN_ROTATION_KEY = "plan_rotation_deg"
+FLOORPLAN_ROTATIONS: tuple[int, ...] = (0, 90, 180, 270)
+
 # Cap on a single asset download. Generous for a high-resolution plan
 # render (the GLB this was originally sized for is no longer fetched); exists
 # to bound the damage from a misbehaving or compromised server rather than

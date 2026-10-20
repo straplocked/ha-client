@@ -2318,3 +2318,290 @@ class ServiceWiringTest(unittest.TestCase):
             ["clear", "device", "entity_id", "floor_key", "room"],
         )
         self.assertTrue(documented["fields"]["device"]["required"])
+
+
+# --- view rotation ------------------------------------------------------------
+
+ROTATED_TRANSFORM = {
+    "Floor_1": dict(PLAN_TRANSFORM["Floor_1"], plan_rotation_deg=90),
+}
+
+
+class RotationTransformTest(unittest.TestCase):
+    """What a quarter turn means, pinned down.
+
+    rotate_percent_point is the normative definition of this feature's
+    rotation, shared by the card's JS and by the ha-dispatch importer, so it
+    is worth more than the usual amount of hand-written arithmetic. Every
+    expected pair below was worked out on paper from the picture, never from
+    the function: a test that asks the code what the code thinks passes for a
+    rotation that turns the wrong way, or not at all.
+    """
+
+    # A point near one identifiable corner of the plan: 10% in from the left
+    # edge and 20% down from the top, i.e. just inside the TOP-LEFT corner.
+    # Asymmetric on both axes and nowhere near the centre on purpose -- a
+    # point like (50, 50) or (20, 20) survives a sign error unchanged.
+    NEAR_TOP_LEFT = (10.0, 20.0)
+
+    def test_the_corner_lands_where_a_clockwise_quarter_turn_puts_it(self):
+        # Turn the plan a quarter CLOCKWISE and the top-left corner is now the
+        # top-right corner, so a point just inside it is near the top, well
+        # over to the right: 10% from the top edge, 20% in from the right
+        # edge -> left 80%, top 10%.
+        self.assertEqual(
+            floorplan_mod.rotate_percent_point(*self.NEAR_TOP_LEFT, 90),
+            (80.0, 10.0),
+        )
+
+    def test_the_corner_lands_where_a_half_turn_puts_it(self):
+        # Upside down: top-left becomes bottom-right. 10% in from the left
+        # edge is now 10% in from the right (left 90%), and 20% down from the
+        # top is 20% up from the bottom (top 80%).
+        self.assertEqual(
+            floorplan_mod.rotate_percent_point(*self.NEAR_TOP_LEFT, 180),
+            (90.0, 80.0),
+        )
+
+    def test_the_corner_lands_where_a_three_quarter_turn_puts_it(self):
+        # 270 clockwise is a quarter anticlockwise: top-left becomes
+        # bottom-left. 20% down from the top is now 20% in from the left
+        # (left 20%), and 10% in from the left is 10% up from the bottom
+        # (top 90%).
+        self.assertEqual(
+            floorplan_mod.rotate_percent_point(*self.NEAR_TOP_LEFT, 270),
+            (20.0, 90.0),
+        )
+
+    def test_no_rotation_leaves_the_corner_alone(self):
+        self.assertEqual(
+            floorplan_mod.rotate_percent_point(*self.NEAR_TOP_LEFT, 0),
+            (10.0, 20.0),
+        )
+
+    def test_the_four_angles_are_four_different_places(self):
+        # Guards the guard: if two of the four agreed, one of the assertions
+        # above would be passing by coincidence rather than by rotation.
+        landings = {
+            floorplan_mod.rotate_percent_point(*self.NEAR_TOP_LEFT, degrees)
+            for degrees in (0, 90, 180, 270)
+        }
+        self.assertEqual(len(landings), 4)
+
+    def test_four_quarter_turns_bring_every_point_home(self):
+        # The round trip. A single step can be wrong in a way that the corner
+        # assertions catch; a step that is its own inverse (a swapped axis
+        # with no flip) would come home after two AND after four, which is
+        # why both tests exist rather than just this one.
+        for point in [(10.0, 20.0), (0.0, 0.0), (100.0, 0.0), (99.0, 1.0),
+                      (50.0, 50.0), (37.5, 83.3)]:
+            with self.subTest(point=point):
+                turned = point
+                for _ in range(4):
+                    turned = floorplan_mod.rotate_percent_point(*turned, 90)
+                self.assertEqual(turned, point)
+                # And one step away from home, so "returns" is not "never moved".
+                if point != (50.0, 50.0):
+                    self.assertNotEqual(
+                        floorplan_mod.rotate_percent_point(*point, 90), point
+                    )
+
+
+class PlanRotationReadingTest(unittest.TestCase):
+    """plan_transform.json's plan_rotation_deg, read as a default.
+
+    The cross-repo contract: an integer, one of 0/90/180/270, clockwise;
+    absent or invalid means 0. ha-dispatch is growing the field concurrently,
+    so every plan already in the field is the "absent" case and must keep
+    rendering exactly as it does today.
+    """
+
+    def test_a_legal_rotation_is_read_through(self):
+        for degrees in (0, 90, 180, 270):
+            with self.subTest(degrees=degrees):
+                self.assertEqual(
+                    floorplan_mod.plan_rotation({"plan_rotation_deg": degrees}),
+                    degrees,
+                )
+
+    def test_a_malformed_rotation_is_no_rotation_and_does_not_raise(self):
+        for value in ["90", "", "ninety", 45, -90, 450, 90.5, 1, True, False,
+                      None, [90], {"deg": 90}, float("nan")]:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    floorplan_mod.plan_rotation({"plan_rotation_deg": value}), 0
+                )
+
+    def test_an_absent_field_or_absent_transform_is_no_rotation(self):
+        for transform in [{}, {"name": "1st Floor", "elev": 0.0}, None, "nonsense", []]:
+            with self.subTest(transform=transform):
+                self.assertEqual(floorplan_mod.plan_rotation(transform), 0)
+
+    def test_an_integral_float_is_accepted_because_json_floats_happen(self):
+        self.assertEqual(floorplan_mod.plan_rotation({"plan_rotation_deg": 180.0}), 180)
+
+
+class RotationOnTheCardTest(unittest.TestCase):
+    """The default reaches the panel, and the geometry does not move."""
+
+    def test_the_floors_default_rotation_rides_the_card_config(self):
+        hass = FakeHass(states=[])
+        views = floorplan_mod.build_dashboard_views(
+            hass, HOTSPOTS, {"devices": []},
+            {"Floor_1": "/local/plan_Floor_1.png"}, ROTATED_TRANSFORM,
+        )
+        card = views[0]["cards"][0]
+        self.assertEqual(card["rotation"], 90)
+        # The card needs this only to key the panel's own override; it is
+        # passed rather than hardcoded in the JS so the two cannot drift.
+        self.assertEqual(card["dashboard_path"], "home-3d")
+
+    def test_a_plan_from_before_the_field_existed_is_unrotated(self):
+        hass = FakeHass(states=[])
+        views = floorplan_mod.build_dashboard_views(
+            hass, HOTSPOTS, {"devices": []},
+            {"Floor_1": "/local/plan_Floor_1.png"}, PLAN_TRANSFORM,
+        )
+        self.assertEqual(views[0]["cards"][0]["rotation"], 0)
+
+    def test_each_floor_carries_its_own_rotation(self):
+        hass = FakeHass(states=[])
+        transform = {
+            "Floor_1": dict(TWO_FLOOR_TRANSFORM["Floor_1"], plan_rotation_deg=270),
+            "Floor_2": dict(TWO_FLOOR_TRANSFORM["Floor_2"], plan_rotation_deg=90),
+        }
+        views = floorplan_mod.build_dashboard_views(
+            hass, TWO_FLOOR_HOTSPOTS, {"devices": []},
+            {"Floor_1": "/local/plan_Floor_1.png", "Floor_2": "/local/plan_Floor_2.png"},
+            transform,
+        )
+        self.assertEqual(
+            {v["title"]: v["cards"][0]["rotation"] for v in views},
+            {"1st Floor": 270, "2nd Floor": 90},
+        )
+
+    def test_a_rotated_floor_still_ships_unrotated_geometry(self):
+        """Rotation is applied in the browser, to the picture and the shapes
+        together. Pre-rotating the polygons here while the PNG stayed put is
+        exactly how the rooms would slide off the plan underneath them, so
+        the coordinates a rotated floor ships must be byte-for-byte the ones
+        an unrotated floor ships."""
+        hass = FakeHass(states=[])
+        plain = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/plan.png",
+            transform=PLAN_TRANSFORM["Floor_1"],
+        )
+        turned = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/plan.png",
+            transform=ROTATED_TRANSFORM["Floor_1"], rotation=90,
+        )
+        self.assertEqual(turned["rotation"], 90)
+        self.assertEqual(turned["rooms"], plain["rooms"])
+        # Including the aspect ratio: it describes the IMAGE, which the
+        # browser swaps when it turns the plan.
+        self.assertEqual(turned["aspect_ratio"], plain["aspect_ratio"])
+        self.assertEqual(_room(turned, "Den")["label"], list(DEN_LABEL))
+
+    def test_an_out_of_contract_rotation_cannot_reach_the_card(self):
+        hass = FakeHass(states=[])
+        for degrees in (45, -90, 450, "90", None, True):
+            with self.subTest(degrees=degrees):
+                card = floorplan_mod.build_room_plan_card(
+                    hass, HOTSPOTS["Floor_1"], [], "/local/plan.png",
+                    transform=PLAN_TRANSFORM["Floor_1"], rotation=degrees,
+                )
+                self.assertEqual(card["rotation"], 0)
+
+    def test_a_floor_with_no_geometry_at_all_still_carries_its_rotation(self):
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, [{"name": "Nowhere"}], [], "/local/plan.png", rotation=180,
+        )
+        self.assertEqual(card["rooms"], [])
+        self.assertEqual(card["rotation"], 180)
+        self.assertEqual(card["dashboard_path"], "home-3d")
+
+
+class RotationThroughADeployTest(unittest.TestCase):
+    """End to end: plan_transform.json on disk -> the written dashboard."""
+
+    ROTATED_TRANSFORM_URL = "https://dispatch.example.com/assets/plan_transform.r.json"
+
+    def _assets(self):
+        return dict(ASSETS, **{
+            self.ROTATED_TRANSFORM_URL: json.dumps(ROTATED_TRANSFORM),
+        })
+
+    def test_the_deployed_dashboard_carries_the_imports_rotation(self):
+        notifications.reset()
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=self._assets())
+            manager, _hass = _manager(api, tmp)
+            _run(manager._async_run(
+                _job(plan_transform_url=self.ROTATED_TRANSFORM_URL)
+            ))
+            card = manager._dashboard_store.data["config"]["views"][0]["cards"][0]
+            self.assertEqual(card["rotation"], 90)
+            self.assertEqual(card["dashboard_path"], "home-3d")
+            # And the report names it, so an installer looking at a plan that
+            # is not facing the way they expect can tell whether the import
+            # asked for that or somebody turned that one tablet.
+            self.assertIn("plan rotated by default: Floor_1 90deg",
+                          api.reports[-1]["detail"])
+
+    def test_an_unrotated_deploy_says_nothing_about_rotation(self):
+        notifications.reset()
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=ASSETS)
+            manager, _hass = _manager(api, tmp)
+            _run(manager._async_run(_job()))
+            self.assertEqual(
+                manager._dashboard_store.data["config"]["views"][0]["cards"][0]["rotation"],
+                0,
+            )
+            self.assertNotIn("rotat", api.reports[-1]["detail"])
+
+
+class RotationControlSourceTest(unittest.TestCase):
+    """The card's half of the rotation contract, read off the shipped file.
+
+    The suite is pytest and the card is hand-written JavaScript with no
+    toolchain (deliberately -- see the project's CLAUDE.md), so its behaviour
+    cannot be executed here. What can be checked is that the file still
+    honours the parts of the contract that are strings: the localStorage key,
+    the four legal angles, and that no storage call is made outside a
+    try/catch. A kiosk browser with site data blocked throws on these.
+    """
+
+    @staticmethod
+    def _card_source():
+        return open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "custom_components", "ha_dispatch_client", "www", "ayvra-room-plan.js",
+        )).read()
+
+    def test_the_override_is_keyed_exactly_as_the_contract_says(self):
+        source = self._card_source()
+        self.assertIn(
+            "`ayvra.room-plan.rotation.${this._config.dashboard_path}."
+            "${this._config.floor_key}`",
+            source,
+        )
+
+    def test_only_quarter_turns_are_offered(self):
+        self.assertIn("const ROTATIONS = [0, 90, 180, 270];", self._card_source())
+
+    def test_every_localstorage_call_sits_inside_a_try(self):
+        source = self._card_source()
+        calls = [line for line in source.splitlines()
+                 if "window.localStorage" in line]
+        self.assertEqual(len(calls), 2, calls)
+        for call in calls:
+            # The statement itself, and the `try {` that must precede it.
+            before = source.split(call)[0]
+            self.assertGreater(before.count("try {"), before.count("} catch"))
+
+    def test_the_card_reads_the_rotation_default_out_of_its_config(self):
+        source = self._card_source()
+        self.assertIn("rotation: normaliseRotation(config.rotation)", source)
+        self.assertIn("stored === null ? this._config.rotation : stored", source)

@@ -170,7 +170,7 @@ The `VERSION` file and the `version` field in `manifest.json` must always stay i
 The room-first plan card is JavaScript, so the automated suite can only prove
 that the file was copied, that its Lovelace resource is registered once with a
 version stamp, and that the dashboard config is shaped the way the card
-expects. These four checks are the part only a person can do, and are worth
+expects. These five checks are the part only a person can do, and are worth
 running after a floorplan deploy on a real installation:
 
 1. **The card loaded at all.** Open the *Home 3D* dashboard. Rooms outlined on
@@ -191,6 +191,24 @@ running after a floorplan deploy on a real installation:
 4. **It closes both ways.** Escape closes the panel on a laptop; a tap outside
    the panel closes it on a tablet. Both must work -- the installer's laptop
    has a keyboard and the wall tablet does not.
+5. **Rotation keeps the rooms on the plan.** Tap the round rotate button in the
+   plan's top-right corner. Each tap turns the view a quarter clockwise, and
+   the thing to look at is *registration*: at every one of the four angles the
+   room outlines must still sit on the rooms in the picture, the plan must fill
+   the card rather than sit letterboxed inside it, the room names must stay
+   upright and readable, and a tap must still land in the room you aimed at
+   (tap one and check the panel names that room). Then reload the page: the
+   panel comes back at the angle you left it, because the choice is stored in
+   that browser under
+   `ayvra.room-plan.rotation.home-3d.<floor key>`. A browser with site data
+   blocked -- some kiosk launchers -- still rotates, it just forgets on reload.
+
+Rotation is per panel and per floor, and it is deliberately not synchronised:
+one tablet per floor, each oriented to the wall it is mounted on. The angle the
+panel *starts* at is the import's own `plan_rotation_deg` for that floor, so a
+floor can be shipped already facing roughly the right way; whatever is set at
+the panel afterwards wins, and keeps winning across redeploys. Nothing has to
+be redeployed to turn a plan, and turning one panel never moves another.
 
 A room that reports "No devices are assigned to this room yet" is not a bug:
 the automatic placement is a best guess from an insurance estimate. Use the
