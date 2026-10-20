@@ -215,9 +215,19 @@ class FakeCoordinator:
 
 
 class FakeState:
-    def __init__(self, entity_id, name=None):
+    """Stand-in for homeassistant.core.State.
+
+    Extra keyword arguments land in `attributes`, the way a real state
+    carries `device_class` -- which is what tells an indoor temperature
+    readout apart from a humidity sensor that happens to share a room word.
+    A state constructed without any declares none, exactly like an entity
+    whose integration never set one.
+    """
+
+    def __init__(self, entity_id, name=None, **attributes):
         self.entity_id = entity_id
         self.name = name or entity_id
+        self.attributes = attributes
 
 
 class FakeStates:
@@ -424,6 +434,183 @@ class MatchingRulesTest(unittest.TestCase):
         self.assertIn("light.den.01 in Den", captured.output[0])
         self.assertIn("skipped", captured.output[0])
         self.assertIn("light.hue_lamp_3", captured.output[0])
+
+
+class IndoorReadingTest(unittest.TestCase):
+    """Reported from the field: "lots of the temperature displays on the home
+    3d screens are using OUTDOOR temps to represent indoor temps."
+
+    The cause was two-fold. `cls` rode all the way through the pipeline into
+    ha_map.json and was then used only to pick an icon, so a room's
+    temperature readout would bind to any sensor sharing a room word. And the
+    only-entity-in-its-domain rule bound a house whose single temperature
+    sensor was the weather integration's outdoor one as every room's indoor
+    temperature -- confidently, with a log line claiming success.
+    """
+
+    # A "heat/ac register" estimate line, which the render pipeline classes
+    # as a `vent` in the `sensor` domain: a room's temperature readout.
+    KITCHEN_VENT = {
+        "entity": "vent.kitchen.01",
+        "domain": "sensor",
+        "cls": "vent",
+        "room": "Kitchen",
+        "floor_key": "Floor_1",
+        "source_line": "Heat/AC register - Kitchen",
+    }
+
+    @staticmethod
+    def _outdoor():
+        return FakeState(
+            "sensor.outdoor_temperature", "Outdoor Temperature", device_class="temperature"
+        )
+
+    def _match(self, states, device=None, decisions=None):
+        hass = FakeHass(states=states)
+        return floorplan_mod.async_match_entity(
+            hass, dict(device or self.KITCHEN_VENT), None, decisions
+        )
+
+    # --- the guard -------------------------------------------------------
+
+    def test_a_house_whose_only_temperature_sensor_is_outdoors_binds_nothing(self):
+        # One temperature sensor in the whole house, and it is outdoors.
+        # The old only-entity rule bound it as the Kitchen's temperature.
+        bound = self._match([self._outdoor()])
+        self.assertNotEqual(bound, "sensor.outdoor_temperature")
+        self.assertIsNone(bound)
+
+    def test_the_kitchen_sensor_is_bound_when_the_house_has_one(self):
+        bound = self._match(
+            [
+                self._outdoor(),
+                FakeState(
+                    "sensor.kitchen_temperature", "Kitchen Temperature",
+                    device_class="temperature",
+                ),
+            ]
+        )
+        self.assertNotEqual(bound, "sensor.outdoor_temperature")
+        self.assertEqual(bound, "sensor.kitchen_temperature")
+
+    # --- device_class as a real filter -----------------------------------
+
+    def test_a_sensor_of_the_wrong_device_class_never_satisfies_a_reading(self):
+        # Both share the room word "Kitchen"; neither is a temperature.
+        bound = self._match(
+            [
+                FakeState("sensor.kitchen_humidity", "Kitchen Humidity",
+                          device_class="humidity"),
+                FakeState("sensor.kitchen_power", "Kitchen Power", device_class="power"),
+            ]
+        )
+        self.assertIsNone(bound)
+
+    def test_a_sensor_declaring_no_device_class_is_not_a_temperature(self):
+        bound = self._match(
+            [
+                FakeState("sensor.kitchen_readout", "Kitchen Readout"),
+                FakeState("sensor.den_readout", "Den Readout"),
+            ]
+        )
+        self.assertIsNone(bound)
+
+    def test_a_class_that_pins_down_no_reading_is_matched_on_domain_as_before(self):
+        # The rule the docstring is about, and it must survive: one `climate`
+        # entity is the house's thermostat whichever room it is named after.
+        # A climate entity carries no device_class at all, so demanding one
+        # here would have taken every thermostat off every plan.
+        hass = FakeHass(states=[FakeState("climate.hallway", "Ecobee")])
+        device = {"entity": "thermostat.den.01", "domain": "climate",
+                  "cls": "thermostat", "room": "Den"}
+        self.assertEqual(floorplan_mod.async_match_entity(hass, device), "climate.hallway")
+
+    # --- outdoor-derived readings ----------------------------------------
+
+    def test_an_outdoor_word_in_the_name_rules_a_sensor_out_for_every_room(self):
+        for name, entity_id in (
+            ("Patio Temperature", "sensor.t1"),
+            ("Back Deck Temp", "sensor.t2"),
+            ("Ambient Temperature", "sensor.t3"),
+            ("Kitchen Temperature", "sensor.outside_t4"),
+        ):
+            with self.subTest(name=name):
+                bound = self._match(
+                    [FakeState(entity_id, name, device_class="temperature")]
+                )
+                self.assertIsNone(bound)
+
+    def test_a_weather_entity_is_outdoor_derived_whatever_it_is_called(self):
+        # Its name and entity id carry no outdoor word; the domain is enough.
+        self.assertEqual(
+            floorplan_mod._outdoor_marker(FakeState("weather.home", "Home"), {}), "weather"
+        )
+
+    def test_the_area_an_entity_is_filed_under_can_mark_it_outdoor(self):
+        # Named "Temp 1", so only the Area says where it is.
+        hass = FakeHass(
+            states=[FakeState("sensor.temp_1", "Temp 1", device_class="temperature")]
+        )
+        registry = FakeRegistry(
+            entities=[FakeRegistryEntry("sensor.temp_1", area_id="patio")],
+            areas={"patio": FakeArea("Patio")},
+        )
+        self.addCleanup(_install_registries(registry))
+        self.assertIsNone(
+            floorplan_mod.async_match_entity(hass, dict(self.KITCHEN_VENT))
+        )
+
+    # --- what the deploy report says -------------------------------------
+
+    def test_the_report_says_each_candidate_was_outdoor_or_the_wrong_class(self):
+        decisions = []
+        self._match(
+            [
+                self._outdoor(),
+                FakeState("sensor.kitchen_humidity", "Kitchen Humidity",
+                          device_class="humidity"),
+            ],
+            decisions=decisions,
+        )
+        record = decisions[0]
+        self.assertIsNone(record["bound"])
+        self.assertEqual(record["reason"], "outdoor_only")
+        # The house's whole in-domain entity list is still reported.
+        self.assertEqual(
+            sorted(record["candidates"]),
+            ["sensor.kitchen_humidity", "sensor.outdoor_temperature"],
+        )
+        by_entity = {r["entity"]: r for r in record["rejected"]}
+        self.assertEqual(by_entity["sensor.outdoor_temperature"]["why"], "outdoor")
+        self.assertEqual(by_entity["sensor.outdoor_temperature"]["marker"], "outdoor")
+        self.assertEqual(by_entity["sensor.kitchen_humidity"]["why"], "wrong_device_class")
+        self.assertEqual(by_entity["sensor.kitchen_humidity"]["wanted"], "temperature")
+        self.assertEqual(by_entity["sensor.kitchen_humidity"]["declared"], "humidity")
+
+    def test_a_house_with_no_temperature_sensor_at_all_is_its_own_reason(self):
+        decisions = []
+        self._match(
+            [FakeState("sensor.kitchen_humidity", "Kitchen Humidity",
+                       device_class="humidity")],
+            decisions=decisions,
+        )
+        self.assertEqual(decisions[0]["reason"], "no_device_class_match")
+
+    # --- and the display is omitted, never relabelled ---------------------
+
+    def test_a_room_with_no_indoor_reading_gets_no_display_on_the_card(self):
+        hass = FakeHass(states=[self._outdoor()])
+        card = floorplan_mod.build_picture_elements_card(
+            hass,
+            HOTSPOTS["Floor_1"],
+            [dict(self.KITCHEN_VENT, xy_ft=[5.0, -5.0])],
+            "/local/x.png",
+        )
+        self.assertEqual([e for e in card["elements"] if e["type"] == "state-icon"], [])
+        # Nothing anywhere on the card points at the outdoor sensor.
+        self.assertNotIn("sensor.outdoor_temperature", json.dumps(card))
+        # The room label itself still stands -- it is the reading that is gone.
+        self.assertIn("Kitchen", [e.get("title") for e in card["elements"]])
 
 
 class DecisionRecordTest(unittest.TestCase):

@@ -444,6 +444,45 @@ FLOORPLAN_STORAGE_VERSION = 1
 
 FLOORPLAN_NOTIFICATION_ID = f"{DOMAIN}_floorplan"
 
+# ha_map.json's `cls` -- the render pipeline's own device class, invented from
+# the estimate line item -- mapped to the Home Assistant `device_class` a
+# candidate entity must itself declare before it may be bound to that device.
+# Only classes whose whole point is the *reading* are listed: a "heat/ac
+# register" is placed in the `sensor` domain as a room temperature readout, so
+# binding it to a humidity or power sensor that happens to share a room word
+# puts a confidently wrong number on the homeowner's plan. A cls absent from
+# this map is matched on domain alone, exactly as before -- in particular a
+# `thermostat` is a `climate` entity, which carries no device_class at all.
+FLOORPLAN_DEVICE_CLASS_BY_CLS: dict[str, str] = {
+    "vent": "temperature",
+    "temperature": "temperature",
+}
+
+# A reading taken outdoors is not an indoor room's reading. The first fleet of
+# Home 3D plans showed outdoor temperatures as every room's indoor
+# temperature, because the only temperature sensor in those houses was the
+# weather integration's. An entity in one of these domains, or carrying one of
+# these words in its entity id, its friendly name or the Area it is filed
+# under, can never satisfy a per-room reading. Word tokens, not substrings, so
+# "ambient" does not catch "Ambient-Lite Lamp"'s room; "outdoors" is listed
+# alongside "outdoor" because the tokeniser does not stem.
+FLOORPLAN_OUTDOOR_DOMAINS: frozenset[str] = frozenset({"weather"})
+FLOORPLAN_OUTDOOR_TOKENS: frozenset[str] = frozenset(
+    {
+        "outdoor",
+        "outdoors",
+        "outside",
+        "exterior",
+        "ambient",
+        "roof",
+        "yard",
+        "garden",
+        "patio",
+        "deck",
+        "balcony",
+    }
+)
+
 # Entity keys
 BINARY_SENSOR_PENDING_CONSENT = "pending_consent"
 SENSOR_STATUS = "status"

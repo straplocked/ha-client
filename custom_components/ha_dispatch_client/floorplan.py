@@ -17,11 +17,13 @@ a dashboard, confirm), not a request Dispatch is waiting on synchronously.
 ha_map.json's device slugs (e.g. `thermostat.great_room.01`) are invented by
 the render pipeline from an insurance estimate line item -- they are HA-style
 slugs, not real Home Assistant entity ids. Every device is resolved against
-this installation's actual entities by domain, then by the room name against
-the entity's name and the Area it is filed under (see async_match_entity);
-anything with no confident match is left off the dashboard rather than
-fabricated onto it, per the rule: device icons bound to real entities where a
-matching entity exists, skip the ones that don't.
+this installation's actual entities by domain, by the reading its device
+class asks for (and never from an outdoor sensor, for a room inside the
+house), then by the room name against the entity's name and the Area it is
+filed under (see async_match_entity); anything with no confident match is
+left off the dashboard rather than fabricated onto it, per the rule: device
+icons bound to real entities where a matching entity exists, skip the ones
+that don't.
 """
 from __future__ import annotations
 
@@ -49,10 +51,13 @@ from .const import (
     FLOORPLAN_DASHBOARD_TITLE,
     FLOORPLAN_DASHBOARD_URL_PATH,
     FLOORPLAN_DASHBOARDS_STORAGE_KEY,
+    FLOORPLAN_DEVICE_CLASS_BY_CLS,
     FLOORPLAN_HA_MAP_NAME,
     FLOORPLAN_HOTSPOTS_NAME,
     FLOORPLAN_LOCAL_URL_PREFIX,
     FLOORPLAN_NOTIFICATION_ID,
+    FLOORPLAN_OUTDOOR_DOMAINS,
+    FLOORPLAN_OUTDOOR_TOKENS,
     FLOORPLAN_PLAN_BACKPLATE_NAME_FMT,
     FLOORPLAN_PLAN_TRANSFORM_NAME,
     FLOORPLAN_REPORT_STATUS_DONE,
@@ -149,6 +154,59 @@ def area_tokens_by_entity(hass: HomeAssistant) -> Dict[str, set[str]]:
 _DECISION_CANDIDATES = 10
 
 
+def _state_device_class(state: Any) -> str:
+    """A candidate entity's own `device_class`, as the rest of this
+    integration reads a state attribute (health.py's battery and problem
+    classification), or "" when it declares none.
+
+    Best-effort on the attribute container too: a state object from an older
+    core, or a fake in a test host, may not carry one at all.
+    """
+    attributes = getattr(state, "attributes", None) or {}
+    try:
+        return str(attributes.get("device_class") or "")
+    except AttributeError:
+        return ""
+
+
+def _required_device_class(device: Dict[str, Any]) -> str:
+    """The HA `device_class` a candidate must declare to satisfy this
+    ha_map.json device, or "" when its class does not pin one down.
+
+    This is what makes `cls` a real filter rather than a decoration: it rode
+    all the way through the pipeline into ha_map.json and was then used only
+    to pick an icon, so a room's temperature readout would bind to any
+    sensor in the house that shared a room word -- a humidity sensor, a power
+    meter, or the one outdoor thermometer. See FLOORPLAN_DEVICE_CLASS_BY_CLS.
+    """
+    return FLOORPLAN_DEVICE_CLASS_BY_CLS.get(str(device.get("cls") or "").strip(), "")
+
+
+def _outdoor_marker(state: Any, area_tokens: Dict[str, set[str]]) -> Optional[str]:
+    """Why this entity reads as outdoor-derived, or None if it does not.
+
+    A per-room reading must never be satisfied from outside the house: the
+    reported symptom was exactly this, indoor temperature displays showing
+    the weather integration's outdoor value. The signal is the entity's
+    domain, or an outdoor word in its entity id, its friendly name, or the
+    Area the homeowner filed it under (see FLOORPLAN_OUTDOOR_TOKENS). The
+    marker is returned rather than a bare True so the deploy report can say
+    which word did it.
+    """
+    entity_id = str(getattr(state, "entity_id", "") or "")
+    domain = entity_id.split(".", 1)[0]
+    if domain in FLOORPLAN_OUTDOOR_DOMAINS:
+        return domain
+
+    tokens = (
+        _tokens(entity_id)
+        | _tokens(getattr(state, "name", None))
+        | area_tokens.get(entity_id, set())
+    )
+    hits = sorted(tokens & FLOORPLAN_OUTDOOR_TOKENS)
+    return hits[0] if hits else None
+
+
 def _decide(
     decisions: Optional[List[Dict[str, Any]]],
     device: Dict[str, Any],
@@ -157,6 +215,7 @@ def _decide(
     *,
     via: Optional[str] = None,
     candidates: Any = (),
+    rejected: Any = (),
 ) -> Optional[str]:
     """Record one device's match outcome, and hand `bound` straight back.
 
@@ -165,7 +224,9 @@ def _decide(
     screen rather than from a log on a house nobody can reach. Candidates
     are the entity ids this house actually has in the device's domain --
     which, across a whole report, is the entity list the matcher was
-    working from.
+    working from. `rejected` says which of those candidates were ruled out
+    before the room words were ever scored, and why -- "a wrong number" and
+    "no number at all" look identical on a plan otherwise.
     """
     if decisions is not None:
         decisions.append(
@@ -182,6 +243,7 @@ def _decide(
                 "candidates": [
                     str(getattr(c, "entity_id", c)) for c in list(candidates)[:_DECISION_CANDIDATES]
                 ],
+                "rejected": list(rejected)[:_DECISION_CANDIDATES],
             }
         )
     return bound
@@ -199,28 +261,53 @@ def async_match_entity(
     the render pipeline invented from an insurance estimate line item -- it is
     not a Home Assistant entity id and must never be used as one. What this
     installation can actually confirm is the device's likely HA domain
-    (already normalised into the `domain` field, e.g. "climate") and which
-    room it is in, so matching is domain-filtered and then scored on how many
-    of the room name's words show up in a candidate's friendly name, entity
-    id, or -- when `area_tokens` (see area_tokens_by_entity) knows it -- the
-    Area the homeowner filed it under.
+    (already normalised into the `domain` field, e.g. "climate"), the kind of
+    thing it is (`cls`, e.g. "vent" -- a room temperature readout), and which
+    room it is in. So the candidate list is filtered by domain, then -- for a
+    device whose class pins down a reading (see _required_device_class) -- by
+    the candidate's own `device_class` and by whether that reading comes from
+    outdoors, and only what survives is scored on how many of the room
+    name's words show up in a candidate's friendly name, entity id, or --
+    when `area_tokens` (see area_tokens_by_entity) knows it -- the Area the
+    homeowner filed it under.
 
-    Two rules decide a match, in order:
+    Eligibility, before either rule is applied, for a device asking for a
+    specific reading:
 
-    1. A domain with exactly one entity in the whole house binds it
+    0a. A candidate whose own `device_class` is not the one asked for is not
+        a candidate. One that declares none at all is not either: the plan
+        would be showing a number nobody has said is a temperature.
+    0b. A candidate that reads from outdoors (see _outdoor_marker) can never
+        satisfy an indoor room's display. This is the reported symptom: a
+        house whose only temperature sensor is the weather integration's got
+        that outdoor value shown as every room's indoor temperature.
+
+    Then two rules decide a match, in order:
+
+    1. A domain with exactly one eligible entity in the whole house binds it
        regardless of room. The estimate lists four thermostats; the house has
        one `climate` entity; that entity is the thermostat, whichever room
        the adjuster wrote it against. Room words cannot make this more
-       certain and must not be allowed to make it less.
+       certain and must not be allowed to make it less. "Eligible" is what
+       keeps that reasoning from spreading: a `climate` entity declares no
+       reading, so the thermostat case is untouched, while a per-room
+       temperature readout can only ever reach this rule via a candidate
+       that already passed 0a and 0b.
     2. Otherwise the candidate sharing the most words with the room name
        wins, needing at least one. No shared word, no match: the device is
        skipped on the dashboard, never guessed.
+
+    Nothing here ever falls back to a near-enough entity. A room with no
+    indoor reading to show has its display left off the dashboard rather
+    than relabelled or filled with the outdoor value.
 
     Candidates come from hass.states.async_all(), the enumeration idiom the
     rest of this integration uses (health.py, updates.py). Every decision is
     logged at INFO with its reason and, when `decisions` is given, recorded
     there for the deploy report (see _decide) -- the first real house showed
-    no icons and nobody could reach its log to learn why.
+    no icons and nobody could reach its log to learn why. The report keeps
+    the house's whole in-domain entity list, plus why each ineligible one was
+    ruled out.
     """
     label = f"{device.get('entity') or '?'} in {device.get('room') or '?'}"
     domain = str(device.get("domain") or "").strip()
@@ -242,17 +329,68 @@ def async_match_entity(
         _LOGGER.info("Floorplan device %s skipped: no %s entities exist", label, domain)
         return _decide(decisions, device, None, "no_entities")
 
-    if len(candidates) == 1:
-        only = getattr(candidates[0], "entity_id", None)
+    # `candidates` stays the house's full in-domain list for the report (it
+    # is the installer's only view of what the house has); `eligible` is what
+    # may actually be bound.
+    wanted_class = _required_device_class(device)
+    eligible = candidates
+    rejected: List[Dict[str, Any]] = []
+    if wanted_class:
+        if area_tokens is None:
+            area_tokens = area_tokens_by_entity(hass)
+        eligible = []
+        for state in candidates:
+            entity_id = str(getattr(state, "entity_id", "") or "")
+            declared = _state_device_class(state)
+            if declared != wanted_class:
+                rejected.append(
+                    {
+                        "entity": entity_id,
+                        "why": "wrong_device_class",
+                        "wanted": wanted_class,
+                        "declared": declared,
+                    }
+                )
+                continue
+            marker = _outdoor_marker(state, area_tokens)
+            if marker is not None:
+                rejected.append(
+                    {"entity": entity_id, "why": "outdoor", "marker": marker}
+                )
+                continue
+            eligible.append(state)
+
+        if not eligible:
+            outdoor_only = any(r["why"] == "outdoor" for r in rejected)
+            reason = "outdoor_only" if outdoor_only else "no_device_class_match"
+            _LOGGER.info(
+                "Floorplan device %s skipped: none of %d %s entities is an indoor "
+                "%s reading (%s)",
+                label, len(candidates), domain, wanted_class,
+                ", ".join(f"{r['entity']}={r['why']}" for r in rejected[:8]),
+            )
+            return _decide(
+                decisions, device, None, reason,
+                candidates=candidates, rejected=rejected,
+            )
+
+    if len(eligible) == 1:
+        only = getattr(eligible[0], "entity_id", None)
         _LOGGER.info(
-            "Floorplan device %s bound to %s: the only %s entity", label, only, domain
+            "Floorplan device %s bound to %s: the only eligible %s entity",
+            label, only, domain,
         )
-        return _decide(decisions, device, only, "only_entity", candidates=candidates)
+        return _decide(
+            decisions, device, only, "only_entity",
+            candidates=candidates, rejected=rejected,
+        )
 
     room_tokens = _tokens(device.get("room"))
     if not room_tokens:
         _LOGGER.info("Floorplan device %s skipped: no room name to match on", label)
-        return _decide(decisions, device, None, "no_room", candidates=candidates)
+        return _decide(
+            decisions, device, None, "no_room", candidates=candidates, rejected=rejected
+        )
 
     if area_tokens is None:
         area_tokens = area_tokens_by_entity(hass)
@@ -260,7 +398,7 @@ def async_match_entity(
     best_entity: Optional[str] = None
     best_score = 0
     best_via = ""
-    for state in candidates:
+    for state in eligible:
         entity_id = getattr(state, "entity_id", None)
         name_tokens = _tokens(getattr(state, "name", None)) | _tokens(entity_id)
         area = area_tokens.get(str(entity_id), set())
@@ -276,15 +414,19 @@ def async_match_entity(
             label, best_entity, best_score, best_via,
         )
         return _decide(
-            decisions, device, best_entity, "room_word", via=best_via, candidates=candidates
+            decisions, device, best_entity, "room_word", via=best_via,
+            candidates=candidates, rejected=rejected,
         )
 
     _LOGGER.info(
         "Floorplan device %s skipped: none of %d %s entities share a room word (%s)",
-        label, len(candidates), domain,
-        ", ".join(str(getattr(s, "entity_id", "?")) for s in candidates[:8]),
+        label, len(eligible), domain,
+        ", ".join(str(getattr(s, "entity_id", "?")) for s in eligible[:8]),
     )
-    return _decide(decisions, device, None, "no_shared_word", candidates=candidates)
+    return _decide(
+        decisions, device, None, "no_shared_word",
+        candidates=candidates, rejected=rejected,
+    )
 
 
 # --- coordinate mapping ----------------------------------------------------

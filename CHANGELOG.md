@@ -2,6 +2,28 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [Unreleased]
+
+### Fixed — indoor temperature displays showed the outdoor temperature
+- A Home 3D room's temperature readout could bind to any sensor in the house:
+  `ha_map.json`'s `cls` reached the client and was then used only to pick an
+  icon. It is now a real filter -- a device asking for a temperature only ever
+  binds to an entity declaring that `device_class`, and an entity declaring
+  none is not a match.
+- An outdoor-derived reading can no longer satisfy an indoor room. The
+  `weather` domain, and an outdoor word (outdoor, outside, exterior, ambient,
+  roof, yard, garden, patio, deck, balcony) in an entity's id, friendly name
+  or Area, rule it out. A house whose only temperature sensor was the weather
+  integration's had that one outdoor value shown as every room's indoor
+  temperature.
+- The only-entity-in-its-domain rule now considers only eligible entities, so
+  it still binds the house's single thermostat regardless of room but can no
+  longer bind a per-room reading that the two filters above ruled out.
+- A room with no indoor reading has its display left off the dashboard, never
+  relabelled or filled with the outdoor value, and the deploy report now says
+  which candidates were rejected and why (`wrong_device_class` with the class
+  wanted and declared, or `outdoor` with the word that did it).
+
 ## [1.7.9] - 2026-10-09
 
 ### Fixed
