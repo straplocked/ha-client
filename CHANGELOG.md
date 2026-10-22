@@ -2,6 +2,160 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.8.1] - 2026-10-21
+
+### Added
+- `rebuild_floorplan` service: redraw the Home 3D dashboard from the plan files
+  this installation has already downloaded, asking HA Dispatch for nothing.
+  What it is for is updating the client -- the dashboard on the wall is the one
+  the OLD client drew, and picking up a new card, or a new way of naming rooms,
+  should not mean waking the server and spending a consent on a change the
+  house already holds every byte of. Until now a redraw only happened as a side
+  effect of correcting a device's room, so the only way to get one was to
+  pretend to move something; a deploy path should not rest on a side effect.
+
+### Changed -- the plan reads like a home, not a survey
+- Room names lose the sketch's sub-cell numbering before a homeowner sees
+  them: "Master Bathroom #4" is drawn as "Master Bathroom". Display only --
+  `name` is still the join key a device's room and an installer's correction
+  are matched on, and renaming a key to make it pretty is the move this
+  product forbids everywhere else. See `floorplan.py::room_display_name`.
+- Cells the sketch cut out of one room fold into it: they lose their name chip
+  and a tap on them opens the room's own panel, because tapping any corner of
+  the master bathroom should open the master bathroom rather than an empty
+  panel wearing the same name. A sub-cell that holds controls of its own is
+  never folded -- that would put its devices where no tap could reach them.
+- A room under 50 SF with no controls is drawn without a name chip. It stays
+  tappable. A room WITH controls keeps its name however small it is, because
+  the name is how you find the control.
+- Measured on Paul Scott's house, the reference install: the first floor goes
+  from 20 name chips colliding into an unreadable pile through the middle to
+  11 that can all be read, and the second from 13 to 9. Every one of the 33
+  rooms keeps its polygon and its tap.
+
+## [1.8.0] - 2026-10-20
+
+### Added -- the Home 3D plan is room-first now
+- Tapping a **room** is the interaction: the floor greys out around it and a
+  modal opens holding that room's own inventory -- a toggle for a light or
+  switch, a setpoint for a thermostat, a reading for a sensor. The loose
+  device icons scattered over the plan are gone; a room's inventory lives
+  inside the room. This is the product's primary UI metaphor, in the
+  customer's own words.
+- A new custom Lovelace card, `<ayvra-room-plan>`, ships with the integration
+  at `www/ayvra-room-plan.js` -- hand-written, dependency-free ES with no
+  build step. Rooms are drawn as real SVG polygons over the plan render, so a
+  tap lands inside the room's shape rather than its bounding box. The modal
+  closes on Escape and on a tap outside it, and rooms are reachable by
+  keyboard, because a wall tablet is touch-only but an installer's laptop is
+  not. Every reading and toggle state is read from Home Assistant rather than
+  guessed at locally.
+- A room with nothing matched into it still renders and still taps: it opens
+  a modal that says so, rather than quietly disappearing from the plan.
+- The deploy copies the card beside the plan images and registers it as a
+  Lovelace resource stamped with the client version, so a redeploy actually
+  serves the new card instead of the browser's cached copy -- and re-points
+  the one resource row rather than leaving a trail of them.
+
+### Added -- the room in focus keeps its colours; the rest of the floor greys out
+- Tapping a room now **desaturates and dims the rest of the plan** instead of
+  covering it with a flat scrim, and the focused room is not treated at all --
+  it looks exactly as it did before the tap, because what is drawn over the
+  greyed floor is an untreated copy of the same backplate clipped to that
+  room's own outline. The shape of the house stays readable around the room
+  an installer is standing in, which a scrim takes away.
+- The room's controls **sit on that dimmed backdrop**, as a sheet docked
+  edge-to-edge to the side of the plan furthest from the room in focus, rather
+  than a floating box in the middle that covers the room it belongs to. At 90
+  and 270 degrees the sheet docks below or above instead, because that is
+  where the space is.
+- The transition is animated and is **skipped entirely** for a device asking
+  for reduced motion; the end state is identical either way.
+- **Every colour the card paints is now a CSS custom property derived from a
+  Home Assistant theme variable**, so the plan follows the homeowner's light
+  or dark theme instead of declaring its own. Room names became chips of
+  theme ink on a theme surface: the thing behind them is a photographic render
+  the card has never seen, and a glow over it is legible in one theme only.
+  A theme can retune any of it -- `--ayvra-room-plan-grey`, `-dim`, `-veil`,
+  `-accent` and the rest are documented in `docs/user/deployment.md`.
+
+### Fixed
+- The focused room's outline was drawn square and out of register with the
+  room at every rotation: its `<svg>` is a replaced element and, with no width
+  or height of its own, took the 1:1 ratio of its `viewBox` instead of the
+  plan's box. Found by rendering the card in a headless browser and measuring
+  the pixels, not by reading it.
+
+### Added -- the plan can be turned to match the wall it is mounted on
+- Each floor's view can be **rotated in quarter turns**, so an installer who
+  has just mounted a tablet can walk up to it and orient the plan to the way
+  they are facing instead of mentally flipping the image. A round rotate
+  button on the plan steps 0 -> 90 -> 180 -> 270 clockwise.
+- The choice is remembered **per panel**, in that browser, under
+  `ayvra.room-plan.rotation.<dashboard>.<floor>` -- one tablet per floor, each
+  oriented to its own wall, and turning one never moves another. A kiosk
+  browser with site data blocked still rotates; it just forgets on reload.
+- The angle a panel *starts* at comes from the import: `plan_rotation_deg` in
+  each level's `plan_transform.json` entry (0/90/180/270, clockwise). Absent
+  or malformed means no rotation, so every plan deployed before the field
+  existed renders exactly as it did. A panel's own setting always wins over
+  the default, and survives redeploys.
+- Rotation turns the whole coordinate system, not just the picture: the
+  backplate, the room outlines, the tap targets and the label anchors all live
+  in one layer and turn as one transform, so they stay registered at every
+  angle. At 90 and 270 the card's box inverts with the plan rather than
+  letterboxing it, and room names are counter-rotated so they stay upright.
+
+### Changed
+- A device is placed by its **room**, not by its coordinates: a device the
+  pipeline could not anchor to a point is still perfectly placeable, and one
+  whose room is not on the floor being drawn is reported as
+  `no_room_on_plan` (replacing `unplaced`) and left off, rather than being
+  drawn at a guessed position.
+
+### Added -- an installer can correct where a device sits, and it sticks
+- The automatic placement is a best guess from an insurance estimate. A new
+  `assign_floorplan_device` service lets an installer standing in the house
+  put a device in the room it is really in, pin it to a specific entity when
+  the automatic match got it wrong (or found nothing at all), or clear the
+  correction and hand the device back to the matcher. The plan is redrawn
+  immediately from the assets already on disk -- no round trip to Dispatch.
+- Corrections survive a redeploy, which is the whole point: a deploy rebuilds
+  the dashboard from freshly downloaded manifests, and corrections are laid
+  over those *new* manifests. They are keyed by `ha_map.json`'s own device
+  slug, the one identifier a redeploy cannot change -- not by list position
+  (a fresh manifest reorders freely) and not by the entity the last deploy
+  bound (which is exactly what a correction changes).
+- Matching and corrections are two separate layers, so the deploy report can
+  say which placements a human had to fix: an overridden device reports
+  `override_room` or `override_entity`, and every record now carries
+  `matched` (what the matcher concluded) alongside `bound` (what the plan
+  shows) plus the correction that separated them.
+- A correction whose device is no longer in the manifest, or whose room is no
+  longer on the plan, is dropped, pruned from the store and reported with the
+  deploy as `override_dropped`. Silently retaining dead corrections forever is
+  how this becomes unmaintainable; silently discarding a live one is worse.
+
+### Fixed — indoor temperature displays showed the outdoor temperature
+- A Home 3D room's temperature readout could bind to any sensor in the house:
+  `ha_map.json`'s `cls` reached the client and was then used only to pick an
+  icon. It is now a real filter -- a device asking for a temperature only ever
+  binds to an entity declaring that `device_class`, and an entity declaring
+  none is not a match.
+- An outdoor-derived reading can no longer satisfy an indoor room. The
+  `weather` domain, and an outdoor word (outdoor, outside, exterior, ambient,
+  roof, yard, garden, patio, deck, balcony) in an entity's id, friendly name
+  or Area, rule it out. A house whose only temperature sensor was the weather
+  integration's had that one outdoor value shown as every room's indoor
+  temperature.
+- The only-entity-in-its-domain rule now considers only eligible entities, so
+  it still binds the house's single thermostat regardless of room but can no
+  longer bind a per-room reading that the two filters above ruled out.
+- A room with no indoor reading has its display left off the dashboard, never
+  relabelled or filled with the outdoor value, and the deploy report now says
+  which candidates were rejected and why (`wrong_device_class` with the class
+  wanted and declared, or `outdoor` with the word that did it).
+
 ## [1.7.9] - 2026-10-09
 
 ### Fixed

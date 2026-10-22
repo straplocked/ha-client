@@ -179,12 +179,45 @@ Deny dialog and the one-tap off-switch.
 Neither enforces scope -- the server does that before anything is queued. See
 [Remote Access](remote-access.md).
 
+#### `floorplan.py`, `www/ayvra-room-plan.js`
+
+The Home 3D dashboard. `floorplan.py` polls for a deploy job, downloads the
+render pipeline's assets (a top-down plan render per floor, a room hotspot
+map, a device placement map and each floor's feet-to-pixel transform), and
+writes a Lovelace dashboard with one panel view per floor.
+
+Three layers, in this order, and the order is the design:
+
+1. **Matching** -- `async_match_entity` resolves `ha_map.json`'s invented
+   device slugs against real entities, and skips anything it cannot resolve
+   confidently rather than fabricating an entity id. A room's temperature
+   readout must come from an entity declaring `device_class: temperature` and
+   must not come from an outdoor sensor.
+2. **The installer's corrections** -- `async_plan_devices` lays them over the
+   matcher's conclusion as a separate layer, keyed by device slug, re-applied
+   on top of every redeploy's freshly downloaded manifests. The matcher's
+   conclusion stays on the record (`matched`) beside what the plan will show
+   (`bound`), so the deploy report can say which placements a human had to
+   fix.
+3. **The card** -- `build_room_plan_card` reads each device's planning
+   outcome rather than re-resolving it, and groups devices by room.
+   `www/ayvra-room-plan.js` is the custom Lovelace card that draws it:
+   hand-written, dependency-free ES with no build step, registered as a
+   Lovelace resource stamped with the client version so a wall tablet picks
+   up a new card instead of its cached copy.
+
+Rooms are the interaction, not device icons: tapping a room desaturates and
+dims the rest of the floor and opens a sheet holding that room's own
+controls. View rotation is a display-time concern only -- the geometry in the
+card config is always un-rotated, and the card turns the image, the polygons,
+the tap targets and the label anchors as one CSS transform.
+
 #### `__init__.py`
 
 Entry point that:
 - Creates the API client from stored config entry credentials
 - Initializes the coordinator and triggers first refresh
-- Registers 9 services using the singleton pattern
+- Registers 10 services using the singleton pattern
 - Wires the updater and the remote access manager before the first refresh
 - Forwards setup to the sensor, binary_sensor, and update platforms
 - Handles teardown on unload
@@ -309,7 +342,7 @@ For full API documentation, see [Alert API](alert-api.md) and [API Reference](ap
 
 ## Services
 
-The integration exposes 9 services via `Developer Tools > Services`:
+The integration exposes 10 services via `Developer Tools > Services`:
 
 | Service | Purpose |
 |---------|---------|
@@ -322,6 +355,7 @@ The integration exposes 9 services via `Developer Tools > Services`:
 | `install_update` | Install the client release the server is offering |
 | `respond_to_access_request` | Approve or decline a remote access request |
 | `revoke_access` | End a live remote access session |
+| `assign_floorplan_device` | Correct a Home 3D device's room, pin its entity, or clear the correction |
 
 For complete service documentation, see [Services](services.md).
 

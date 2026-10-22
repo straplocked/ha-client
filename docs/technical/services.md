@@ -1,6 +1,6 @@
 # Services Reference
 
-Complete reference for all 9 services exposed by the HA Dispatch Client integration. Services are accessible via **Developer Tools > Services** in the Home Assistant UI, and can be called from automations, scripts, and the REST API.
+Complete reference for all 10 services exposed by the HA Dispatch Client integration. Services are accessible via **Developer Tools > Services** in the Home Assistant UI, and can be called from automations, scripts, and the REST API.
 
 All services use the singleton registration pattern -- they are registered once for the domain and dynamically resolve the active coordinator at call time.
 
@@ -430,6 +430,66 @@ SERVICE_REVOKE_ACCESS_SCHEMA = vol.Schema({
 - Omitting `session_id` ends everything, which is what somebody who wants this
   to stop actually means.
 - See [Remote Access](remote-access.md) for the full design.
+
+---
+
+## assign_floorplan_device
+
+**Full name:** `ha_dispatch_client.assign_floorplan_device`
+
+Record where an installer says a Home 3D device actually is, overruling the
+render pipeline's automatic placement, and redraw the plan immediately.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `device` | string | Yes | `ha_map.json`'s own device slug (e.g. `thermostat.great_room.01`). **Not** a Home Assistant entity id |
+| `room` | string | No | Room name as `hotspots.json` spells it; matched on word tokens, so case and spacing do not matter |
+| `floor_key` | string | No | Level key as `hotspots.json` keys it (e.g. `Floor_1`); only disambiguates a room name shared by two floors |
+| `entity_id` | entity id | No | A real entity to pin, overriding every matching rule |
+| `clear` | boolean | No | Forget the correction; ignores the other fields |
+
+### Schema (voluptuous)
+
+```python
+SERVICE_ASSIGN_FLOORPLAN_DEVICE_SCHEMA = vol.Schema({
+    vol.Required("device"): cv.string,
+    vol.Optional("room"): cv.string,
+    vol.Optional("floor_key"): cv.string,
+    vol.Optional("entity_id"): cv.entity_id,
+    vol.Optional("clear", default=False): cv.boolean,
+})
+```
+
+### Handler behavior
+
+1. Merges the named fields into whatever correction that device already had,
+   so moving a device and then pinning its entity takes two calls rather than
+   forcing the second to restate the first
+2. Persists it to this integration's own `Store`, keyed by the device slug
+3. Rebuilds the dashboard from the assets already in
+   `/config/www/ha_dispatch/floorplan/` -- no round trip to Dispatch
+
+### Notes
+
+- Corrections are applied **after** matching, as a distinct layer
+  (`floorplan.py::async_plan_devices`), so the deploy report can say which
+  placements a human had to fix: an overridden device's record reads
+  `override_room` or `override_entity` and carries `matched` (what the matcher
+  concluded) alongside `bound` (what the plan shows).
+- A correction that names a room moves the device onto that room's floor and
+  re-anchors it to that room's centroid, then re-runs the matcher against the
+  corrected room. A correction that pins an entity skips matching entirely,
+  and is the only thing that can place a device the matcher could not resolve
+  -- an unmatched device is still left off the plan rather than fabricated
+  onto it.
+- They are keyed by the plan's device slug because that is the one identifier
+  a redeploy cannot change: a fresh `ha_map.json` reorders its devices freely,
+  and the entity a deploy bound is exactly what a correction changes.
+- A correction whose device is absent from the new manifest, or whose room is
+  absent from the new plan, is dropped, pruned from the store and reported
+  with the deploy as a device record with reason `override_dropped`.
 
 ---
 

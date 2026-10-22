@@ -5,7 +5,7 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.7.9 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.8.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
 - **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`, `cryptography>=41.0.0`
@@ -29,9 +29,12 @@ custom_components/ha_dispatch_client/
 ├── backups.py      # HADispatchBackups - reports the installation's own backups (+ sha256)
 ├── screen.py         # ScreenSockets - Remote Screen's loopback WebSocket, frames over the poll
 ├── repairs.py        # Approve/Deny dialog and the end-access off-switch
+├── floorplan.py      # HADispatchFloorplan - plan assets -> the room-first "Home 3D" dashboard
+├── www/
+│   └── ayvra-room-plan.js  # <ayvra-room-plan> - the room-first custom Lovelace card
 ├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
 ├── manifest.json     # Integration metadata
-├── services.yaml     # 9 service definitions with UI fields
+├── services.yaml     # 11 service definitions with UI fields
 └── strings.json      # UI text, translations, and repair flow copy
 ```
 
@@ -47,6 +50,64 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
 - **Config entry storage:** Server URL, installation_id, access_token, client_id stored in config entry data
 - **Signed self-update:** `updater.py` replaces the integration's own files and restarts HA. Releases must carry an Ed25519 signature verified against a key pinned in `const.py::RELEASE_SIGNING_KEYS` — the server never holds that key, so it can decide whether/when to offer an update but never what code runs. That dict ships **empty**, so self-update fails closed until a key is deliberately pinned. Never add a placeholder.
 - **Component inventory is a full snapshot, never a delta:** `components.py` reports everything the installation is running on every report. The server retires anything absent -- omission *is* removal -- so an agent that sent only what changed would retire almost the whole inventory on its second report. There is deliberately no memory of the previous report in that module. Slugs must be **stable** because the server keys on `(kind, slug)`: they come from the integration domain, the Supervisor add-on slug, or the HACS repository, and **never** from a config entry title or a display name, which users rename. `failing` is set only where Home Assistant actually knows -- a config entry in a failed setup state, or an add-on Supervisor could not start; a *stopped* add-on is not a failure. Cadence is 30 minutes, **not** the 60 s metrics poll, with a forced report immediately after a self-update because the transition is what opens the fleet's observation window. A whole kind being absent is normal: most installs are Core-only. Full design: `docs/technical/component-inventory.md`.
+- **Installer corrections outrank the matcher, and survive a redeploy:** the
+  render pipeline's automatic placement is weak until there is a definitive
+  inventory per project, so `floorplan.py::async_plan_devices` runs the
+  matcher first and then lays the installer's own corrections over it as a
+  **separate layer** -- never folded into `async_match_entity`, because the
+  deploy report has to be able to say which placements a human had to fix
+  (`matched` is the matcher's conclusion, `bound` is what the plan shows).
+  Corrections are keyed by `ha_map.json`'s device slug, the one identifier a
+  redeploy cannot change, and re-applied on top of the **freshly downloaded**
+  manifests -- applying them before the manifest load loses every one of
+  them. One whose device or room the new manifest no longer has is dropped,
+  pruned and reported; neither silently retained nor silently discarded.
+- **Rooms are the UI metaphor, and the card is a custom one:** the Home 3D
+  dashboard draws each floor with `<ayvra-room-plan>`
+  (`www/ayvra-room-plan.js`), not a stock card -- tapping a room greys out the
+  rest of the floor and opens a modal holding **that room's** controls. There
+  are no loose device icons on the plan; a device is placed by its **room**,
+  not by coordinates, so one whose room is not on the floor is reported
+  `no_room_on_plan` and left off. The card is hand-written, dependency-free ES
+  -- **no node, no bundler, no TypeScript, no build step** -- because this repo
+  has no JavaScript toolchain and must stay HACS-installable as it sits; its
+  expected config shape is documented in `floorplan.py::build_room_plan_card`'s
+  docstring and repeated in the card's header, and the two must change
+  together. The deploy copies the card into `FLOORPLAN_ASSET_DIR` (only
+  `/config/www` is served over HTTP) and registers it as a Lovelace resource
+  **with a `?v=<client version>` query string**: Home Assistant caches
+  frontend resources as hard as it caches `manifest.json`, so a bare URL
+  leaves every wall tablet running the card it downloaded months ago. The row
+  is matched ignoring that query string, so a version bump re-points the one
+  resource instead of adding another.
+- **A room's name is display-only; its `name` is a key:** the sketch numbers a
+  room's sub-cells ("Master Bathroom #4", "Foyer #7"), which is survey
+  vocabulary, not something to put in front of a homeowner. `floorplan.py::
+  room_display_name` strips that suffix into a `display` field and leaves
+  `name` alone -- `name` is what a device's room and an installer's correction
+  are matched on. `assign_room_labels` then decides which rooms carry a name
+  chip at all: a sub-cell with no controls folds into its room (`same_room_as`,
+  so a tap there opens the room), and a room under
+  `FLOORPLAN_LABEL_MIN_SF` with no controls goes quiet. **Hiding a chip never
+  hides a room** -- every room keeps its polygon and its tap, and a room with
+  controls is never quietened, because its name is how the controls are found.
+- **View rotation is a display-time concern, never a baked one:** each floor's
+  default comes from `plan_transform.json`'s `plan_rotation_deg` (an integer,
+  one of 0/90/180/270, clockwise; absent or invalid means 0 -- read by
+  `floorplan.py::plan_rotation`) and rides the card config as `rotation`. The
+  installer at the panel has the last word: the card's rotate control steps
+  quarter turns and remembers the choice **per panel** in `localStorage` under
+  `ayvra.room-plan.rotation.<dashboard_url_path>.<floor_key>`, because there
+  is one tablet per floor and each is mounted on a different wall. Geometry in
+  the card config is therefore **always un-rotated** -- the backplate is a PNG
+  this client cannot turn, so pre-rotating the polygons would slide every room
+  off the picture underneath it. In the card, the image, the polygons, the tap
+  targets and the label anchors sit in **one** `.layer` div and that div is
+  what rotates, as a single CSS transform, so they cannot come out of
+  register; at 90/270 the layer keeps the image-shaped box inside a stage
+  sized to the inverted one, and each label is counter-rotated so text stays
+  upright. `floorplan.py::rotate_percent_point` is the normative definition of
+  a quarter turn in percent space, tested there and cited by the card.
 - **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. Full design: `docs/technical/remote-access.md`. A `screen` session (Remote Screen) carries the frontend itself to a headless browser on the Dispatch side: its own local policy (no `/auth`, no raw socket, writes only to `/api`), the admin user, and `screen.py` swapping our token into the browser's WebSocket `auth` frame so a real credential never leaves the house.
 
 ### API Endpoints (server-side)
@@ -74,7 +135,7 @@ that this installation has vanished. It maps to `RemoteAccessUnavailable`, and
 must never map to `InstallationGoneError` -- the re-enrolment handler would
 re-register a healthy installation once a minute, forever.
 
-### Services (9 total)
+### Services (11 total)
 
 | Service | Purpose |
 |---------|---------|
@@ -87,6 +148,8 @@ re-register a healthy installation once a minute, forever.
 | `install_update` | Install the client release the server is offering (restarts HA) |
 | `respond_to_access_request` | Approve or decline a remote access request |
 | `revoke_access` | End a live remote access session (omit the id to end all) |
+| `assign_floorplan_device` | Correct a Home 3D device's room, pin its entity, or clear the correction |
+| `rebuild_floorplan` | Redraw the Home 3D dashboard from the plan files already on disk -- no server round trip |
 
 ## Development Commands
 
@@ -130,16 +193,41 @@ server is the one they made, and that a request leaving the pending list clears
 both its notification and its Repairs issue -- and component inventory: that
 every report is a full snapshot rather than a delta, that a slug survives
 anything a user can rename, and that the inventory does not ride the 60 s
-metrics poll). Home Assistant is not installed in the dev environment;
-`tests/conftest.py` stubs the symbols the integration imports, including
-recording versions of `persistent_notification` and `issue_registry` so tests
-can assert on what was actually put in front of the customer, and Supervisor
-helpers that answer the way a Core-only install does. Add to that conftest when
-new HA imports appear.
+metrics poll). The Home 3D floorplan is covered the same way: that a room's
+temperature never binds to an outdoor sensor or to an entity of the wrong
+`device_class`, that the installer's corrections survive a redeploy and are
+laid over the *new* manifests, that the dashboard is built from
+`<ayvra-room-plan>` and each device lands in its own room's controls, that a
+quarter turn means what `rotate_percent_point` says it means, and that the
+card's Lovelace resource is re-pointed rather than duplicated. Home Assistant
+is not installed in the dev environment; `tests/conftest.py` stubs the symbols
+the integration imports, including recording versions of
+`persistent_notification` and `issue_registry` so tests can assert on what was
+actually put in front of the customer, and Supervisor helpers that answer the
+way a Core-only install does. Add to that conftest when new HA imports appear.
 
 ```bash
 python3 -m pytest tests/ -q
 ```
+
+That currently prints `342 passed, 39 subtests passed`. Two standing limits on
+what that number means, both of which have caught people out:
+
+- **`__init__.py` is exercised by no test at all.** `voluptuous` is not
+  installed here, so a service cannot be invoked in this environment. The
+  service *handlers* are verified only by inspection; the manager methods they
+  call are tested directly, and `ServiceWiringTest` reads `__init__.py` to
+  prove each service name is registered, torn down, and described in both
+  `services.yaml` and `strings.json`. A change to a handler body is unguarded.
+- **`www/ayvra-room-plan.js` has no test runner.** The suite is pytest and the
+  card is hand-written JS with no toolchain, deliberately. What the suite can
+  assert about it, it asserts *as strings* on the shipped file (the
+  `localStorage` key template, the four legal angles, every colour coming from
+  a theme variable, the grey-out never selecting the focused room). Anything
+  about rendering -- registration of the backplate, the polygons and the tap
+  targets at 90/270, the focus treatment, hit testing -- needs a real browser.
+  `docs/user/deployment.md` carries the manual checks; do not take a green
+  suite as evidence the card draws correctly.
 
 Note `api_client.py` imports `aiohttp` at module scope, so `test_reregistration.py`
 needs aiohttp importable even though the HTTP calls are faked.

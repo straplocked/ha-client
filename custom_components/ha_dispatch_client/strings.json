@@ -161,6 +161,37 @@
           "description": "Optional message recorded on the audit receipt"
         }
       }
+    },
+    "assign_floorplan_device": {
+      "name": "Correct a Home 3D device's room",
+      "description": "Tell the Home 3D plan where a device really is. The automatic placement is a best guess from the insurance estimate; this is the installer, standing in the house, correcting it. The correction is kept and re-applied every time the plan is deployed again.",
+      "fields": {
+        "device": {
+          "name": "Device",
+          "description": "The device's id from the plan (e.g. thermostat.great_room.01), not a Home Assistant entity id"
+        },
+        "room": {
+          "name": "Room",
+          "description": "The room the device is actually in, spelled as the plan spells it"
+        },
+        "floor_key": {
+          "name": "Floor",
+          "description": "The floor the room is on (e.g. Floor_1); only needed when two floors share a room name"
+        },
+        "entity_id": {
+          "name": "Entity",
+          "description": "The Home Assistant entity this device is, when the automatic match got it wrong"
+        },
+        "clear": {
+          "name": "Clear",
+          "description": "Forget the correction and put this device back under the automatic matcher"
+        }
+      }
+    },
+    "rebuild_floorplan": {
+      "name": "Rebuild the Home 3D Dashboard",
+      "description": "Redraw the Home 3D plan from the floor-plan files this installation has already downloaded, without asking HA Dispatch for anything. Use it after the client has been updated, so the dashboard is rebuilt by the new version.",
+      "fields": {}
     }
   },
   "issues": {

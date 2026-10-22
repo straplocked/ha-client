@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-20] — Room-first Home 3D plan (v1.8.0)
+
+### Changed
+- `docs/technical/architecture.md`: `floorplan.py` and `www/ayvra-room-plan.js` given their own section — it was the integration's largest module and had never been listed. Documents the three layers and the order that makes them work: matching, then the installer's corrections as a separate layer over it, then a card that reads the planning outcome rather than re-resolving entities
+- `docs/technical/architecture.md`, `docs/INDEX.md`, `docs/leadership/capabilities.md`: the service count went 9 → 10 with `assign_floorplan_device`, and these three were still saying 9. The service table in `architecture.md` gained the missing row
+- `docs/user/deployment.md`: added what has already been measured in a headless browser (tap-target and backplate registration at all four rotations, the focus layer's transform and box matching the plan layer's, the grey-out never reaching the focused room) so it is not re-done, and narrowed the remaining manual checks to what genuinely still needs a human at a real tablet and an old WebView
+- `CLAUDE.md`: the Testing section described a suite that predates the floorplan work. Now lists what the floorplan tests cover, quotes what pytest actually prints, and states the two standing limits plainly — `__init__.py` is exercised by no test because `voluptuous` is absent, and the card's JS has no test runner, so a green suite is not evidence the card draws correctly
+
 ## [2026-10-09] — Backup checksums from network shares (v1.7.9)
 
 ### Changed

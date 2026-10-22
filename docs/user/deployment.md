@@ -163,7 +163,108 @@ ssh straplocked@homeassistant.local "grep version /config/custom_components/ha_d
 | `manifest.json` | Integration metadata including the `version` field |
 | `CHANGELOG.md` | Documents all changes per version |
 
-The `VERSION` file and the `version` field in `manifest.json` must always stay in sync. The `bump_version.sh` script handles this automatically.
+The `VERSION` file and the `version` field in `manifest.json` must always stay in sync. The `bump_version.sh` script handles this automatically, and `tests/test_release_metadata.py` fails the suite if they ever drift -- `scripts/release.sh` also refuses to build, but by then the version has already been deployed and reported to the server.
+
+The version is not only bookkeeping: the Home 3D room-plan card's Lovelace resource is stamped `?v=<version>`, and Home Assistant caches frontend resources hard. **A change to `www/ayvra-room-plan.js` that ships without a version bump re-registers a URL identical to the one already on the wall tablet, and the tablet keeps the card it downloaded before.** Bump the version whenever the card changes.
+
+## Checking the Home 3D room plan by hand
+
+The room-first plan card is JavaScript, so the automated suite can only prove
+that the file was copied, that its Lovelace resource is registered once with a
+version stamp, and that the dashboard config is shaped the way the card
+expects. These six checks are the part that needs a real installation, and are
+worth running after a floorplan deploy on one. "What has already been checked
+in a browser" below narrows checks 5 and 6 to what is genuinely still open.
+
+1. **The card loaded at all.** Open the *Home 3D* dashboard. Rooms outlined on
+   the plan means the resource loaded; a "Custom element doesn't exist:
+   ayvra-room-plan" box means it did not -- check
+   Settings -> Dashboards -> Resources for
+   `/local/ha_dispatch/floorplan/ayvra-room-plan.js?v=...`, and that the file
+   is in `/config/www/ha_dispatch/floorplan/`. If the file is there and the
+   resource is listed but the browser still 404s it, `/config/www` did not
+   exist when Home Assistant started -- it only registers `/local/` at
+   startup -- so restart once. This affects the plan images the same way.
+2. **A room taps.** Tapping inside a room dims the rest of the floor and opens
+   that room's panel. Tapping the plan *outside* any room does nothing, which
+   is correct -- rooms are the only hit targets.
+3. **The controls are live.** A light or switch in the panel toggles the real
+   device, a thermostat's +/- changes the real setpoint, and a sensor shows a
+   reading. Change something from another client and the panel follows it.
+4. **It closes both ways.** Escape closes the panel on a laptop; a tap outside
+   the panel closes it on a tablet. Both must work -- the installer's laptop
+   has a keyboard and the wall tablet does not.
+5. **Rotation keeps the rooms on the plan.** Tap the round rotate button in the
+   plan's top-right corner. Each tap turns the view a quarter clockwise, and
+   the thing to look at is *registration*: at every one of the four angles the
+   room outlines must still sit on the rooms in the picture, the plan must fill
+   the card rather than sit letterboxed inside it, the room names must stay
+   upright and readable, and a tap must still land in the room you aimed at
+   (tap one and check the panel names that room). Then reload the page: the
+   panel comes back at the angle you left it, because the choice is stored in
+   that browser under
+   `ayvra.room-plan.rotation.home-3d.<floor key>`. A browser with site data
+   blocked -- some kiosk launchers -- still rotates, it just forgets on reload.
+6. **The focus treatment, in BOTH themes.** Switch the homeowner's theme to
+   light, tap a room, and look at three things: the rest of the floor is
+   *desaturated and dimmed* rather than painted over -- you should still be
+   able to read the shape of the house around the room -- the room in focus
+   keeps its full colour and looks exactly as it did before the tap, and the
+   room's controls sit on that dimmed backdrop, docked to the edge furthest
+   from the room so the room itself stays visible. Then switch to a dark
+   theme and do it again: the sheet, its text and the room-name chips must all
+   still be legible, at every rotation. The card declares no colour of its
+   own; it derives everything from the theme, so a theme with unusual
+   variables is where this would show up first. A device set to "reduce
+   motion" should land on exactly the same picture with no transition.
+
+### What has already been checked in a browser, and what has not
+
+Checks 5 and 6 above are about geometry and colour, and the geometry half has
+been measured rather than eyeballed -- in **Chrome 141 headless only**, driving
+the shipped card against a four-colour test backplate:
+
+- At all four angles, a tap aimed at each of four rooms landed on that room's
+  own polygon, and the backplate pixel under that same point was that room's
+  own colour -- 16 of 16, exact. So the picture, the room outlines and the tap
+  targets are registered together, including at 90 and 270 where the aspect
+  ratio inverts. The plan fills the stage at every angle; nothing is
+  letterboxed.
+- The focus layer carries the identical CSS transform as the plan layer and
+  occupies the identical box, so the focused room's full-colour copy cannot
+  drift off the room it was cut from when the view is rotated. Room name
+  labels, including the focused room's, are counter-rotated.
+- With a room in focus at a rotated angle, the focused room's pixels keep
+  their exact original colour while every other room measures fully
+  desaturated and dimmed.
+
+What is **still only a human's job**, and is why checks 5 and 6 stay in the
+list: how the treatment reads over a real photographic house render rather
+than flat test colours (is the dim the right amount over a dark floor?); the
+animation as motion rather than as two end states; legibility in both themes
+on the actual tablet; and old tablet WebViews, where `clip-path: polygon()`
+with percentages and hit testing on a rotated SVG have not been exercised at
+all. Checks 1-4 have not been automated in any form.
+
+The card's colours can be tuned per theme without touching the integration;
+every one of them is a CSS custom property on the card:
+`--ayvra-room-plan-ink`, `-ink-soft`, `-surface`, `-surface-alt`, `-divider`,
+`-accent`, `-on-accent`, `-radius`, plus the focus treatment itself:
+`-grey` (0-1 desaturation), `-dim` (brightness of the unfocused plan),
+`-contrast`, `-veil` (how much of the dimmed plan reads through the controls)
+and `-motion` (the transition's duration).
+
+Rotation is per panel and per floor, and it is deliberately not synchronised:
+one tablet per floor, each oriented to the wall it is mounted on. The angle the
+panel *starts* at is the import's own `plan_rotation_deg` for that floor, so a
+floor can be shipped already facing roughly the right way; whatever is set at
+the panel afterwards wins, and keeps winning across redeploys. Nothing has to
+be redeployed to turn a plan, and turning one panel never moves another.
+
+A room that reports "No devices are assigned to this room yet" is not a bug:
+the automatic placement is a best guess from an insurance estimate. Use the
+`assign_floorplan_device` service to put the device in the right room (see
+`docs/user/services-guide.md`); the plan redraws immediately.
 
 ## Caching and Clean Deploy
 
@@ -177,6 +278,7 @@ Home Assistant aggressively caches certain files in memory. After deploying chan
 | `strings.json` | Heavily cached | Needs restart |
 | Python files (`*.py`) | Moderately cached | Reload usually works |
 | `services.yaml` | Moderately cached | Reload usually works |
+| `www/ayvra-room-plan.js` | Cached by the **browser**, not HA | Served from `/local/`; the deploy registers it with a `?v=<version>` stamp so a new version is fetched, but a browser already holding the old URL may need one hard refresh |
 
 **Rule of thumb:** If you change `manifest.json`, expect to need a clean deploy.
 

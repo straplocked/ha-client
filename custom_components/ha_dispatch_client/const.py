@@ -416,6 +416,38 @@ FLOORPLAN_PLAN_TRANSFORM_NAME = "plan_transform.json"
 # hotspots.json / plan_transform.json (e.g. "plan_Floor_1.png").
 FLOORPLAN_PLAN_BACKPLATE_NAME_FMT = "plan_{level_key}.png"
 
+# Per-floor view rotation, read out of that level's own plan_transform.json
+# entry (beside "name" and "elev"). THE CROSS-REPO CONTRACT, decided before
+# this batch and not ours to rename: ha-dispatch writes the key at import,
+# ha-client reads it as the DEFAULT, and a per-panel override set by hand at
+# the tablet wins over it.
+#
+# An integer, one of 0/90/180/270, clockwise, applied at DISPLAY time -- the
+# plan render itself is never re-rendered and the coordinates in the card
+# config are never pre-rotated, because the backplate is a PNG this client
+# cannot rotate: baking the polygons while the image stayed put is exactly
+# how the shapes come unregistered from the picture underneath. Anything
+# else -- absent, a string, 45, null, 450, True -- means 0, so every plan
+# deployed before ha-dispatch grew this field keeps rendering as it did.
+FLOORPLAN_ROTATION_KEY = "plan_rotation_deg"
+
+# Below this many square feet, a room with no controls of its own is drawn
+# without a name chip -- it stays tappable, it just stops shouting.
+#
+# Paul Scott's house is why this exists: 20 rooms on its first floor, and the
+# chips collided into an unreadable pile through the middle, where the plan is
+# all closets, stairs and entries. Every one of those said "no devices", so
+# the clutter was bought with nothing.
+#
+# 50 is a judgement, not a measurement, and it is the number most worth
+# revisiting with a second house: it keeps the Garage Entry (64.8 SF) and
+# drops the Half Bathroom (39.5). Raising it quietens the plan further at the
+# cost of hiding rooms a homeowner would recognise. A room WITH controls is
+# never hidden by this, however small -- its label is how you find the
+# controls.
+FLOORPLAN_LABEL_MIN_SF = 50.0
+FLOORPLAN_ROTATIONS: tuple[int, ...] = (0, 90, 180, 270)
+
 # Cap on a single asset download. Generous for a high-resolution plan
 # render (the GLB this was originally sized for is no longer fetched); exists
 # to bound the damage from a misbehaving or compromised server rather than
@@ -442,7 +474,118 @@ FLOORPLAN_DASHBOARDS_STORAGE_KEY = "lovelace_dashboards"
 FLOORPLAN_DASHBOARD_STORAGE_KEY = f"lovelace.{FLOORPLAN_DASHBOARD_URL_PATH}"
 FLOORPLAN_STORAGE_VERSION = 1
 
+# The installer's own corrections to where a device sits, persisted in this
+# integration's own Store (not Lovelace's). The render pipeline's automatic
+# placement is, in the customer's words, "weak at BEST" until a definitive
+# inventory exists per project, so an installer standing in the house is the
+# best source of truth available -- and a correction is worthless if the next
+# redeploy, which rebuilds the whole dashboard from freshly downloaded
+# manifests, throws it away. Keyed by ha_map.json's own device slug (e.g.
+# `thermostat.great_room.01`), which is stable across a redeploy; never by the
+# bound Home Assistant entity id, which is exactly what a correction changes,
+# nor by a position in the manifest's device list, which reorders freely.
+# Each value is {"room", "floor_key", "bound_entity"} -- a room name as
+# hotspots.json spells it, the level key it belongs to, and a real HA entity
+# id to pin (or None to leave the matcher's own conclusion in place).
+FLOORPLAN_OVERRIDES_STORAGE_KEY = "ha_dispatch_client.floorplan_overrides"
+FLOORPLAN_OVERRIDES_STORAGE_VERSION = 1
+
+# Why an installer's correction was thrown away at redeploy time. Dropped
+# rather than kept: a manifest that no longer lists the device, or a plan
+# that no longer has the room, has moved on, and an override nobody can see
+# and nothing can apply is how this becomes unmaintainable. Both are reported
+# with the deploy so Dispatch can tell the installer their correction is gone.
+FLOORPLAN_OVERRIDE_DROP_NO_DEVICE = "unknown_device"
+FLOORPLAN_OVERRIDE_DROP_NO_ROOM = "unknown_room"
+
+# Reasons a device record carries when a human, not the matcher, decided
+# where it goes. Distinct from the matcher's own reasons ("room_word",
+# "only_entity", ...) on purpose: the deploy report has to be able to say
+# which conclusions were automatic and which were corrected, and each
+# overridden record also carries what the matcher had concluded instead.
+FLOORPLAN_REASON_OVERRIDE_ENTITY = "override_entity"
+FLOORPLAN_REASON_OVERRIDE_ROOM = "override_room"
+FLOORPLAN_REASON_OVERRIDE_DROPPED = "override_dropped"
+
+# The room-first Lovelace card, which is the primary UI metaphor of the whole
+# product: a floor's plan is drawn as tappable rooms, and tapping one opens a
+# modal holding that room's own inventory controls. There are no loose device
+# icons scattered over the plan any more -- a homeowner taps the kitchen, not
+# a 24px glyph that may or may not be the dishwasher.
+#
+# It has to be a custom card: no stock Lovelace card can draw a room polygon
+# as a hit target, let alone grey the rest of the floor out around the room in
+# focus. It is hand-written, dependency-free ES -- no node, no bundler, no
+# TypeScript, no build step -- because this repository has no JavaScript
+# toolchain and must stay installable by HACS exactly as it sits.
+FLOORPLAN_CARD_ELEMENT = "ayvra-room-plan"
+FLOORPLAN_CARD_TYPE = f"custom:{FLOORPLAN_CARD_ELEMENT}"
+FLOORPLAN_CARD_FILENAME = f"{FLOORPLAN_CARD_ELEMENT}.js"
+# Where the card ships inside the integration, relative to this package. The
+# deploy copies it from here into FLOORPLAN_ASSET_DIR, because /local/ (i.e.
+# config/www/) is the only directory Home Assistant serves back out over HTTP
+# without a bespoke static-path registration.
+FLOORPLAN_CARD_SOURCE_DIR = "www"
+
+# The Lovelace resource row that makes the browser load the card at all.
+# Registered as a "module" (an ES module, which is what the card is) and --
+# critically -- with a version query string: Home Assistant caches frontend
+# resources hard, exactly as it caches manifest.json and strings.json, so a
+# redeploy that reuses the bare URL serves the browser's old copy of the card
+# forever. The query string changes with the installed client version, which
+# is the only thing that changes when the card's code does. Matching ignores
+# the query string so a version bump updates the one row instead of leaving a
+# second, stale resource behind.
+FLOORPLAN_RESOURCE_TYPE = "module"
+FLOORPLAN_RESOURCES_STORAGE_KEY = "lovelace_resources"
+FLOORPLAN_RESOURCE_ID = f"{DOMAIN}_room_plan_card"
+
+# A device whose room is not on the floor being drawn. Under the room
+# metaphor a device is placed by its room, not by its coordinates: the plan
+# has no loose icons to anchor, so a device with no xy_ft is perfectly
+# placeable and a device whose room no longer exists on the plan is not.
+FLOORPLAN_REASON_NO_ROOM_ON_PLAN = "no_room_on_plan"
+
 FLOORPLAN_NOTIFICATION_ID = f"{DOMAIN}_floorplan"
+
+# ha_map.json's `cls` -- the render pipeline's own device class, invented from
+# the estimate line item -- mapped to the Home Assistant `device_class` a
+# candidate entity must itself declare before it may be bound to that device.
+# Only classes whose whole point is the *reading* are listed: a "heat/ac
+# register" is placed in the `sensor` domain as a room temperature readout, so
+# binding it to a humidity or power sensor that happens to share a room word
+# puts a confidently wrong number on the homeowner's plan. A cls absent from
+# this map is matched on domain alone, exactly as before -- in particular a
+# `thermostat` is a `climate` entity, which carries no device_class at all.
+FLOORPLAN_DEVICE_CLASS_BY_CLS: dict[str, str] = {
+    "vent": "temperature",
+    "temperature": "temperature",
+}
+
+# A reading taken outdoors is not an indoor room's reading. The first fleet of
+# Home 3D plans showed outdoor temperatures as every room's indoor
+# temperature, because the only temperature sensor in those houses was the
+# weather integration's. An entity in one of these domains, or carrying one of
+# these words in its entity id, its friendly name or the Area it is filed
+# under, can never satisfy a per-room reading. Word tokens, not substrings, so
+# "ambient" does not catch "Ambient-Lite Lamp"'s room; "outdoors" is listed
+# alongside "outdoor" because the tokeniser does not stem.
+FLOORPLAN_OUTDOOR_DOMAINS: frozenset[str] = frozenset({"weather"})
+FLOORPLAN_OUTDOOR_TOKENS: frozenset[str] = frozenset(
+    {
+        "outdoor",
+        "outdoors",
+        "outside",
+        "exterior",
+        "ambient",
+        "roof",
+        "yard",
+        "garden",
+        "patio",
+        "deck",
+        "balcony",
+    }
+)
 
 # Entity keys
 BINARY_SENSOR_PENDING_CONSENT = "pending_consent"

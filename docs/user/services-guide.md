@@ -1,6 +1,6 @@
 # Services Guide
 
-The HA Dispatch Client provides 9 services for testing connectivity, submitting metrics, managing alerts, forcing data refreshes, installing client updates, and answering remote support requests. This guide covers all of them with parameters, examples, and usage patterns.
+The HA Dispatch Client provides 10 services for testing connectivity, submitting metrics, managing alerts, forcing data refreshes, installing client updates, answering remote support requests, and correcting the Home 3D plan. This guide covers all of them with parameters, examples, and usage patterns.
 
 ## Service Summary
 
@@ -15,6 +15,7 @@ The HA Dispatch Client provides 9 services for testing connectivity, submitting 
 | `ha_dispatch_client.install_update` | Install the client release the server is offering |
 | `ha_dispatch_client.respond_to_access_request` | Approve or decline a remote support request |
 | `ha_dispatch_client.revoke_access` | End a live remote support session |
+| `ha_dispatch_client.assign_floorplan_device` | Correct which room a Home 3D device is in, or which entity it is |
 
 > `force_update` and `install_update` sound similar and do very different
 > things. `force_update` refreshes data from the server. `install_update`
@@ -368,6 +369,61 @@ service: ha_dispatch_client.revoke_access
 While a session is live there is also a one-tap **End remote access** entry in
 **Settings → System → Repairs**, which does exactly the same thing. Use
 whichever is closer to hand.
+
+---
+
+### 10. Correct a Home 3D Device's Room
+
+**Service**: `ha_dispatch_client.assign_floorplan_device`
+
+The Home 3D plan places devices automatically from the insurance estimate,
+which is a best guess. This is how an installer standing in the house
+corrects it. The plan is redrawn immediately.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `device` | string | Yes | The device's id **from the plan** (e.g. `thermostat.great_room.01`) -- not a Home Assistant entity id. Read it off the deploy report in HA Dispatch |
+| `room` | string | No | The room the device is really in, spelled as the plan spells it. The device moves to that room's floor and is re-matched against it |
+| `floor_key` | string | No | The floor the room is on (e.g. `Floor_1`). Only needed when two floors have a room with the same name |
+| `entity_id` | entity | No | The entity this device actually is, when the automatic match got it wrong or found nothing. Pinning an entity overrides every matching rule |
+| `clear` | boolean | No | Forget the correction and hand the device back to the automatic matcher |
+
+#### Examples
+
+Move a device into the right room:
+
+```yaml
+service: ha_dispatch_client.assign_floorplan_device
+data:
+  device: thermostat.great_room.01
+  room: Kitchen
+  floor_key: Floor_1
+```
+
+Say which entity a device is, when the match was wrong:
+
+```yaml
+service: ha_dispatch_client.assign_floorplan_device
+data:
+  device: thermostat.great_room.01
+  entity_id: climate.great_room
+```
+
+Undo a correction:
+
+```yaml
+service: ha_dispatch_client.assign_floorplan_device
+data:
+  device: thermostat.great_room.01
+  clear: true
+```
+
+Corrections are kept and re-applied every time the plan is deployed again, so
+a later deploy never undoes this work. A correction whose device or room is no
+longer on the plan is dropped and reported with that deploy, so it does not
+sit there invisibly forever.
 
 ---
 
