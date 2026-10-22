@@ -2,6 +2,20 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- The plan's light no longer turns with the plan. Dispatch renders each floor
+  once per display rotation, and the card swaps to the variant matching its
+  own rotation. One image could not serve all four: a house has a tablet per
+  floor, each with its own rotation, so the same plan is on a panel at 0 and a
+  panel at 270 at the same moment. A deploy from before the variants existed
+  has none, and then the card turns the single image exactly as it did.
+- Backplate filenames are now parsed rather than split. `plan_Floor_1_90.png`
+  was being read as a floor called `Floor_1_90`, which would have put an empty
+  storey on the dashboard; a level key may itself contain underscores, so the
+  rotation is what gets matched.
+
 ## [1.8.1] - 2026-10-21
 
 ### Added
