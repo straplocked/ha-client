@@ -78,11 +78,29 @@
  *   dashboard_path: the dashboard's url_path ("home-3d"), used only to key
  *                   this panel's rotation override in localStorage
  *   rooms: [{
- *     name:     "Kitchen",
+ *     name:          "Kitchen"      the join key. Never drawn.
+ *     display:       "Kitchen"      what the homeowner reads: the same name
+ *                                   with the sketch's sub-cell number taken
+ *                                   off ("Master Bathroom #4"). Optional --
+ *                                   an older deploy sends none and `name` is
+ *                                   used instead.
+ *     show_label:    true           draw a name chip. False for a folded
+ *                                   sub-cell and for a small room with no
+ *                                   controls. THE ROOM IS STILL TAPPABLE.
+ *     same_room_as:  null           index of the room this cell is part of;
+ *                                   a tap here opens that room instead.
  *     poly:     [[left, top], ...]  percent of the backplate, clockwise
  *     label:    [left, top]         percent, where the room name is drawn
  *     entities: [{entity, name, icon}, ...]  may be empty
  *   }]
+ *
+ * NAMES AND CLUTTER. Paul Scott's house has 20 rooms on its first floor, and
+ * the sketch names their sub-cells "Master Bathroom #4", "Foyer #7", "Side
+ * Entry #4". Drawn in full that is a pile of overlapping chips, most of them
+ * reading "no devices", in front of a homeowner at a wall panel. So the
+ * generator decides per room whether the name is worth the ink, and this card
+ * draws what it is told -- it never second-guesses `show_label`, and it never
+ * skips a polygon. A hidden chip costs a name, never a control.
  *
  * ROTATION. Why it exists, in the customer's own words: "when an installer
  * mounts an ipad or tablet (there will be one per floor) they need to be able
@@ -653,6 +671,16 @@ class AyvraRoomPlan extends HTMLElement {
       .filter((room) => room && typeof room === "object")
       .map((room, index) => ({
         name: String(room.name || `Room ${index + 1}`),
+        // What the homeowner reads. floorplan.py's room_display_name() strips
+        // the sketch's sub-cell numbering; `name` stays the join key and is
+        // never shown. An older deploy sends no `display`, and then the name
+        // is the best we have.
+        display: String(room.display || room.name || `Room ${index + 1}`),
+        // A room with no chip is still a room: the polygon is built either
+        // way, so the tap target survives the label being hidden.
+        showLabel: room.show_label !== false,
+        // This cell is part of another room -- tapping it opens that one.
+        sameRoomAs: Number.isInteger(room.same_room_as) ? room.same_room_as : null,
         poly: Array.isArray(room.poly)
           ? room.poly
               .filter((point) => Array.isArray(point) && point.length >= 2)
@@ -777,7 +805,7 @@ class AyvraRoomPlan extends HTMLElement {
       polygon.setAttribute("role", "button");
       polygon.setAttribute(
         "aria-label",
-        `${room.name}: ${room.entities.length} device${room.entities.length === 1 ? "" : "s"}`
+        `${room.display}: ${room.entities.length} device${room.entities.length === 1 ? "" : "s"}`
       );
       polygon.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -793,13 +821,21 @@ class AyvraRoomPlan extends HTMLElement {
       });
       svg.appendChild(polygon);
 
+      // labelNodes stays parallel to rooms -- a hidden chip is a null, not a
+      // missing entry -- because _openRoom() hides the focused room's own chip
+      // by index. A shorter list here would hide the wrong room's name.
+      if (!room.showLabel) {
+        labelNodes.push(null);
+        return;
+      }
+
       const anchor = room.label || this._centroid(shape);
       const label = document.createElement("div");
       label.className = "label";
       label.style.left = `${anchor[0]}%`;
       label.style.top = `${anchor[1]}%`;
       const name = document.createElement("span");
-      name.textContent = room.name;
+      name.textContent = room.display;
       label.appendChild(name);
       const count = document.createElement("span");
       count.className = "count";
@@ -1015,7 +1051,9 @@ class AyvraRoomPlan extends HTMLElement {
     // label's own centre, which is the anchor it is translated onto.
     const upright = `translate(-50%, -50%) rotate(${-degrees}deg)`;
     this._els.labelNodes.forEach((node) => {
-      node.style.transform = upright;
+      if (node) {
+        node.style.transform = upright;
+      }
     });
     this._els.focusLabel.style.transform = upright;
 
@@ -1080,14 +1118,26 @@ class AyvraRoomPlan extends HTMLElement {
   }
 
   _openRoom(index) {
-    const room = this._config.rooms[index];
+    // A cell the sketch cut out of a larger room opens that room instead:
+    // tapping any corner of the master bathroom should open the master
+    // bathroom, not an empty panel wearing the same name. One hop only --
+    // the room a sub-cell points at never points anywhere itself -- so this
+    // cannot loop however the config is shaped.
+    const asked = this._config.rooms[index];
+    const target =
+      asked && asked.sameRoomAs !== null && this._config.rooms[asked.sameRoomAs]
+        ? asked.sameRoomAs
+        : index;
+    const room = this._config.rooms[target];
     if (!room || !this._built) {
       return;
     }
-    this._activeRoom = index;
+    this._activeRoom = target;
+    // Focus returns to the polygon the person actually tapped, not the one it
+    // opened: that is where their finger was.
     this._returnFocusTo = this._els.svg.children[index] || null;
 
-    const shape = this._shapes[index];
+    const shape = this._shapes[target];
     this._els.focusRoom.setAttribute(
       "points",
       shape.map((p) => `${p[0]},${p[1]}`).join(" ")
@@ -1106,17 +1156,19 @@ class AyvraRoomPlan extends HTMLElement {
     const anchor = room.label || this._centroid(shape);
     this._els.focusLabel.style.left = `${anchor[0]}%`;
     this._els.focusLabel.style.top = `${anchor[1]}%`;
-    this._els.focusLabelName.textContent = room.name;
+    this._els.focusLabelName.textContent = room.display;
     this._els.focusLabelCount.textContent = room.entities.length
       ? `${room.entities.length} device${room.entities.length === 1 ? "" : "s"}`
       : "no devices";
     this._els.labelNodes.forEach((node, at) => {
-      node.classList.toggle("hidden", at === index);
+      if (node) {
+        node.classList.toggle("hidden", at === target);
+      }
     });
 
-    this._els.heading.textContent = room.name;
-    this._els.panel.setAttribute("aria-label", room.name);
-    this._dock(this._dockFor(index));
+    this._els.heading.textContent = room.display;
+    this._els.panel.setAttribute("aria-label", room.display);
+    this._dock(this._dockFor(target));
     this._els.wrap.classList.add("focused");
     this._renderRoom(room);
     this._els.close.focus({ preventScroll: true });
@@ -1131,7 +1183,7 @@ class AyvraRoomPlan extends HTMLElement {
     this._els.wrap.classList.remove("focused");
     // The dock class stays on through the closing transition: taking it off
     // now would snap the sheet back to the middle of the card as it faded.
-    this._els.labelNodes.forEach((node) => node.classList.remove("hidden"));
+    this._els.labelNodes.forEach((node) => node && node.classList.remove("hidden"));
     this._els.body.textContent = "";
     if (this._returnFocusTo && typeof this._returnFocusTo.focus === "function") {
       this._returnFocusTo.focus({ preventScroll: true });

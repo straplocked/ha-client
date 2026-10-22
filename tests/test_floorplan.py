@@ -2733,3 +2733,161 @@ class FocusTreatmentSourceTest(unittest.TestCase):
         self.assertIn("rotatePercentPoint(anchor[0], anchor[1], this._rotation)", source)
         for dock in ("dock-left", "dock-right", "dock-top", "dock-bottom"):
             self.assertIn(dock, self._stylesheet(source))
+
+
+# --- room names and label clutter --------------------------------------------
+
+# A floor shaped like the dense middle of Paul Scott's first floor: one real
+# room cut by the sketch into numbered sub-cells, a small room with nothing in
+# it, and a small room that does have a control. Polygons are nonsense squares
+# -- nothing here tests geometry -- but every room has one, which is what lets
+# the tappability assertions mean something.
+def _cell(name, sf, x):
+    return {
+        "name": name,
+        "sf": sf,
+        "centroid": [x, 0.0],
+        "poly_ft": [[x - 1, -1], [x + 1, -1], [x + 1, 1], [x - 1, 1]],
+    }
+
+
+SUBCELL_FLOOR = [
+    _cell("Master Bathroom", 88.7, -20.0),      # the room: has the controls
+    _cell("Master Bathroom #4", 15.7, -16.0),   # sub-cells, all empty
+    _cell("Master Bathroom #5", 32.1, -12.0),
+    _cell("Master Bathroom #6", 6.0, -8.0),
+    _cell("Half Bathroom", 39.5, -4.0),         # small, empty, stands alone
+    _cell("Garage Entry", 64.8, 0.0),           # big enough to keep its name
+    _cell("Powder Room", 20.0, 4.0),            # small BUT has a control
+    _cell("Kitchen", 341.7, 8.0),
+]
+
+SUBCELL_DEVICES = [
+    {"entity": "light.mb.01", "domain": "light", "cls": "light",
+     "room": "Master Bathroom", "floor_key": "Floor_1"},
+    {"entity": "light.powder.01", "domain": "light", "cls": "light",
+     "room": "Powder Room", "floor_key": "Floor_1"},
+]
+
+
+def _subcell_card(rooms=None, devices=None):
+    hass = FakeHass(states=[
+        FakeState("light.master_bathroom", "Master Bathroom Light"),
+        FakeState("light.powder_room", "Powder Room Light"),
+    ])
+    return floorplan_mod.build_room_plan_card(
+        hass,
+        SUBCELL_FLOOR if rooms is None else rooms,
+        SUBCELL_DEVICES if devices is None else devices,
+        "/local/plan.png",
+        transform=PLAN_TRANSFORM["Floor_1"],
+    )
+
+
+def _by_name(card):
+    return {room["name"]: room for room in card["rooms"]}
+
+
+class RoomDisplayNameTest(unittest.TestCase):
+    """The sketch's sub-cell numbering, kept out of a homeowner's way."""
+
+    def test_a_sub_cell_number_is_stripped_for_display(self):
+        for raw, shown in [
+            ("Master Bathroom #4", "Master Bathroom"),
+            ("Foyer #7", "Foyer"),
+            ("Garage Side Stairs #2", "Garage Side Stairs"),
+            ("Boys Full Bathroom #2", "Boys Full Bathroom"),
+        ]:
+            with self.subTest(raw=raw):
+                self.assertEqual(floorplan_mod.room_display_name(raw), shown)
+
+    def test_an_ordinary_name_is_left_exactly_alone(self):
+        for name in ["Kitchen", "Great Room", "Master Bedroom", "Side Entry"]:
+            with self.subTest(name=name):
+                self.assertEqual(floorplan_mod.room_display_name(name), name)
+
+    def test_a_number_that_is_not_a_sub_cell_suffix_survives(self):
+        # Only a trailing #N is the sketch's numbering. A name that is really
+        # about a number keeps it.
+        self.assertEqual(floorplan_mod.room_display_name("Bedroom 2"), "Bedroom 2")
+        self.assertEqual(floorplan_mod.room_display_name("Unit #4 Kitchen"),
+                         "Unit #4 Kitchen")
+
+    def test_a_name_that_is_nothing_but_a_suffix_is_not_emptied(self):
+        # Stripping must never leave a room with no name at all.
+        self.assertEqual(floorplan_mod.room_display_name("#4"), "#4")
+
+    def test_the_join_key_is_not_renamed(self):
+        # The whole reason `display` exists. `name` is matched against a
+        # device's room and an installer's correction; renaming it to make it
+        # pretty would silently unplace devices.
+        card = _subcell_card()
+        self.assertIn("Master Bathroom #4", _by_name(card))
+        self.assertEqual(_by_name(card)["Master Bathroom #4"]["display"],
+                         "Master Bathroom")
+
+
+class RoomLabelTest(unittest.TestCase):
+    """Which rooms carry a name chip -- and the promise that none of this
+    costs a tap."""
+
+    def test_every_room_stays_tappable_however_its_label_is_decided(self):
+        # THE GUARANTEE. Hiding a chip must never remove a room, and must
+        # never leave one without the polygon that makes it tappable.
+        card = _subcell_card()
+        self.assertEqual(len(card["rooms"]), len(SUBCELL_FLOOR))
+        hidden = [r for r in card["rooms"] if not r["show_label"]]
+        self.assertTrue(hidden, "this fixture is pointless if nothing is hidden")
+        for room in card["rooms"]:
+            with self.subTest(room=room["name"]):
+                self.assertGreaterEqual(len(room["poly"]), 3)
+
+    def test_empty_sub_cells_fold_into_the_room_they_belong_to(self):
+        card = _subcell_card()
+        rooms = _by_name(card)
+        primary = card["rooms"].index(rooms["Master Bathroom"])
+        for sub in ["Master Bathroom #4", "Master Bathroom #5", "Master Bathroom #6"]:
+            with self.subTest(sub=sub):
+                self.assertFalse(rooms[sub]["show_label"])
+                self.assertEqual(rooms[sub]["same_room_as"], primary)
+        # ...and the room itself is untouched.
+        self.assertTrue(rooms["Master Bathroom"]["show_label"])
+        self.assertIsNone(rooms["Master Bathroom"]["same_room_as"])
+
+    def test_a_sub_cell_with_its_own_controls_is_never_folded_away(self):
+        # Folding it would put its devices where no tap can reach them.
+        rooms = SUBCELL_FLOOR + [_cell("Master Bathroom #9", 10.0, 12.0)]
+        devices = SUBCELL_DEVICES + [
+            {"entity": "light.mb9.01", "domain": "light", "cls": "light",
+             "room": "Master Bathroom #9", "floor_key": "Floor_1"},
+        ]
+        card = _subcell_card(rooms=rooms, devices=devices)
+        sub = _by_name(card)["Master Bathroom #9"]
+        self.assertTrue(sub["entities"], "fixture must give this cell a control")
+        self.assertIsNone(sub["same_room_as"])
+        self.assertTrue(sub["show_label"])
+
+    def test_a_small_room_with_nothing_in_it_goes_quiet(self):
+        rooms = _by_name(_subcell_card())
+        self.assertFalse(rooms["Half Bathroom"]["show_label"])
+        # ...but it is nobody's sub-cell, so a tap still opens its own panel.
+        self.assertIsNone(rooms["Half Bathroom"]["same_room_as"])
+
+    def test_a_small_room_that_has_a_control_keeps_its_name(self):
+        # The label is how you find the control. Size never overrides that.
+        rooms = _by_name(_subcell_card())
+        powder = rooms["Powder Room"]
+        self.assertTrue(powder["entities"])
+        self.assertTrue(powder["show_label"])
+
+    def test_a_big_empty_room_keeps_its_name(self):
+        self.assertTrue(_by_name(_subcell_card())["Garage Entry"]["show_label"])
+
+    def test_a_manifest_with_no_areas_keeps_every_name(self):
+        # Unknown area is not zero. An older manifest carries no `sf`, and
+        # treating that as "tiny" would strip the names off a whole house.
+        rooms = [{k: v for k, v in cell.items() if k != "sf"}
+                 for cell in SUBCELL_FLOOR]
+        card = _subcell_card(rooms=rooms, devices=[])
+        standalone = [r for r in card["rooms"] if r["same_room_as"] is None]
+        self.assertTrue(all(r["show_label"] for r in standalone))

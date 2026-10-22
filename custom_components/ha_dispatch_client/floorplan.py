@@ -72,6 +72,7 @@ from .const import (
     FLOORPLAN_DEVICE_CLASS_BY_CLS,
     FLOORPLAN_HA_MAP_NAME,
     FLOORPLAN_HOTSPOTS_NAME,
+    FLOORPLAN_LABEL_MIN_SF,
     FLOORPLAN_LOCAL_URL_PREFIX,
     FLOORPLAN_NOTIFICATION_ID,
     FLOORPLAN_OUTDOOR_DOMAINS,
@@ -1059,6 +1060,101 @@ def _domain_icon(device: Dict[str, Any]) -> Optional[str]:
 # --- card building ----------------------------------------------------------
 
 
+_SUBCELL_SUFFIX = re.compile(r"\s*#\s*\d+\s*$")
+
+
+def room_display_name(name: Any) -> str:
+    """What a homeowner should see for a room the sketch calls `name`.
+
+    The sketch numbers a room's sub-cells -- "Master Bathroom #4", "Foyer #7",
+    "Garage Side Stairs #2" -- because a surveyor needs to tell the toilet
+    closet from the vanity. A homeowner standing at a wall panel does not, and
+    "#4" in front of them reads as a defect in the product.
+
+    This strips that suffix for DISPLAY ONLY. The room's `name` is untouched
+    and stays the join key: a device's room and a hotspot's room are matched on
+    the name's word tokens (see build_room_plan_card), an installer's
+    correction names a room by it, and the pipeline keys on it too. Renaming
+    the key to make it prettier is exactly the move this product forbids
+    elsewhere -- a display name is renameable, so it can never be an
+    identifier.
+    """
+    return _SUBCELL_SUFFIX.sub("", str(name or "").strip()).strip() or str(name or "").strip()
+
+
+def _room_area(room: Dict[str, Any]) -> Optional[float]:
+    """A room's floor area in square feet, or None when the manifest has none.
+
+    None is not zero, and the difference matters: an older manifest with no
+    `sf` must not have every one of its labels hidden as "too small". Unknown
+    area means the label stays.
+    """
+    try:
+        area = float(room.get("sf"))
+    except (TypeError, ValueError):
+        return None
+    return area if area > 0 else None
+
+
+def assign_room_labels(
+    entries: List[Dict[str, Any]], areas: List[Optional[float]]
+) -> None:
+    """Decide, in place, which rooms carry a name chip and which are sub-cells.
+
+    Runs AFTER devices have been placed, because both decisions turn on
+    whether a room ended up with any controls.
+
+    Two rules, in this order:
+
+    1. **Sub-cells fold into their room.** Several cells on one floor whose
+       display names agree are one room the sketch happened to cut up. The
+       member carrying the controls is the room; the rest lose their chip and
+       their taps open the room's own panel (`same_room_as`), because tapping
+       any corner of the master bathroom should open the master bathroom, not
+       an empty panel that claims the same name. A sub-cell that has controls
+       of its OWN is never folded away -- that would put its devices somewhere
+       no tap could reach them -- so it keeps its chip and its panel even
+       though a second chip reads the same.
+
+    2. **Small and empty goes quiet.** A room under FLOORPLAN_LABEL_MIN_SF
+       with no controls is drawn without a chip. It stays tappable: a room
+       without a label is not a room without controls, it is a room whose name
+       was not worth the ink.
+
+    Every room keeps its polygon either way. Nothing here removes a tap target.
+    """
+    groups: Dict[frozenset, List[int]] = {}
+    for index, entry in enumerate(entries):
+        entry["display"] = room_display_name(entry["name"])
+        entry["show_label"] = True
+        entry["same_room_as"] = None
+        key = frozenset(_tokens(entry["display"]))
+        if key:
+            groups.setdefault(key, []).append(index)
+
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        # The room is whichever cell holds the controls; area breaks a tie, so
+        # a split with no devices anywhere still folds into its largest part.
+        primary = max(
+            members,
+            key=lambda i: (len(entries[i]["entities"]), areas[i] or 0.0),
+        )
+        for index in members:
+            if index == primary or entries[index]["entities"]:
+                continue
+            entries[index]["show_label"] = False
+            entries[index]["same_room_as"] = primary
+
+    for index, entry in enumerate(entries):
+        if entry["entities"] or entry["same_room_as"] is not None:
+            continue
+        area = areas[index]
+        if area is not None and area < FLOORPLAN_LABEL_MIN_SF:
+            entry["show_label"] = False
+
+
 def build_room_plan_card(
     hass: HomeAssistant,
     rooms: List[Dict[str, Any]],
@@ -1095,7 +1191,18 @@ def build_room_plan_card(
           #   Passed rather than hardcoded in the JS so the two cannot drift.
           "rooms": [
             {
-              "name": "Kitchen",
+              "name": "Kitchen",            # the JOIN KEY: matched against a
+              #   device's room and an installer's correction. Never shown.
+              "display": "Kitchen",         # what the homeowner reads. The
+              #   same thing with the sketch's sub-cell number stripped
+              #   ("Master Bathroom #4" -> "Master Bathroom"). Display only --
+              #   see room_display_name().
+              "show_label": True,           # draw a name chip for this room.
+              #   False for a folded sub-cell, and for a small room with no
+              #   controls. The room is STILL TAPPABLE either way.
+              "same_room_as": None,         # index of the room this cell is
+              #   part of, when the sketch cut one room into several. A tap
+              #   here opens THAT room. None for a room in its own right.
               "poly": [[left, top], ...],   # percent of the backplate
               "label": [left, top],         # percent, the room name anchor
               "entities": [                 # may be empty, and often is
@@ -1165,6 +1272,10 @@ def build_room_plan_card(
         return _project(x, y, bounds)
 
     entries: List[Dict[str, Any]] = []
+    # Parallel to `entries`: each room's real floor area, kept out of the
+    # emitted config because the card has no use for it -- only the label
+    # pass below does.
+    areas: List[Optional[float]] = []
     # Keyed on the room name's word tokens, the same way a correction's room
     # name is looked up (_rooms_by_floor): a device's room and a hotspot's
     # room come from the same pipeline but have both been through a round
@@ -1205,6 +1316,7 @@ def build_room_plan_card(
             "entities": [],
         }
         entries.append(entry)
+        areas.append(_room_area(room))
         key = frozenset(_tokens(name))
         if key and key not in by_name:
             by_name[key] = entry
@@ -1282,6 +1394,8 @@ def build_room_plan_card(
         if w and h:
             aspect_ratio = f"{int(w)}:{int(h)}"
 
+
+    assign_room_labels(entries, areas)
     return {
         "type": FLOORPLAN_CARD_TYPE,
         "image": image_url,
@@ -2459,6 +2573,8 @@ __all__ = [
     "build_dashboard_views",
     "build_dashboard_config",
     "build_room_plan_card",
+    "room_display_name",
+    "assign_room_labels",
     "plan_rotation",
     "rotate_percent_point",
 ]

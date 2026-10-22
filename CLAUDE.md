@@ -80,6 +80,17 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   leaves every wall tablet running the card it downloaded months ago. The row
   is matched ignoring that query string, so a version bump re-points the one
   resource instead of adding another.
+- **A room's name is display-only; its `name` is a key:** the sketch numbers a
+  room's sub-cells ("Master Bathroom #4", "Foyer #7"), which is survey
+  vocabulary, not something to put in front of a homeowner. `floorplan.py::
+  room_display_name` strips that suffix into a `display` field and leaves
+  `name` alone -- `name` is what a device's room and an installer's correction
+  are matched on. `assign_room_labels` then decides which rooms carry a name
+  chip at all: a sub-cell with no controls folds into its room (`same_room_as`,
+  so a tap there opens the room), and a room under
+  `FLOORPLAN_LABEL_MIN_SF` with no controls goes quiet. **Hiding a chip never
+  hides a room** -- every room keeps its polygon and its tap, and a room with
+  controls is never quietened, because its name is how the controls are found.
 - **View rotation is a display-time concern, never a baked one:** each floor's
   default comes from `plan_transform.json`'s `plan_rotation_deg` (an integer,
   one of 0/90/180/270, clockwise; absent or invalid means 0 -- read by

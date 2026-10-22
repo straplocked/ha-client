@@ -430,6 +430,22 @@ FLOORPLAN_PLAN_BACKPLATE_NAME_FMT = "plan_{level_key}.png"
 # else -- absent, a string, 45, null, 450, True -- means 0, so every plan
 # deployed before ha-dispatch grew this field keeps rendering as it did.
 FLOORPLAN_ROTATION_KEY = "plan_rotation_deg"
+
+# Below this many square feet, a room with no controls of its own is drawn
+# without a name chip -- it stays tappable, it just stops shouting.
+#
+# Paul Scott's house is why this exists: 20 rooms on its first floor, and the
+# chips collided into an unreadable pile through the middle, where the plan is
+# all closets, stairs and entries. Every one of those said "no devices", so
+# the clutter was bought with nothing.
+#
+# 50 is a judgement, not a measurement, and it is the number most worth
+# revisiting with a second house: it keeps the Garage Entry (64.8 SF) and
+# drops the Half Bathroom (39.5). Raising it quietens the plan further at the
+# cost of hiding rooms a homeowner would recognise. A room WITH controls is
+# never hidden by this, however small -- its label is how you find the
+# controls.
+FLOORPLAN_LABEL_MIN_SF = 50.0
 FLOORPLAN_ROTATIONS: tuple[int, ...] = (0, 90, 180, 270)
 
 # Cap on a single asset download. Generous for a high-resolution plan

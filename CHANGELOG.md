@@ -2,6 +2,27 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [Unreleased]
+
+### Changed -- the plan reads like a home, not a survey
+- Room names lose the sketch's sub-cell numbering before a homeowner sees
+  them: "Master Bathroom #4" is drawn as "Master Bathroom". Display only --
+  `name` is still the join key a device's room and an installer's correction
+  are matched on, and renaming a key to make it pretty is the move this
+  product forbids everywhere else. See `floorplan.py::room_display_name`.
+- Cells the sketch cut out of one room fold into it: they lose their name chip
+  and a tap on them opens the room's own panel, because tapping any corner of
+  the master bathroom should open the master bathroom rather than an empty
+  panel wearing the same name. A sub-cell that holds controls of its own is
+  never folded -- that would put its devices where no tap could reach them.
+- A room under 50 SF with no controls is drawn without a name chip. It stays
+  tappable. A room WITH controls keeps its name however small it is, because
+  the name is how you find the control.
+- Measured on Paul Scott's house, the reference install: the first floor goes
+  from 20 name chips colliding into an unreadable pile through the middle to
+  11 that can all be read, and the second from 13 to 9. Every one of the 33
+  rooms keeps its polygon and its tap.
+
 ## [1.8.0] - 2026-10-20
 
 ### Added -- the Home 3D plan is room-first now
