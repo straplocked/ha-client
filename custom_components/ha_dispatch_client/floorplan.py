@@ -82,6 +82,7 @@ from .const import (
     FLOORPLAN_OVERRIDES_STORAGE_KEY,
     FLOORPLAN_OVERRIDES_STORAGE_VERSION,
     FLOORPLAN_PLAN_BACKPLATE_NAME_FMT,
+    FLOORPLAN_PLAN_BACKPLATE_ROTATED_NAME_FMT,
     FLOORPLAN_PLAN_TRANSFORM_NAME,
     FLOORPLAN_REASON_NO_ROOM_ON_PLAN,
     FLOORPLAN_REASON_OVERRIDE_DROPPED,
@@ -824,6 +825,40 @@ def dropped_override_decisions(
 # --- coordinate mapping ----------------------------------------------------
 
 
+def _plan_filename(level_key: Any, degrees: int = 0) -> str:
+    """The backplate filename for one floor at one display rotation."""
+    if not degrees:
+        return FLOORPLAN_PLAN_BACKPLATE_NAME_FMT.format(level_key=level_key)
+    return FLOORPLAN_PLAN_BACKPLATE_ROTATED_NAME_FMT.format(
+        level_key=level_key, degrees=int(degrees)
+    )
+
+
+def _parse_plan_filename(name: str) -> Optional[Tuple[str, int]]:
+    """Split a backplate filename into its floor and its rotation.
+
+    `plan_Floor_1.png` -> ("Floor_1", 0); `plan_Floor_1_90.png` ->
+    ("Floor_1", 90). The rotation suffix has to be recognised rather than
+    swallowed: taking the whole stem as the level key would read
+    `plan_Floor_1_90.png` as a floor called "Floor_1_90" and put a storey on
+    the dashboard that does not exist -- and a level key really can contain
+    underscores, which is why this matches the ROTATION rather than assuming
+    the key has none.
+    """
+    prefix, suffix = FLOORPLAN_PLAN_BACKPLATE_NAME_FMT.split("{level_key}", 1)
+    if not name.startswith(prefix) or not name.endswith(suffix):
+        return None
+    stem = name[len(prefix):len(name) - len(suffix)]
+    if not stem:
+        return None
+    for degrees in FLOORPLAN_ROTATIONS:
+        if degrees and stem.endswith(f"_{degrees}"):
+            key = stem[: -len(f"_{degrees}")]
+            if key:
+                return key, degrees
+    return stem, 0
+
+
 def _bounding_box(
     hotspots_by_floor: Dict[str, List[Dict[str, Any]]]
 ) -> Optional[Tuple[float, float, float, float]]:
@@ -1167,6 +1202,7 @@ def build_room_plan_card(
     floor_name: str = "",
     rotation: int = 0,
     dashboard_path: str = FLOORPLAN_DASHBOARD_URL_PATH,
+    images: Optional[Dict[int, str]] = None,
 ) -> Dict[str, Any]:
     """Build one floor's room-first card config: the plan backplate, every
     room as a tappable polygon, and each room's own inventory inside it.
@@ -1407,6 +1443,16 @@ def build_room_plan_card(
         # not be able to put 45 in front of the card.
         "rotation": int(rotation) if rotation in FLOORPLAN_ROTATIONS else 0,
         "dashboard_path": dashboard_path,
+        # The same plan rendered per display rotation, so turning a panel does
+        # not turn the baked light with it. Keys are strings because this ends
+        # up as JSON in Lovelace storage; `image` stays the unrotated one, and
+        # a plan deployed before these existed simply has no map here and the
+        # card keeps rotating the single image exactly as it did.
+        "images": {
+            str(int(deg)): url
+            for deg, url in sorted((images or {}).items())
+            if url and int(deg) in FLOORPLAN_ROTATIONS
+        },
         "rooms": entries,
     }
 
@@ -1508,6 +1554,7 @@ def build_dashboard_views(
     plan_transform: Dict[str, Any],
     fallback_image_url: Optional[str] = None,
     decisions: Optional[List[Dict[str, Any]]] = None,
+    plan_rotation_image_urls: Optional[Dict[str, Dict[int, str]]] = None,
 ) -> List[Dict[str, Any]]:
     """One Lovelace view per floor, lowest floor first: a panel view holding
     that floor's top-down plan card with its room labels and device icons.
@@ -1572,6 +1619,7 @@ def build_dashboard_views(
             floor_key=key,
             floor_name=title,
             rotation=plan_rotation(transform),
+            images=(plan_rotation_image_urls or {}).get(key),
             dashboard_path=FLOORPLAN_DASHBOARD_URL_PATH,
         )
         number = len(views) + 1
@@ -1657,16 +1705,21 @@ def _discover_assets(directory: Path) -> Dict[str, Any]:
     if (directory / FLOORPLAN_BACKPLATE_NAME).is_file():
         paths["image_url"] = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{FLOORPLAN_BACKPLATE_NAME}"
 
-    prefix, suffix = FLOORPLAN_PLAN_BACKPLATE_NAME_FMT.split("{level_key}", 1)
     plan_image_urls: Dict[str, str] = {}
+    rotation_urls: Dict[str, Dict[int, str]] = {}
     for entry in sorted(directory.iterdir()):
-        name = entry.name
-        if not entry.is_file() or not name.startswith(prefix) or not name.endswith(suffix):
+        if not entry.is_file():
             continue
-        level_key = name[len(prefix):len(name) - len(suffix)]
-        if level_key:
-            plan_image_urls[level_key] = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{name}"
+        parsed = _parse_plan_filename(entry.name)
+        if parsed is None:
+            continue
+        level_key, degrees = parsed
+        url = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{entry.name}"
+        rotation_urls.setdefault(level_key, {})[degrees] = url
+        if not degrees:
+            plan_image_urls[level_key] = url
     paths["plan_image_urls"] = plan_image_urls
+    paths["plan_rotation_image_urls"] = rotation_urls
 
     return paths
 
@@ -1862,6 +1915,7 @@ class HADispatchFloorplan:
                 plan_transform,
                 fallback_image_url=paths.get("image_url"),
                 decisions=decisions,
+                plan_rotation_image_urls=paths.get("plan_rotation_image_urls"),
             )
             if not views:
                 raise FloorplanApplyError("No floor had a plan render to show")
@@ -2110,6 +2164,7 @@ class HADispatchFloorplan:
                 plan_transform,
                 fallback_image_url=paths.get("image_url"),
                 decisions=decisions,
+                plan_rotation_image_urls=paths.get("plan_rotation_image_urls"),
             )
             if not views:
                 raise FloorplanApplyError(
@@ -2225,6 +2280,37 @@ class HADispatchFloorplan:
                     continue
                 plan_image_urls[level_key] = f"{FLOORPLAN_LOCAL_URL_PREFIX}/{filename}"
         paths["plan_image_urls"] = plan_image_urls
+
+        # The per-rotation variants, in their own job key so an agent that
+        # predates them is unaffected. Each is optional: a server that renders
+        # only the unrotated plan leaves the panel rotating a single image,
+        # exactly as before, rather than failing the deploy.
+        rotation_urls: Dict[str, Dict[int, str]] = {}
+        advertised = job.get("plan_rotation_urls")
+        if isinstance(advertised, dict):
+            for level_key, by_degrees in advertised.items():
+                if not isinstance(by_degrees, dict):
+                    continue
+                for degrees, url in by_degrees.items():
+                    try:
+                        degrees = int(degrees)
+                    except (TypeError, ValueError):
+                        continue
+                    if degrees not in FLOORPLAN_ROTATIONS or not url:
+                        continue
+                    filename = _plan_filename(level_key, degrees)
+                    try:
+                        await self.api.download_floorplan_asset(url, directory / filename)
+                    except (aiohttp.ClientError, TimeoutError, OSError) as err:
+                        _LOGGER.warning(
+                            "Could not download the %s plan for %s at %d degrees: %s",
+                            level_key, filename, degrees, err,
+                        )
+                        continue
+                    rotation_urls.setdefault(level_key, {})[degrees] = (
+                        f"{FLOORPLAN_LOCAL_URL_PREFIX}/{filename}"
+                    )
+        paths["plan_rotation_image_urls"] = rotation_urls
 
         return paths
 

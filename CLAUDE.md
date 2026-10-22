@@ -91,6 +91,17 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   `FLOORPLAN_LABEL_MIN_SF` with no controls goes quiet. **Hiding a chip never
   hides a room** -- every room keeps its polygon and its tap, and a room with
   controls is never quietened, because its name is how the controls are found.
+- **One backplate per rotation, and the card swaps between them:** turning the
+  plan turns its baked shadow with it, which reads as the sun having moved.
+  Dispatch renders each floor four times with the sun advanced to match, and
+  the card picks the variant for its own rotation (`images` on the card
+  config, keyed by degrees as strings because it is JSON by then). The
+  geometry is identical in every variant, so the polygons stay registered; a
+  deploy from before the variants existed has no map and the card turns the
+  single image exactly as before. **`_parse_plan_filename` matches the
+  ROTATION, never assumes the key** -- splitting `plan_Floor_1_90.png` on
+  `.png` invents a floor called `Floor_1_90`, and a level key may itself
+  contain underscores.
 - **View rotation is a display-time concern, never a baked one:** each floor's
   default comes from `plan_transform.json`'s `plan_rotation_deg` (an integer,
   one of 0/90/180/270, clockwise; absent or invalid means 0 -- read by
