@@ -2,7 +2,7 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
-## [Unreleased]
+## [1.8.1] - 2026-10-21
 
 ### Added
 - `rebuild_floorplan` service: redraw the Home 3D dashboard from the plan files
