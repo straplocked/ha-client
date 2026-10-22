@@ -187,6 +187,9 @@ class FakeApi:
         self._pending_error = pending_error
         self._download_errors = download_errors or {}
         self.reports = []
+        # Every asset the client asked the server for. What proves a
+        # rebuild from disk is really a rebuild from disk.
+        self.downloads = []
 
     async def fetch_pending_floorplan(self, installation_id):
         if self._pending_error is not None:
@@ -200,6 +203,7 @@ class FakeApi:
         return {"status": "ok"}
 
     async def download_floorplan_asset(self, url, dest_path):
+        self.downloads.append(url)
         if url in self._download_errors:
             raise self._download_errors[url]
         content = self._assets.get(url, b"")
@@ -1896,6 +1900,39 @@ class OverrideServiceSupportTest(unittest.TestCase):
             self.assertTrue(_run(manager.async_clear_override("thermostat.den.01")))
             self.assertTrue(_run(manager.async_reapply()))
             self.assertEqual(_placed(manager), {"climate.den_thermostat": "Den"})
+
+    def test_a_rebuild_asks_the_server_for_nothing(self):
+        """The property the phone redeploy rests on.
+
+        A client that has just been updated has to be able to redraw the
+        dashboard the OLD client wrote, using the plan files this house
+        already has. If that needed a round trip, updating the card would mean
+        waking the server and spending a consent on a change the house already
+        holds every byte of.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=OVERRIDE_ASSETS)
+            manager, hass = _manager(api, tmp, states=_two_thermostat_states())
+            _run(manager._async_run(_job()))
+
+            # Everything the deploy asked of the server, up to this point.
+            downloads_after_deploy = len(api.downloads)
+            reports_after_deploy = len(api.reports)
+
+            self.assertTrue(_run(manager.async_reapply()))
+
+            # The wrong answer first: if a rebuild re-fetched the plan, or
+            # reported itself to Dispatch, these would have moved.
+            self.assertEqual(len(api.downloads), downloads_after_deploy)
+            self.assertEqual(len(api.reports), reports_after_deploy)
+            # ...and it really did rebuild.
+            self.assertEqual(_placed(manager), {"climate.den_thermostat": "Den"})
+
+    def test_a_rebuild_with_nothing_deployed_says_so_instead_of_failing(self):
+        # A house that has never had a plan: the service must be safe to call.
+        with tempfile.TemporaryDirectory() as tmp:
+            manager, hass = _manager(FakeApi(), tmp)
+            self.assertFalse(_run(manager.async_reapply()))
 
     def test_a_correction_is_merged_rather_than_replaced(self):
         manager, _ = _manager(FakeApi(), states=_two_thermostat_states())

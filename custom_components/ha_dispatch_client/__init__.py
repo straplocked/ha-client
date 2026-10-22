@@ -45,6 +45,7 @@ SERVICES = (
     "respond_to_access_request",
     "revoke_access",
     "assign_floorplan_device",
+    "rebuild_floorplan",
 )
 
 # Set once the pending-update record has been resolved, so a second config
@@ -404,6 +405,44 @@ def setup_services(hass: HomeAssistant):
             closed += await manager.async_revoke(session_id, note=note)
         _LOGGER.info("Closed %s remote access session(s)", closed)
 
+    async def handle_rebuild_floorplan(call: ServiceCall):
+        """Handle rebuild_floorplan service call.
+
+        Redraw the Home 3D dashboard from the plan assets already sitting in
+        /config/www/ha_dispatch/floorplan/, with no round trip to Dispatch.
+
+        What it is for: the client has been updated and the dashboard it wrote
+        last time is the one the OLD client drew. Nothing on the server has
+        changed, the house's plan has not changed, and re-running a whole
+        deploy to pick up a new card -- or a new way of naming rooms -- means
+        waking up the server side and spending a consent on a change the house
+        already has every byte of.
+
+        Until now this only happened as a side effect of correcting a device's
+        room, which meant the only way to redraw was to pretend to move
+        something. A deploy path should not depend on a side effect.
+        """
+        managers = async_all_floorplan_managers(hass)
+        if not managers:
+            _LOGGER.error("No HA Dispatch installations configured")
+            return
+
+        rebuilt = 0
+        for manager in managers:
+            if await manager.async_reapply():
+                rebuilt += 1
+
+        if not rebuilt:
+            # async_reapply has already said why at WARNING -- no assets on
+            # disk is much the likeliest, and it means this installation has
+            # never had a plan deployed to it.
+            _LOGGER.warning(
+                "No Home 3D dashboard was rebuilt; there is nothing deployed "
+                "to rebuild from"
+            )
+        else:
+            _LOGGER.info("Rebuilt the Home 3D dashboard for %d installation(s)", rebuilt)
+
     async def handle_assign_floorplan_device(call: ServiceCall):
         """Handle assign_floorplan_device service call.
 
@@ -505,6 +544,11 @@ def setup_services(hass: HomeAssistant):
         "assign_floorplan_device",
         handle_assign_floorplan_device,
         schema=SERVICE_ASSIGN_FLOORPLAN_DEVICE_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "rebuild_floorplan",
+        handle_rebuild_floorplan,
     )
 
     _LOGGER.info("HA Dispatch Client services registered successfully")

@@ -288,3 +288,13 @@ assign_floorplan_device:
       default: false
       selector:
         boolean:
+
+rebuild_floorplan:
+  name: Rebuild the Home 3D Dashboard
+  description: >-
+    Redraw the Home 3D plan from the floor-plan files this installation has
+    already downloaded, without asking HA Dispatch for anything. Use it after
+    the client has been updated, so the dashboard is rebuilt by the new
+    version -- the plan, the rooms and the devices are unchanged, only the
+    dashboard that draws them. Does nothing if no floor plan has ever been
+    deployed here.

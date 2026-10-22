@@ -187,6 +187,11 @@
           "description": "Forget the correction and put this device back under the automatic matcher"
         }
       }
+    },
+    "rebuild_floorplan": {
+      "name": "Rebuild the Home 3D Dashboard",
+      "description": "Redraw the Home 3D plan from the floor-plan files this installation has already downloaded, without asking HA Dispatch for anything. Use it after the client has been updated, so the dashboard is rebuilt by the new version.",
+      "fields": {}
     }
   },
   "issues": {

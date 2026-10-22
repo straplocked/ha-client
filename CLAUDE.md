@@ -34,7 +34,7 @@ custom_components/ha_dispatch_client/
 │   └── ayvra-room-plan.js  # <ayvra-room-plan> - the room-first custom Lovelace card
 ├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
 ├── manifest.json     # Integration metadata
-├── services.yaml     # 10 service definitions with UI fields
+├── services.yaml     # 11 service definitions with UI fields
 └── strings.json      # UI text, translations, and repair flow copy
 ```
 
@@ -135,7 +135,7 @@ that this installation has vanished. It maps to `RemoteAccessUnavailable`, and
 must never map to `InstallationGoneError` -- the re-enrolment handler would
 re-register a healthy installation once a minute, forever.
 
-### Services (10 total)
+### Services (11 total)
 
 | Service | Purpose |
 |---------|---------|
@@ -149,6 +149,7 @@ re-register a healthy installation once a minute, forever.
 | `respond_to_access_request` | Approve or decline a remote access request |
 | `revoke_access` | End a live remote access session (omit the id to end all) |
 | `assign_floorplan_device` | Correct a Home 3D device's room, pin its entity, or clear the correction |
+| `rebuild_floorplan` | Redraw the Home 3D dashboard from the plan files already on disk -- no server round trip |
 
 ## Development Commands
 

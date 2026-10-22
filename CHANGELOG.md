@@ -4,6 +4,16 @@ All notable changes to HA Dispatch Client will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `rebuild_floorplan` service: redraw the Home 3D dashboard from the plan files
+  this installation has already downloaded, asking HA Dispatch for nothing.
+  What it is for is updating the client -- the dashboard on the wall is the one
+  the OLD client drew, and picking up a new card, or a new way of naming rooms,
+  should not mean waking the server and spending a consent on a change the
+  house already holds every byte of. Until now a redraw only happened as a side
+  effect of correcting a device's room, so the only way to get one was to
+  pretend to move something; a deploy path should not rest on a side effect.
+
 ### Changed -- the plan reads like a home, not a survey
 - Room names lose the sketch's sub-cell numbering before a homeowner sees
   them: "Master Bathroom #4" is drawn as "Master Bathroom". Display only --
