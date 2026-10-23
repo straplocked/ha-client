@@ -122,7 +122,9 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   substitution or local policy is involved. It is **off until that directory
   holds `remote_ui.json`, `fullchain.pem` and `privkey.pem`** -- a server
   cannot make a house reachable. Those three files are the contract between
-  slice 1 (hand-placed) and slice 2 (fetched): `async_poll` runs on the
+  hand-placed and fetched: they are **fetched from Dispatch when it supports
+  Remote UI and hand-placed otherwise**, and the dial loop cannot tell which.
+  `async_poll` runs on the
   coordinator cycle, asks `GET .../remote-ui` and writes only what the
   desired state needs -- the key is generated **here** and is never in a
   request body (only the CSR is), the token is re-minted when
@@ -151,8 +153,12 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   reported `restart_required` until the HA process is newer than the file's
   mtime -- stateless, so an integration reload does not clear it. Status goes
   to `POST .../remote-ui/status` on change and at least every 10 minutes and
-  cannot raise. The ranges ride a proxied (Cloudflare) DNS record; never
-  write that vendor's name into customer-facing copy.
+  cannot raise. **Never re-serialise `configuration.yaml`** (it is the homeowner's file), and an `http:`
+  block that is not ours stays `present_unmanaged`. When Remote UI is on and
+  Home Assistant's login lockout (`ip_ban_enabled`) is off, `health.py` adds a
+  `warning` item (`remote_ui_brute_force_protection_off`); if the setting
+  cannot be read it adds nothing. The ranges ride a proxied (Cloudflare) DNS
+  record; never write that vendor's name into customer-facing copy.
 
 ### API Endpoints (server-side)
 
@@ -259,7 +265,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `416 passed, 84 subtests passed`. Two standing limits on
+That currently prints `423 passed, 84 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not

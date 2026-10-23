@@ -36,6 +36,10 @@ HEALTH_TYPE_FAILED_INTEGRATION = "failed_integration"
 HEALTH_TYPE_LOW_BATTERY = "low_battery"
 HEALTH_TYPE_DISABLED_AUTOMATION = "disabled_automation"
 HEALTH_TYPE_UNAVAILABLE_AUTOMATION = "unavailable_automation"
+# Not a fault in a device: a configuration the house has while its Remote UI is
+# on. Dispatch's HealthSignalService drops any type it does not list, so this
+# string has to be added to InstallationHealthItem::TYPES over there.
+HEALTH_TYPE_REMOTE_UI_LOCKOUT_OFF = "remote_ui_brute_force_protection_off"
 
 # API endpoints
 API_REGISTER = "/api/v1/installations/register"

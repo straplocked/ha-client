@@ -451,6 +451,7 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                 stale_hours=self.stale_entity_hours,
                 battery_low=self.battery_low_percent,
                 battery_critical=self.battery_critical_percent,
+                remote_ui=self.remote_ui,
             )
         except (AttributeError, KeyError, TypeError, ValueError) as err:
             _LOGGER.error("Error collecting health signals: %s", err)

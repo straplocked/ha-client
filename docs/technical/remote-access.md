@@ -260,9 +260,11 @@ base64 encoded, keeps its original `Content-Type`, and is labelled
 ## Remote UI: the homeowner's own way in
 
 **Status:** slice 1 (hand-placed files) and slice 2 (the agent fetches its
-certificate, token and desired state from Dispatch, manages the `http:` include
-and reports its readiness) built on the agent side; not yet in a release. The
-`ip_ban_enabled` health item the contract describes is not yet built.
+certificate, token and desired state from Dispatch, manages the `http:` include,
+reports its readiness and warns when login lockout is off) built on the agent
+side; not yet in a release. Needs the matching Dispatch release: until the
+server lists the health item's type it drops it (see "The login-lockout health
+item").
 
 Everything above is remote access for a **technician**: the server authorises
 every request and writes it on a receipt, which requires that the traffic can
@@ -393,7 +395,48 @@ server that predates the feature, and it cannot raise.
 A `404` on the status path is remembered like any other; a `409` (not yet
 switched on) is not retried every minute.
 
-Not yet built from the contract: the `ip_ban_enabled` health item.
+### The login-lockout health item
+
+A house that is reachable from the internet should be locking out someone who
+guesses passwords. Home Assistant's `ip_ban_enabled` does that, and with the
+relay in front it only works against the right address because of the
+`trusted_proxies` the include above supplies: the address that gets banned is
+the real client's, not the relay's.
+
+`collect_health` takes the Remote UI manager and, when it reports `enabled`
+(the three files are in place and a token is current) and the `http`
+component is **not** locking out failed logins, adds one item to the health
+payload:
+
+| Field | Value |
+|---|---|
+| `type`, `key` | `remote_ui_brute_force_protection_off` |
+| `label` | Remote access is on but login lockout is off |
+| `severity` | `warning` |
+| `detail.text` | For a technician: set `ip_ban_enabled: true` and a `login_attempts_threshold` in the `http:` block, then restart |
+
+Home Assistant exposes no public getter for the setting. The `http` component
+installs its `ban_middleware` on the web app only when `ip_ban_enabled` is
+true, so `health.py::_ip_ban_enabled` takes that middleware's presence as the
+setting being on. If there is no `hass.http`, no app or no middleware list, it
+**cannot tell**, and cannot-tell emits nothing -- never "off". The item is not
+part of the rollup counts, sits just behind failed integrations so the item
+cap does not cut it, and clears by absence like every other item. This
+detection has been exercised against stubs only; confirm it on a live Home
+Assistant (set `ip_ban_enabled: true`, restart, expect the item to go).
+
+### What is still manual
+
+- **Restarting Home Assistant** after `restart_required`: the agent never does.
+- **Merging an existing `http:` block** (`present_unmanaged`): a technician
+  adds `use_x_forwarded_for: true` and the `trusted_proxies` from
+  `ha_dispatch_client/http.yaml` to the homeowner's own block. Remote UI does
+  not work for that house until then.
+- **Turning on login lockout**, per the health item above.
+- **Hand-placing the files** when the server predates Remote UI (the 404 case).
+- **Checking against a live Home Assistant**: the whole Remote UI path runs
+  under stubs in the suite; the dial, the TLS termination and the ban detection
+  need a real house.
 
 ## What is not supported
 

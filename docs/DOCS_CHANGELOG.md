@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-22] — Remote UI slice 2: the login-lockout health item
+
+### Added
+- `docs/technical/remote-access.md`: "The login-lockout health item" (when it appears, what it says, how `ip_ban_enabled` is detected and why cannot-tell emits nothing) and "What is still manual" (restart, merging an existing `http:` block, turning on lockout, hand-placed files, live verification). The Remote UI status line no longer lists anything as unbuilt
+- `docs/user/troubleshooting.md`: a "Remote Access" section (restart required, an existing `http:` block, an expired token, the lockout warning)
+
+### Changed
+- `docs/technical/architecture.md`: the `remote_ui.py` paragraph says the files are fetched when Dispatch supports it and hand-placed otherwise, and names the health item
+- `CLAUDE.md`: the Remote UI bullets (fetched versus hand-placed, never re-serialise `configuration.yaml`, the health item) and the test count (416 → 423)
+
 ## [2026-10-22] — Remote UI slice 2: the http include and the readiness report
 
 ### Added

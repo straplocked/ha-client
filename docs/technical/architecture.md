@@ -191,7 +191,11 @@ here, inside Home Assistant's own aiohttp server, with a certificate whose key
 never leaves the house. Home Assistant applies its own login and MFA. There is
 no credential of ours in the path, which is the opposite property from the
 technician tunnel above, and the reason the two never share a transport. Off
-until `<config>/ha_dispatch_client/remote_ui/` holds its three files. See
+until `<config>/ha_dispatch_client/remote_ui/` holds its three files, which it
+fetches from Dispatch when the server supports Remote UI and which a technician
+places by hand when it does not. `health.py` takes the manager and warns
+(`remote_ui_brute_force_protection_off`) when Remote UI is on but Home
+Assistant is not locking out failed logins. See
 [Remote Access](remote-access.md#remote-ui-the-homeowners-own-way-in).
 
 #### `http_config.py`
