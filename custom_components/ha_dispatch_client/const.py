@@ -657,3 +657,7 @@ REMOTE_UI_HTTP_COMMENT = (
 )
 # The house tells Dispatch how it is doing on change and at least this often.
 REMOTE_UI_STATUS_INTERVAL_SECONDS = 600
+# The server validates last_error at this many characters and answers 422
+# to anything longer, which would silence every status report from a house
+# whose dial error happens to be verbose. Cut it here, not there.
+REMOTE_UI_STATUS_ERROR_MAX_CHARS = 500

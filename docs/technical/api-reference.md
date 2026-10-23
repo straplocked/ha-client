@@ -896,6 +896,84 @@ Full design: [Backup Reporting](backup-reporting.md).
 
 ---
 
+## Endpoints 14-17: Remote UI
+
+The homeowner's own way in: the stock companion app reaching this Home
+Assistant through the Dispatch relay. Nothing of ours is in that data path;
+these four calls only tell the house what it should be and let it ask for the
+two things it cannot make itself (a signed certificate, a relay token). All
+four take the installation bearer token. **A 404 on any of them means the
+server predates Remote UI.** It maps to `RemoteUiUnavailable`, is asked once
+per run, and is never `InstallationGoneError`. `enabled: false` is a **200**.
+
+### Endpoint 14: Desired State
+
+**Method**: `GET`
+**Path**: `/v1/installations/{id}/remote-ui`
+
+```json
+{
+  "enabled": true,
+  "hostname": "quiet-maple-42.remote.hadispatch.app",
+  "relay": {"server": "relay.hadispatch.app", "port": 443},
+  "protocol_version": 2,
+  "trusted_proxies": ["173.245.48.0/20", "2400:cb00::/32"],
+  "ranges_version": 7,
+  "certificate": {"fullchain_pem": "-----BEGIN CERTIFICATE-----...", "expires_at": "2031-10-22T00:00:00Z"},
+  "config_version": 12
+}
+```
+
+- `enabled: false` → every other field may be null; the agent hangs up and
+  deletes `remote_ui.json`, `fullchain.pem` and `privkey.pem`, leaving
+  `http.yaml` and the include line in place.
+- `certificate` is null until the house has had a CSR signed.
+- `config_version` moves on any change (hostname, certificate, ranges, relay).
+  Polled on the coordinator cycle; the agent acts on the first poll and when
+  the version moves, and otherwise writes nothing.
+- `trusted_proxies` is the edge's current range set, IPv4 then IPv6;
+  `ranges_version` moves when it changes.
+
+### Endpoint 15: Sign a Certificate Request
+
+**Method**: `POST`
+**Path**: `/v1/installations/{id}/remote-ui/csr`
+
+Request `{"csr_pem": "-----BEGIN CERTIFICATE REQUEST-----..."}` for the
+house's own EC P-256 key, CN and SAN = the hostname. Response `200`
+`{"fullchain_pem": "...", "expires_at": "..."}`. The private key never leaves
+the house. `409` if the house is not switched on; `422` if the CSR does not
+name the hostname; `429` if a certificate was signed in the last 24 hours.
+All three are `RemoteUiRefused` and backed off for five minutes.
+
+### Endpoint 16: Mint the Relay Token
+
+**Method**: `POST`
+**Path**: `/v1/installations/{id}/remote-ui/token`
+
+Request `{"aes_key": "<64 hex>", "aes_iv": "<32 hex>"}`, a keyset the house
+generates. Response `200` `{"token": "<fernet>", "valid": 1793000000,
+"protocol_version": 2}`. The token lives 30 days; the agent re-mints it under
+48 hours from expiry and whenever `config_version` moves. `409` if not on.
+
+### Endpoint 17: Report Status
+
+**Method**: `POST`
+**Path**: `/v1/installations/{id}/remote-ui/status`
+
+```json
+{"connected": true, "dials": 3, "drops": 2, "last_error": null,
+ "http_block": "managed", "ranges_version": 7, "restart_required": false,
+ "certificate_expires_at": "2031-10-22T00:00:00Z", "token_valid": 1793000000}
+```
+
+Answers `204`. Sent on change and at least every 10 minutes. `http_block` is
+`managed`, `present_unmanaged` or `missing`; `last_error` is cut to 500
+characters, the server's limit. Full design:
+[Remote Access](remote-access.md#remote-ui-the-homeowners-own-way-in).
+
+---
+
 ## Related Documentation
 
 - [Component Inventory](component-inventory.md) for what is reported, from where, and on what cadence

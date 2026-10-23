@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-22] — Remote UI slice 2: integration pass
+
+### Added
+- `docs/technical/api-reference.md`: Endpoints 14-17 (`GET .../remote-ui`, `POST .../remote-ui/csr`, `.../token`, `.../status`) with the contract's bodies, the 404 rule and the refusal codes. They were listed in `CLAUDE.md` and described in `remote-access.md` but absent from the reference
+
+### Changed
+- `docs/technical/remote-access.md`: the status table says `last_error` is cut to 500 characters (the server's validation limit, now applied by the agent); the provisioner section says how renewal is actually signalled -- a `config_version` bump met by the certificate's own 60-day horizon, no flag
+- `CLAUDE.md`: the test count (423 → 424)
+
 ## [2026-10-22] — Remote UI slice 2: the login-lockout health item
 
 ### Added

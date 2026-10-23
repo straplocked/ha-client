@@ -68,6 +68,7 @@ from .const import (
     REMOTE_UI_RECONNECT_MIN,
     REMOTE_UI_RETRY_SECONDS,
     REMOTE_UI_SECRET_FILE_MODE,
+    REMOTE_UI_STATUS_ERROR_MAX_CHARS,
     REMOTE_UI_STATUS_INTERVAL_SECONDS,
     REMOTE_UI_TOKEN_REFRESH_SECONDS,
 )
@@ -481,11 +482,16 @@ class HADispatchRemoteUI:
     def status_payload(self) -> Dict[str, Any]:
         """The body of POST .../remote-ui/status, from what this manager knows."""
         desired = self.desired or {}
+        # The server accepts at most REMOTE_UI_STATUS_ERROR_MAX_CHARS here and
+        # answers 422 to more; a verbose dial error must not cost the report.
+        last_error = self.last_error
+        if isinstance(last_error, str) and len(last_error) > REMOTE_UI_STATUS_ERROR_MAX_CHARS:
+            last_error = last_error[:REMOTE_UI_STATUS_ERROR_MAX_CHARS]
         return {
             "connected": self.connected,
             "dials": self.dials,
             "drops": self.drops,
-            "last_error": self.last_error,
+            "last_error": last_error,
             "http_block": self.http_block,
             "ranges_version": desired.get("ranges_version"),
             "restart_required": self.restart_required,

@@ -506,6 +506,24 @@ class StatusReportTest(unittest.TestCase):
 
         run(scenario())
 
+    def test_a_verbose_dial_error_is_cut_to_what_the_server_accepts(self):
+        """Dispatch validates last_error at 500 characters and answers 422 to
+        more. A house whose dial error is a long traceback-ish message must
+        still get its report through: the message is cut, never the report."""
+        with tempfile.TemporaryDirectory() as tmp:
+            manager, _ = self.make(Path(tmp), FakeRemoteUiApi(desired=desired_state()), time.time)
+
+            manager.last_error = "ConnectionRefusedError: " + "x" * 700
+            sent = manager.status_payload()["last_error"]
+            self.assertEqual(500, len(sent))  # the server's limit, written by hand
+            self.assertTrue(sent.startswith("ConnectionRefusedError: xxxx"))
+
+            # A short message and no message both pass through as they are.
+            manager.last_error = "TimeoutError"
+            self.assertEqual("TimeoutError", manager.status_payload()["last_error"])
+            manager.last_error = None
+            self.assertIsNone(manager.status_payload()["last_error"])
+
     def test_a_house_that_is_off_or_a_server_that_predates_it_hears_nothing(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as tmp:

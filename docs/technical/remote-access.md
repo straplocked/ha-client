@@ -344,6 +344,12 @@ host, `429` signed in the last 24 h -- or that fails on the wire is backed off
 for five minutes, not retried every poll, and the version is not recorded so
 the next attempt picks up what is left (a key already generated is kept).
 
+Renewal needs no flag: Dispatch's sweep bumps `config_version` when a
+certificate is inside its last 60 days, the agent re-reads the desired state
+and `plan_provisioning` finds the certificate on disk short of the same
+60-day horizon, so a new CSR goes. A `renew_requested` field is honoured if
+a server ever sends one, but the current server does not.
+
 ### The `http:` block, and the restart it owes
 
 The relay's DNS records are proxied, so a request reaches Home Assistant from
@@ -385,7 +391,7 @@ server that predates the feature, and it cannot raise.
 
 | Field | From |
 |---|---|
-| `connected`, `dials`, `drops`, `last_error` | The dial loop |
+| `connected`, `dials`, `drops`, `last_error` | The dial loop. `last_error` is cut to 500 characters, the server's validation limit, so a verbose dial error cannot cost the house its report |
 | `http_block` | `managed`, `present_unmanaged` or `missing` (above) |
 | `ranges_version` | The desired state the server last sent |
 | `restart_required` | Above |
