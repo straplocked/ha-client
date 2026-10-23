@@ -982,5 +982,69 @@ class RelayProtocolTest(unittest.TestCase):
         self._with_installed("0.45.1", 1, scenario)
 
 
+class StartupOrderTest(unittest.TestCase):
+    """At boot the HTTP server does not exist yet; the dial waits for Home Assistant to start."""
+
+    def test_without_a_runner_the_dial_waits_for_the_started_event_then_proceeds(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                hass = FakeHass(Path(tmp), with_http=False)
+                listeners = []
+                hass.bus = types.SimpleNamespace(async_listen_once=lambda event, cb: listeners.append((event, cb)))
+                clients = []
+
+                def factory(runner, context, server, port):
+                    client = FakeClient(runner, context, server, port)
+                    clients.append(client)
+                    return client
+
+                manager = HADispatchRemoteUI(hass, coordinator=None, client_factory=factory, delay=lambda: 0)
+                write_house(Path(tmp))
+                await manager.async_load()
+                self.assertEqual(clients, [])
+                self.assertEqual([e for e, _ in listeners], ["homeassistant_started"])
+
+                # Home Assistant starts, the HTTP server appears, the event fires.
+                hass.http = types.SimpleNamespace(runner=object())
+                await listeners[0][1](None)
+                await settle(5)
+                self.assertEqual(len(clients), 1)
+                self.assertTrue(manager.connected)
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_unload_closes_the_local_tls_site_before_the_client(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                hass = FakeHass(Path(tmp))
+                order = []
+
+                def factory(runner, context, server, port):
+                    client = FakeClient(runner, context, server, port)
+
+                    async def site_stop():
+                        order.append("site")
+
+                    client._site = types.SimpleNamespace(stop=site_stop)
+                    original_stop = client.stop
+
+                    async def stop(*, wait=False):
+                        order.append("client")
+                        await original_stop(wait=wait)
+
+                    client.stop = stop
+                    return client
+
+                manager = HADispatchRemoteUI(hass, coordinator=None, client_factory=factory, delay=lambda: 0)
+                write_house(Path(tmp))
+                await manager.async_load()
+                await settle()
+                await manager.async_unload()
+                self.assertEqual(order, ["site", "client"])
+
+        run(scenario())
+
+
 if __name__ == "__main__":
     unittest.main()

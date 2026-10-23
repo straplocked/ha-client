@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant
 
 from .api_client import RemoteUiRefused, RemoteUiUnavailable
@@ -272,6 +273,7 @@ class HADispatchRemoteUI:
         self._applied_version: Optional[int] = None
         self._unavailable = False
         self._kept_hand_placed = False
+        self._waiting_for_start = False
         self._retry_after: float = 0.0
         self._provisioning = False
         # What the house reports (POST .../remote-ui/status). http_block and
@@ -323,7 +325,24 @@ class HADispatchRemoteUI:
 
         runner = getattr(getattr(self.hass, "http", None), "runner", None)
         if runner is None:
-            _LOGGER.error("Remote UI: Home Assistant's HTTP server is not running, so there is nothing to serve")
+            # Config entries are set up before Home Assistant starts its HTTP
+            # server, so at boot the runner does not exist yet. hass-nabucasa
+            # waits for it the same way; so do we, once, and try again.
+            if self._waiting_for_start:
+                _LOGGER.error("Remote UI: Home Assistant's HTTP server is still not running, so there is nothing to serve")
+                return
+            bus = getattr(self.hass, "bus", None)
+            listen = getattr(bus, "async_listen_once", None)
+            if listen is None:
+                _LOGGER.error("Remote UI: Home Assistant's HTTP server is not running, so there is nothing to serve")
+                return
+            self._waiting_for_start = True
+            _LOGGER.debug("Remote UI: Home Assistant has not started its HTTP server yet; dialling once it has")
+
+            async def _on_started(_event) -> None:
+                await self.async_load()
+
+            listen(EVENT_HOMEASSISTANT_STARTED, _on_started)
             return
 
         try:
@@ -404,6 +423,17 @@ class HADispatchRemoteUI:
                 pass
             self._task = None
         if self._client is not None:
+            # snitun 0.45 (what Home Assistant 2026.6 bundles) serves TLS on a
+            # loopback site and its stop() closes the socket but not the
+            # asyncio server behind it. A later client in the same process can
+            # then inherit a listener that never accepts. Close the site first.
+            site = getattr(self._client, "_site", None)
+            site_stop = getattr(site, "stop", None)
+            if site_stop is not None:
+                try:
+                    await site_stop()
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("Remote UI: stopping the local TLS site raised %s", err)
             try:
                 await self._client.stop(wait=True)
             except Exception as err:  # noqa: BLE001

@@ -307,6 +307,21 @@ wants a house reachable cannot make it so, and a typo cannot make it
 half-reachable. `parse_remote_ui_config` checks every field the dial needs so a
 mistake fails at load with a reason. An expired token is not presented.
 
+### Two things the first real house taught (2026-10-23)
+
+- **At boot, Home Assistant's HTTP server does not exist yet.** Config entries
+  are set up before it starts, so `hass.http.runner` is `None` during
+  `async_load`. The manager now waits for `EVENT_HOMEASSISTANT_STARTED` once
+  and loads again, the way hass-nabucasa waits for the runner.
+- **A reload used to leave a dead listener behind.** The snitun Home Assistant
+  bundles (0.45) serves TLS on a loopback site; its `stop()` closes the socket
+  but not the asyncio server behind it, and the next client in the same
+  process could inherit a listener that never accepted. The symptom was a
+  house that dialled, a relay that held the handshake open, and a loopback
+  accept queue that only grew. `async_unload` now closes the site first.
+  Verified: a fresh process served `401: Unauthorized` through the relay at
+  once.
+
 ### The relay protocol is the house's, not the relay's
 
 The agent imports whatever snitun Home Assistant bundles through
