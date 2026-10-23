@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-22] — Remote UI slice 2: the http include and the readiness report
+
+### Added
+- `docs/technical/remote-access.md`: "The `http:` block, and the restart it owes" (what `http.yaml` holds, the scan-and-append rule for `configuration.yaml`, why the file is written before the include, `present_unmanaged`, and how `restart_required` clears without any state of ours) and "Reporting readiness" (the status payload field by field, on change and every ten minutes). The unbuilt list is now only the `ip_ban_enabled` health item
+- `docs/technical/architecture.md`: `http_config.py` given its own section and a line in the module tree
+
+### Changed
+- `CLAUDE.md`: a pattern bullet for the append-only include and the homeowner's `http:` winning, `http_config.py` in the tree, and the test count (391 → 416, 76 → 84 subtests)
+
 ## [2026-10-22] — Remote UI slice 2: the agent fetches its files
 
 ### Changed

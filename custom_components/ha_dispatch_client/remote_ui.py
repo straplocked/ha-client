@@ -46,7 +46,6 @@ import logging
 import os
 import random
 import ssl
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -63,12 +62,23 @@ from .const import (
     REMOTE_UI_DEFAULT_PORT,
     REMOTE_UI_DEFAULT_PROTOCOL_VERSION,
     REMOTE_UI_DIR,
+    REMOTE_UI_HTTP_FILE,
     REMOTE_UI_KEY_FILE,
     REMOTE_UI_RECONNECT_MAX,
     REMOTE_UI_RECONNECT_MIN,
     REMOTE_UI_RETRY_SECONDS,
     REMOTE_UI_SECRET_FILE_MODE,
+    REMOTE_UI_STATUS_INTERVAL_SECONDS,
     REMOTE_UI_TOKEN_REFRESH_SECONDS,
+)
+from .http_config import (
+    HTTP_BLOCK_MANAGED,
+    HTTP_BLOCK_MISSING,
+    HTTP_BLOCK_UNMANAGED,
+    apply_http_config,
+    clean_trusted_proxies,
+    restart_is_owed,
+    write_atomic,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -131,6 +141,20 @@ def parse_remote_ui_config(raw: Any) -> Dict[str, Any]:
 def token_is_valid(config: Dict[str, Any], now: Optional[float] = None) -> bool:
     """Whether the token can still be presented. The relay refuses an expired one anyway."""
     return (now if now is not None else time.time()) < config["valid"]
+
+
+def process_start_time() -> Optional[float]:
+    """When this Home Assistant process started: the boot marker for 'restart owed'.
+
+    A restart is a new process, an integration reload is not, which is exactly
+    the distinction that matters. ``None`` if it cannot be read.
+    """
+    try:
+        import psutil
+
+        return psutil.Process().create_time()
+    except Exception:  # noqa: BLE001 - psutil missing or the process unreadable: unknown, not fatal
+        return None
 
 
 def reconnect_delay(rng: random.Random = random) -> float:
@@ -196,11 +220,15 @@ class HADispatchRemoteUI:
         coordinator,
         client_factory: Optional[Callable[..., Any]] = None,
         delay: Callable[[], float] = reconnect_delay,
+        started_at: Callable[[], Optional[float]] = process_start_time,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self.hass = hass
         self.coordinator = coordinator
         self._client_factory = client_factory or _default_client_factory
         self._delay = delay
+        self._started_at = started_at
+        self._clock = clock
         self._client = None
         self._task: Optional[asyncio.Task] = None
         self._stopping = False
@@ -219,6 +247,17 @@ class HADispatchRemoteUI:
         self._unavailable = False
         self._retry_after: float = 0.0
         self._provisioning = False
+        # What the house reports (POST .../remote-ui/status). http_block and
+        # restart_required are the outcome of the last http.yaml application;
+        # _http_applied is the proxy list it was done for, so the two files
+        # are read once per change, not once a minute (and a homeowner who
+        # later removes the include line is not fought on every poll).
+        self.http_block: str = HTTP_BLOCK_MISSING
+        self.restart_required = False
+        self.certificate_expires_at: Optional[str] = None
+        self._http_applied: Optional[Tuple[str, ...]] = None
+        self._status_sent: Optional[Dict[str, Any]] = None
+        self._status_sent_at: float = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -267,6 +306,7 @@ class HADispatchRemoteUI:
             return
 
         self.config = config
+        self.certificate_expires_at = await self.hass.async_add_executor_job(certificate_expires_at, cert_path)
         self._client = self._client_factory(runner, context, config["server"], config["port"])
         await self._client.start()
         self._stopping = False
@@ -354,6 +394,7 @@ class HADispatchRemoteUI:
             self._retry_after = time.time() + REMOTE_UI_RETRY_SECONDS
         finally:
             self._provisioning = False
+        await self.async_report_status()
 
     async def _async_poll(self) -> None:
         if self._unavailable:
@@ -384,9 +425,109 @@ class HADispatchRemoteUI:
             await self._async_disable()
             return
 
+        # The proxy list does not depend on the certificate or the token, so a
+        # refusal further down must not stop Home Assistant being told about
+        # the relay.
+        await self._async_apply_http(desired)
+
         if time.time() < self._retry_after:
             return
         await self._async_provision(desired)
+
+    async def _async_apply_http(self, desired: Dict[str, Any]) -> None:
+        """Write http.yaml and, if the homeowner has no http: key, the include line.
+
+        Runs when the proxy list is first seen or changes -- not every poll.
+        The agent never restarts Home Assistant: a change is reported as
+        ``restart_required`` and the homeowner (or a technician, with their
+        say-so) restarts when it suits them.
+        """
+        proxies = clean_trusted_proxies(desired.get("trusted_proxies"))
+        if not proxies:
+            return
+        key = tuple(proxies)
+        if key == self._http_applied:
+            return
+
+        http_yaml = Path(self.hass.config.path(*REMOTE_UI_HTTP_FILE))
+        configuration = Path(self.hass.config.path("configuration.yaml"))
+        try:
+            block, changed = await self.hass.async_add_executor_job(
+                apply_http_config, http_yaml, configuration, proxies
+            )
+            owed = await self.hass.async_add_executor_job(restart_is_owed, http_yaml, self._started_at())
+        except OSError as err:
+            _LOGGER.warning("Remote UI: could not write the http configuration (%s); trying again later", err)
+            self._retry_after = time.time() + REMOTE_UI_RETRY_SECONDS
+            return
+
+        self._http_applied = key
+        self.http_block = block
+        # restart_is_owed knows from the file's age; changed knows this write
+        # happened (and covers a process start time we could not read).
+        self.restart_required = bool(changed or owed) and block == HTTP_BLOCK_MANAGED
+        if changed:
+            _LOGGER.info("Remote UI: wrote %s (%d trusted proxy ranges); Home Assistant needs a restart to use it",
+                         http_yaml, len(proxies))
+        if block != HTTP_BLOCK_MANAGED:
+            _LOGGER.warning(
+                "Remote UI: configuration.yaml %s; the trusted proxy list is in %s for a technician to merge",
+                "already has its own http: block" if block == HTTP_BLOCK_UNMANAGED else "was not found",
+                http_yaml,
+            )
+
+    # ----------------------------------------------------------------- status --
+
+    def status_payload(self) -> Dict[str, Any]:
+        """The body of POST .../remote-ui/status, from what this manager knows."""
+        desired = self.desired or {}
+        return {
+            "connected": self.connected,
+            "dials": self.dials,
+            "drops": self.drops,
+            "last_error": self.last_error,
+            "http_block": self.http_block,
+            "ranges_version": desired.get("ranges_version"),
+            "restart_required": self.restart_required,
+            "certificate_expires_at": self.certificate_expires_at,
+            "token_valid": self.config["valid"] if self.config else None,
+        }
+
+    async def async_report_status(self) -> None:
+        """Tell Dispatch how this house is doing. Cannot raise.
+
+        Sent when the payload differs from the last one that went, and at
+        least every ten minutes whether or not it does -- the heartbeat that
+        lets the server tell a quiet house from a silent one. Nothing is sent
+        for a house that is off or a server that predates the feature.
+        """
+        try:
+            if self._unavailable or not (self.desired or {}).get("enabled"):
+                return
+            api = getattr(self.coordinator, "api_client", None)
+            installation_id = getattr(self.coordinator, "installation_id", None)
+            if api is None or installation_id is None:
+                return
+            payload = self.status_payload()
+            now = self._clock()
+            if payload == self._status_sent and now - self._status_sent_at < REMOTE_UI_STATUS_INTERVAL_SECONDS:
+                return
+            try:
+                await api.report_remote_ui_status(installation_id, payload)
+            except RemoteUiUnavailable:
+                self._unavailable = True
+                return
+            except RemoteUiRefused as err:
+                # 409: not switched on yet. Not retried every minute; the next
+                # report is a change or the ten-minute mark.
+                _LOGGER.debug("Remote UI: status report declined (%s)", err)
+            except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
+                _LOGGER.debug("Remote UI: could not report status: %s", err)
+                return
+            self._status_sent = payload
+            self._status_sent_at = now
+        except Exception as err:  # noqa: BLE001 - reporting must never cost the house its metrics
+            _LOGGER.debug("Remote UI: status report failed unexpectedly: %s", err)
 
     async def _async_disable(self) -> None:
         """The server says off: hang up and remove the three files, nothing else.
@@ -401,6 +542,9 @@ class HADispatchRemoteUI:
             await self.async_unload()
         self.config = None
         self._applied_version = None
+        self.certificate_expires_at = None
+        self._http_applied = None
+        self._status_sent = None
         removed = await self.hass.async_add_executor_job(remove_remote_ui_files, self.directory())
         if was_dialling or removed:
             _LOGGER.info(
@@ -628,6 +772,28 @@ def build_csr(key, hostname: str) -> str:
     return csr.public_bytes(serialization.Encoding.PEM).decode("ascii")
 
 
+def _not_after(cert) -> dt.datetime:
+    expires = getattr(cert, "not_valid_after_utc", None)
+    if expires is None:  # cryptography < 42
+        expires = cert.not_valid_after.replace(tzinfo=dt.timezone.utc)
+    return expires
+
+
+def certificate_expires_at(cert_path: Path) -> Optional[str]:
+    """When the certificate on disk stops being valid, as ISO 8601 UTC. Blocking I/O.
+
+    ``None`` if it cannot be read: the status report says "unknown", it does
+    not stop the dial that the TLS context load has already vouched for.
+    """
+    from cryptography import x509
+
+    try:
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    except (OSError, ValueError, TypeError):
+        return None
+    return _not_after(cert).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def certificate_is_usable(cert_pem: Optional[str], key, hostname: str, now: float) -> Tuple[bool, str]:
     """Whether a certificate is this key's, names this hostname, and has 60+ days left."""
     if not cert_pem or key is None:
@@ -659,9 +825,7 @@ def certificate_is_usable(cert_pem: Optional[str], key, hostname: str, now: floa
     if hostname not in names:
         return False, f"issued for {', '.join(names) or 'no name'}, not {hostname}"
 
-    expires = getattr(cert, "not_valid_after_utc", None)
-    if expires is None:  # cryptography < 42
-        expires = cert.not_valid_after.replace(tzinfo=dt.timezone.utc)
+    expires = _not_after(cert)
     left = expires.timestamp() - now
     if left < REMOTE_UI_CERT_RENEW_DAYS * 86400:
         return False, f"expires {expires.date().isoformat()}, within {REMOTE_UI_CERT_RENEW_DAYS} days"
@@ -692,29 +856,6 @@ def inspect_remote_ui_files(directory: Path) -> RemoteUiFiles:
         except (OSError, ValueError, RemoteUIConfigError):
             files.config = None
     return files
-
-
-def write_atomic(path: Path, data: bytes, mode: int) -> None:
-    """Write a file whole or not at all: temp in the same directory, then replace.
-
-    Blocking I/O. The mode is set on the temp file before the rename, so a
-    secret never sits readable on disk even for an instant.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, mode)
-        os.replace(tmp, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def remove_remote_ui_files(directory: Path) -> List[str]:

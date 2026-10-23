@@ -260,9 +260,9 @@ base64 encoded, keeps its original `Content-Type`, and is labelled
 ## Remote UI: the homeowner's own way in
 
 **Status:** slice 1 (hand-placed files) and slice 2 (the agent fetches its
-certificate, token and desired state from Dispatch) built on the agent side;
-not yet in a release. The `http.yaml` management and the health item the
-contract describes are not yet built.
+certificate, token and desired state from Dispatch, manages the `http:` include
+and reports its readiness) built on the agent side; not yet in a release. The
+`ip_ban_enabled` health item the contract describes is not yet built.
 
 Everything above is remote access for a **technician**: the server authorises
 every request and writes it on a receipt, which requires that the traffic can
@@ -342,9 +342,58 @@ host, `429` signed in the last 24 h -- or that fails on the wire is backed off
 for five minutes, not retried every poll, and the version is not recorded so
 the next attempt picks up what is left (a key already generated is kept).
 
-Not yet built from the contract: reporting to `POST .../remote-ui/status`
-(the client method exists; nothing calls it), `http.yaml` from
-`trusted_proxies`, and the `ip_ban_enabled` health item.
+### The `http:` block, and the restart it owes
+
+The relay's DNS records are proxied, so a request reaches Home Assistant from
+the proxy's address with the phone's address in `X-Forwarded-For`, and Home
+Assistant refuses that unless it has been told which peers it may believe.
+Every house therefore needs `use_x_forwarded_for: true` and the server's
+`trusted_proxies` in its `http:` configuration. `http_config.py` owns that,
+and is deliberately timid about it, because `configuration.yaml` is the
+homeowner's file:
+
+| Step | What happens |
+|---|---|
+| The list arrives | When `trusted_proxies` is first seen, or changes, `ha_dispatch_client/http.yaml` is written (atomically, and **only if its text differs**). Malformed entries are dropped rather than written, since a bad address there would stop Home Assistant starting. An empty list writes nothing. |
+| The include | `configuration.yaml` is **scanned line by line**. If no top-level `http:` key exists, a comment and `http: !include ha_dispatch_client/http.yaml` are **appended**; the original bytes are always a prefix of the new file, so comments, `!include`, `!secret`, line endings and a byte-order mark all survive. It is never parsed and re-dumped. A symlinked file stays a symlink. |
+| The homeowner has an `http:` block | Anything that is not our exact include line: left untouched, reported `http_block: present_unmanaged`. `http.yaml` is still written, as the text a technician merges from; since nothing reads it, no restart is owed. |
+| No `configuration.yaml` | Not invented. Reported `missing`. |
+
+`http.yaml` is written **before** the include line goes in: an `!include` of a
+file that is not there stops Home Assistant loading its configuration. When
+the include is newly added, `http.yaml` is rewritten even if its text is
+identical, so its mtime stays a faithful record of the last change a restart
+must pick up.
+
+The `http:` block is read only at start, so a change is not live until Home
+Assistant restarts, and **the agent never restarts it**. `restart_required` is
+true while `http.yaml` is newer than the Home Assistant process (`psutil`'s
+process start): no state of ours to lose, an integration reload does not clear
+it, and a restart does. Switching Remote UI off leaves `http.yaml` and the
+include in place -- a stale proxy list is harmless, and removing the line is a
+config edit the homeowner did not ask for.
+
+### Reporting readiness
+
+`async_report_status` ends every `async_poll`. It posts to
+`POST .../remote-ui/status` when the payload differs from the last one sent,
+and at least every ten minutes regardless (the heartbeat that distinguishes a
+quiet house from a silent one). Nothing is sent for a house that is off or a
+server that predates the feature, and it cannot raise.
+
+| Field | From |
+|---|---|
+| `connected`, `dials`, `drops`, `last_error` | The dial loop |
+| `http_block` | `managed`, `present_unmanaged` or `missing` (above) |
+| `ranges_version` | The desired state the server last sent |
+| `restart_required` | Above |
+| `certificate_expires_at` | Parsed from `fullchain.pem` on load, ISO 8601 UTC; `null` if unreadable |
+| `token_valid` | The `valid` timestamp in `remote_ui.json`, `null` if not dialling |
+
+A `404` on the status path is remembered like any other; a `409` (not yet
+switched on) is not retried every minute.
+
+Not yet built from the contract: the `ip_ban_enabled` health item.
 
 ## What is not supported
 

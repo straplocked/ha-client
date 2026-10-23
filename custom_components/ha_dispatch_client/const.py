@@ -640,3 +640,16 @@ REMOTE_UI_CERT_RENEW_DAYS = 60
 REMOTE_UI_RETRY_SECONDS = 300
 # Private key and config carry secrets; the certificate is public.
 REMOTE_UI_SECRET_FILE_MODE = 0o600
+
+# Remote UI sits behind a proxy the house does not control, so Home Assistant
+# must be told which peers may set X-Forwarded-For. The list is written to
+# http.yaml, beside (not inside) the remote_ui/ secrets directory, and pulled
+# into configuration.yaml by one include line -- only when there is no http:
+# key already. See http_config.py.
+REMOTE_UI_HTTP_FILE = ("ha_dispatch_client", "http.yaml")
+REMOTE_UI_HTTP_INCLUDE = "http: !include ha_dispatch_client/http.yaml"
+REMOTE_UI_HTTP_COMMENT = (
+    "# Managed by HA Dispatch Client (remote access): trusted proxies for the relay."
+)
+# The house tells Dispatch how it is doing on change and at least this often.
+REMOTE_UI_STATUS_INTERVAL_SECONDS = 600

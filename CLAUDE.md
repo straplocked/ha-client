@@ -29,6 +29,7 @@ custom_components/ha_dispatch_client/
 ├── backups.py      # HADispatchBackups - reports the installation's own backups (+ sha256)
 ├── screen.py         # ScreenSockets - Remote Screen's loopback WebSocket, frames over the poll
 ├── remote_ui.py      # HADispatchRemoteUI - the homeowner's own way in, through the Dispatch relay (TLS ends here)
+├── http_config.py   # http.yaml (trusted proxies) + the one include line in configuration.yaml
 ├── repairs.py        # Approve/Deny dialog and the end-access off-switch
 ├── floorplan.py      # HADispatchFloorplan - plan assets -> the room-first "Home 3D" dashboard
 ├── www/
@@ -132,6 +133,26 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   technician access through it, and never put a credential of ours in it.
   Design: ha-dispatch `docs/technical/homeowner-remote-access.md`; the
   relay and its runbook live in that repo's `docker/relay/`.
+- **The `http:` include is append-only, and the homeowner's `http:` wins:**
+  the relay's records are proxied, so Home Assistant must trust the proxy
+  ranges the server sends (`trusted_proxies`, plus `use_x_forwarded_for`).
+  `http_config.py` writes them to `<config>/ha_dispatch_client/http.yaml`
+  (atomically, only when the text differs) and then -- only if
+  `configuration.yaml` has **no top-level `http:` key at all** -- appends one
+  comment and one `http: !include ha_dispatch_client/http.yaml` line. The file
+  is **scanned line by line and appended to, never parsed and re-dumped**:
+  comments, `!include` and `!secret` lines must survive byte for byte (the
+  original bytes are always a prefix of the new file; a test fails the day a
+  writer re-serialises). An `http:` block that is not ours is never touched,
+  reported as `http_block: present_unmanaged` for a technician to merge. Order
+  matters: `http.yaml` is written **before** anything includes it, because an
+  include of a missing file stops Home Assistant loading its config. The
+  agent **never restarts Home Assistant**: a rewrite (or a first include) is
+  reported `restart_required` until the HA process is newer than the file's
+  mtime -- stateless, so an integration reload does not clear it. Status goes
+  to `POST .../remote-ui/status` on change and at least every 10 minutes and
+  cannot raise. The ranges ride a proxied (Cloudflare) DNS record; never
+  write that vendor's name into customer-facing copy.
 
 ### API Endpoints (server-side)
 
@@ -238,7 +259,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `391 passed, 76 subtests passed`. Two standing limits on
+That currently prints `416 passed, 84 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not
