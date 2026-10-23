@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-22] — Remote UI slice 2: the agent fetches its files
+
+### Changed
+- `docs/technical/remote-access.md`: the Remote UI section's "What slice 2 changes" became what it does — the provisioner's three answers to `GET .../remote-ui` (404, off, on), what leaves the house (the CSR and the AES keyset, never the key), why a moved `config_version` re-mints the token, the back-off on a refusal, and what from the contract is still unbuilt (status reporting, `http.yaml`, the health item). The files table gained a "Fetched" column beside "Hand-placed"
+- `CLAUDE.md`: the four `/remote-ui` endpoints, the 404 rule extended to them, the slice-1/slice-2 file contract in the Remote UI pattern, and the test count (374 → 391, 69 → 76 subtests)
+
 ## [2026-10-20] — Room-first Home 3D plan (v1.8.0)
 
 ### Changed

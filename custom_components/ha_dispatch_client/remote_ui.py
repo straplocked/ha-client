@@ -26,26 +26,38 @@ Two rules this module keeps:
     (the library Nabu Casa runs for HA Cloud), driving Home Assistant's own
     aiohttp runner. This module never reads a request.
 
-Slice 1 (the home lab) places the files by hand: the certificate from a manual
-ACME run, ``remote_ui.json`` from the relay's ``mint_token.py``. Slice 2 will
-have the agent generate its key and ask Dispatch for the certificate and the
-token; the file shapes are the contract that endpoint will return.
+Where the files come from: slice 1 (the home lab) placed them by hand, the
+certificate from a manual ACME run and ``remote_ui.json`` from the relay's
+``mint_token.py``. Slice 2 adds the **provisioner** at the bottom of this
+module: on each coordinator cycle it asks Dispatch for the desired state and,
+when that state says so, generates the key here (it is never sent), has a
+certificate signing request signed, mints the relay token for a keyset made
+here, and writes the same three files. The file shapes are the contract
+between the two: a house with hand-placed files and a server that predates
+the feature (404) keeps working untouched, and the dial loop neither knows nor
+cares which slice wrote what it reads.
 """
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import logging
+import os
 import random
 import ssl
+import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import aiohttp
 from homeassistant.core import HomeAssistant
 
+from .api_client import RemoteUiRefused, RemoteUiUnavailable
 from .const import (
     REMOTE_UI_CERT_FILE,
+    REMOTE_UI_CERT_RENEW_DAYS,
     REMOTE_UI_CONFIG_FILE,
     REMOTE_UI_CONNECT_TIMEOUT,
     REMOTE_UI_DEFAULT_PORT,
@@ -54,6 +66,9 @@ from .const import (
     REMOTE_UI_KEY_FILE,
     REMOTE_UI_RECONNECT_MAX,
     REMOTE_UI_RECONNECT_MIN,
+    REMOTE_UI_RETRY_SECONDS,
+    REMOTE_UI_SECRET_FILE_MODE,
+    REMOTE_UI_TOKEN_REFRESH_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -195,6 +210,15 @@ class HADispatchRemoteUI:
         self.dials = 0
         self.drops = 0
         self.last_error: Optional[str] = None
+        # Provisioner state. desired is the last state the server sent;
+        # _applied_version the config_version whose files are on disk and
+        # dialled; _unavailable remembers a 404 so a server predating the
+        # feature is asked once per run, not once a minute.
+        self.desired: Optional[Dict[str, Any]] = None
+        self._applied_version: Optional[int] = None
+        self._unavailable = False
+        self._retry_after: float = 0.0
+        self._provisioning = False
 
     @property
     def enabled(self) -> bool:
@@ -309,6 +333,401 @@ class HADispatchRemoteUI:
         if creator is not None:
             return creator(coro, name="ha_dispatch_client_remote_ui")
         return self.hass.async_create_task(coro)
+
+    # ------------------------------------------------------------ provisioner --
+    #
+    # Slice 2. Called on the coordinator's cadence, like backups.async_tick():
+    # absent unless setup wired a coordinator, and incapable of raising, because
+    # a house must keep reporting metrics even when its remote access is broken.
+
+    async def async_poll(self) -> None:
+        """Ask Dispatch what this house should be, and make it so. Cannot raise."""
+        if self._provisioning:
+            # A slow step (a CSR the server is slow to sign) outlived the
+            # 60 s cadence; the next poll picks up where this one ends.
+            return
+        self._provisioning = True
+        try:
+            await self._async_poll()
+        except Exception as err:  # noqa: BLE001 - see the docstring
+            _LOGGER.error("Remote UI: unexpected error while provisioning: %s", err)
+            self._retry_after = time.time() + REMOTE_UI_RETRY_SECONDS
+        finally:
+            self._provisioning = False
+
+    async def _async_poll(self) -> None:
+        if self._unavailable:
+            return
+        api = getattr(self.coordinator, "api_client", None)
+        installation_id = getattr(self.coordinator, "installation_id", None)
+        if api is None or installation_id is None:
+            return
+
+        try:
+            desired = await api.fetch_remote_ui(installation_id)
+        except RemoteUiUnavailable:
+            self._unavailable = True
+            _LOGGER.info(
+                "This Dispatch server has no Remote UI endpoint; not asking again. "
+                "Files placed by hand in %s keep working as they are", self.directory(),
+            )
+            return
+        except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
+            _LOGGER.debug("Remote UI: could not fetch the desired state: %s", err)
+            return
+
+        if not isinstance(desired, dict):
+            return
+        self.desired = desired
+
+        if not desired.get("enabled"):
+            await self._async_disable()
+            return
+
+        if time.time() < self._retry_after:
+            return
+        await self._async_provision(desired)
+
+    async def _async_disable(self) -> None:
+        """The server says off: hang up and remove the three files, nothing else.
+
+        ``http.yaml`` is left alone: a stale trusted-proxies list is harmless
+        and removing the include line is a config edit the homeowner did not
+        ask for. Idempotent -- a house that is already off writes and logs
+        nothing.
+        """
+        was_dialling = self._client is not None
+        if was_dialling:
+            await self.async_unload()
+        self.config = None
+        self._applied_version = None
+        removed = await self.hass.async_add_executor_job(remove_remote_ui_files, self.directory())
+        if was_dialling or removed:
+            _LOGGER.info(
+                "Remote UI: switched off by the homeowner; hung up and removed %s",
+                ", ".join(removed) if removed else "nothing (no files were present)",
+            )
+
+    async def _async_provision(self, desired: Dict[str, Any]) -> None:
+        installation_id = self.coordinator.installation_id
+        api = self.coordinator.api_client
+        directory = self.directory()
+        now = time.time()
+
+        try:
+            hostname, server, port = desired_endpoint(desired)
+        except RemoteUIConfigError as err:
+            _LOGGER.error("Remote UI: the server's desired state is unusable: %s", err)
+            self._retry_after = now + REMOTE_UI_RETRY_SECONDS
+            return
+
+        files: RemoteUiFiles = await self.hass.async_add_executor_job(inspect_remote_ui_files, directory)
+        plan = plan_provisioning(desired, files, self._applied_version, now)
+        written: List[str] = []
+
+        try:
+            key = files.key
+            if plan["key"]:
+                key = await self.hass.async_add_executor_job(generate_private_key)
+                await self.hass.async_add_executor_job(
+                    write_atomic, directory / REMOTE_UI_KEY_FILE, private_key_pem(key), REMOTE_UI_SECRET_FILE_MODE,
+                )
+                written.append(REMOTE_UI_KEY_FILE)
+                _LOGGER.info("Remote UI: generated this house's private key in %s; it will not leave", directory)
+
+            if plan["certificate"]:
+                certificate = desired.get("certificate")
+                offered = certificate.get("fullchain_pem") if isinstance(certificate, dict) else None
+                if isinstance(offered, str) and certificate_is_usable(offered, key, hostname, now)[0]:
+                    # The server already holds a certificate for this very key
+                    # (a lost or hand-replaced file); no need to spend a signing.
+                    cert_pem = offered
+                else:
+                    csr_pem = build_csr(key, hostname)
+                    signed = await api.sign_remote_ui_csr(installation_id, csr_pem)
+                    cert_pem = signed.get("fullchain_pem") if isinstance(signed, dict) else None
+                    usable, why = certificate_is_usable(cert_pem, key, hostname, now)
+                    if not usable:
+                        raise RemoteUIConfigError(f"the certificate Dispatch signed cannot be used: {why}")
+                await self.hass.async_add_executor_job(
+                    write_atomic, directory / REMOTE_UI_CERT_FILE, cert_pem.encode("utf-8"), 0o644,
+                )
+                written.append(REMOTE_UI_CERT_FILE)
+                _LOGGER.info("Remote UI: certificate for %s written to %s", hostname, directory)
+
+            if plan["token"]:
+                aes_key = os.urandom(32).hex()
+                aes_iv = os.urandom(16).hex()
+                minted = await api.mint_remote_ui_token(installation_id, aes_key, aes_iv)
+                if not isinstance(minted, dict):
+                    raise RemoteUIConfigError("the token endpoint did not return an object")
+                protocol_version = minted.get(
+                    "protocol_version", desired.get("protocol_version", REMOTE_UI_DEFAULT_PROTOCOL_VERSION)
+                )
+                # Exactly the slice-1 shape, through the same validator the
+                # loader uses, so what is written is what will load.
+                config = parse_remote_ui_config({
+                    "hostname": hostname,
+                    "server": server,
+                    "port": port,
+                    "token": minted.get("token"),
+                    "aes_key": aes_key,
+                    "aes_iv": aes_iv,
+                    "valid": minted.get("valid"),
+                    "protocol_version": protocol_version,
+                })
+                await self.hass.async_add_executor_job(
+                    write_atomic, directory / REMOTE_UI_CONFIG_FILE,
+                    (json.dumps(config, indent=2) + "\n").encode("utf-8"), REMOTE_UI_SECRET_FILE_MODE,
+                )
+                written.append(REMOTE_UI_CONFIG_FILE)
+                _LOGGER.info("Remote UI: relay token for %s minted, valid until %s", hostname, _when(config["valid"]))
+        except RemoteUiUnavailable:
+            self._unavailable = True
+            _LOGGER.info("This Dispatch server has no Remote UI endpoint; not asking again")
+            return
+        except RemoteUiRefused as err:
+            _LOGGER.warning("Remote UI: Dispatch declined a provisioning step (%s); trying again later", err)
+            self._retry_after = time.time() + REMOTE_UI_RETRY_SECONDS
+            return
+        except RemoteUIConfigError as err:
+            _LOGGER.error("Remote UI: %s; trying again later", err)
+            self._retry_after = time.time() + REMOTE_UI_RETRY_SECONDS
+            return
+        except (aiohttp.ClientError, TimeoutError, OSError, KeyError, ValueError) as err:
+            _LOGGER.warning("Remote UI: provisioning did not complete (%s); trying again later", err)
+            self._retry_after = time.time() + REMOTE_UI_RETRY_SECONDS
+            return
+
+        if written or self.config is None:
+            # Something new on disk, or files present but not yet dialled:
+            # (re)load through the one path that knows how to dial.
+            if self._client is not None:
+                await self.async_unload()
+            await self.async_load()
+            if self.config is None:
+                # async_load has said why. Do not record the version, so the
+                # next poll tries again once the backoff has passed.
+                self._retry_after = time.time() + REMOTE_UI_RETRY_SECONDS
+                return
+
+        self._applied_version = desired.get("config_version")
+        self._retry_after = 0.0
+        if plan["reasons"]:
+            _LOGGER.debug("Remote UI: provisioned (%s); wrote %s", ", ".join(plan["reasons"]), written or "nothing")
+
+
+class RemoteUiFiles:
+    """What is on disk right now, as far as the provisioner needs to know."""
+
+    def __init__(self, key=None, cert_pem: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
+        self.key = key
+        self.cert_pem = cert_pem
+        self.config = config
+
+
+def desired_endpoint(desired: Dict[str, Any]) -> Tuple[str, str, int]:
+    """The hostname, relay server and relay port from a desired state, checked."""
+    hostname = desired.get("hostname")
+    relay = desired.get("relay") if isinstance(desired.get("relay"), dict) else {}
+    server = relay.get("server")
+    port = relay.get("port", REMOTE_UI_DEFAULT_PORT)
+    if not isinstance(hostname, str) or not hostname.strip():
+        raise RemoteUIConfigError("'hostname' is missing")
+    if not isinstance(server, str) or not server.strip():
+        raise RemoteUIConfigError("'relay.server' is missing")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise RemoteUIConfigError("'relay.port' is not a port number")
+    return hostname.strip(), server.strip(), port
+
+
+def plan_provisioning(
+    desired: Dict[str, Any],
+    files: RemoteUiFiles,
+    applied_version: Optional[int],
+    now: float,
+) -> Dict[str, Any]:
+    """Decide which of the three files need (re)writing. Pure; tested directly.
+
+    The rule from the contract: act on the first poll, when config_version
+    moves, when the token is within 48 h of expiry, when the certificate is
+    within 60 days of expiry, or when a renewal is requested. Everything else
+    is a no-op, so an unchanged desired state writes nothing. A moved version
+    re-mints the token (it names the hostname and the relay) but does not
+    re-sign a certificate that is still good: signings are rationed.
+    """
+    hostname, server, port = desired_endpoint(desired)
+    version = desired.get("config_version")
+    first = applied_version is None
+    moved = not first and version != applied_version
+    reasons: List[str] = []
+
+    need_key = files.key is None
+    if need_key:
+        reasons.append("no private key")
+
+    usable, why = certificate_is_usable(files.cert_pem, files.key, hostname, now) if not need_key else (False, "new key")
+    need_cert = need_key or not usable
+    if need_cert and not need_key:
+        reasons.append(f"certificate: {why}")
+    if (first or moved) and desired.get("renew_requested") and not need_cert:
+        need_cert = True
+        reasons.append("renewal requested")
+
+    config = files.config
+    need_token = (
+        config is None
+        or config["hostname"] != hostname
+        or config["server"] != server
+        or config["port"] != port
+        or config["valid"] - now < REMOTE_UI_TOKEN_REFRESH_SECONDS
+    )
+    if need_token:
+        reasons.append("token: missing, stale or within 48 h of expiry")
+    elif moved:
+        need_token = True
+        reasons.append(f"config_version moved {applied_version} -> {version}")
+
+    return {"key": need_key, "certificate": need_cert, "token": need_token, "reasons": reasons}
+
+
+def generate_private_key():
+    """A fresh EC P-256 key. Blocking (briefly): call through the executor."""
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    return ec.generate_private_key(ec.SECP256R1())
+
+
+def private_key_pem(key) -> bytes:
+    from cryptography.hazmat.primitives import serialization
+
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+
+
+def build_csr(key, hostname: str) -> str:
+    """A certificate signing request with CN and SAN = hostname, as PEM text.
+
+    This -- and only this -- is what leaves the house. It carries the public
+    key and a signature made with the private one; the private key itself is
+    not in it and cannot be recovered from it.
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.x509.oid import NameOID
+
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostname)]))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(hostname)]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    return csr.public_bytes(serialization.Encoding.PEM).decode("ascii")
+
+
+def certificate_is_usable(cert_pem: Optional[str], key, hostname: str, now: float) -> Tuple[bool, str]:
+    """Whether a certificate is this key's, names this hostname, and has 60+ days left."""
+    if not cert_pem or key is None:
+        return False, "missing"
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.x509.oid import ExtensionOID, NameOID
+
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem.encode("utf-8"))
+    except (ValueError, TypeError) as err:
+        return False, f"unreadable ({err})"
+
+    def spki(public_key) -> bytes:
+        return public_key.public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+
+    if spki(cert.public_key()) != spki(key.public_key()):
+        return False, "does not match the private key"
+
+    names: List[str] = []
+    try:
+        san = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+        names = san.value.get_values_for_type(x509.DNSName)
+    except x509.ExtensionNotFound:
+        pass
+    names += [attr.value for attr in cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)]
+    if hostname not in names:
+        return False, f"issued for {', '.join(names) or 'no name'}, not {hostname}"
+
+    expires = getattr(cert, "not_valid_after_utc", None)
+    if expires is None:  # cryptography < 42
+        expires = cert.not_valid_after.replace(tzinfo=dt.timezone.utc)
+    left = expires.timestamp() - now
+    if left < REMOTE_UI_CERT_RENEW_DAYS * 86400:
+        return False, f"expires {expires.date().isoformat()}, within {REMOTE_UI_CERT_RENEW_DAYS} days"
+    return True, "usable"
+
+
+def inspect_remote_ui_files(directory: Path) -> RemoteUiFiles:
+    """Read whatever is in the directory without judging it. Blocking I/O."""
+    from cryptography.hazmat.primitives import serialization
+
+    files = RemoteUiFiles()
+    key_path = directory / REMOTE_UI_KEY_FILE
+    if key_path.is_file():
+        try:
+            files.key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+        except (OSError, ValueError, TypeError) as err:
+            _LOGGER.warning("Remote UI: %s is unreadable (%s); a new key will be generated", key_path, err)
+    cert_path = directory / REMOTE_UI_CERT_FILE
+    if cert_path.is_file():
+        try:
+            files.cert_pem = cert_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+    config_path = directory / REMOTE_UI_CONFIG_FILE
+    if config_path.is_file():
+        try:
+            files.config = parse_remote_ui_config(json.loads(config_path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, RemoteUIConfigError):
+            files.config = None
+    return files
+
+
+def write_atomic(path: Path, data: bytes, mode: int) -> None:
+    """Write a file whole or not at all: temp in the same directory, then replace.
+
+    Blocking I/O. The mode is set on the temp file before the rename, so a
+    secret never sits readable on disk even for an instant.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def remove_remote_ui_files(directory: Path) -> List[str]:
+    """Delete the three files, and only those. Blocking I/O. Returns what went."""
+    removed: List[str] = []
+    for name in (REMOTE_UI_CONFIG_FILE, REMOTE_UI_CERT_FILE, REMOTE_UI_KEY_FILE):
+        path = directory / name
+        try:
+            path.unlink()
+            removed.append(name)
+        except FileNotFoundError:
+            continue
+    return removed
 
 
 def _when(timestamp: int) -> str:

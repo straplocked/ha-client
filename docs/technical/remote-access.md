@@ -259,7 +259,10 @@ base64 encoded, keeps its original `Content-Type`, and is labelled
 
 ## Remote UI: the homeowner's own way in
 
-**Status:** slice 1 (home lab), agent side built; not yet in a release.
+**Status:** slice 1 (hand-placed files) and slice 2 (the agent fetches its
+certificate, token and desired state from Dispatch) built on the agent side;
+not yet in a release. The `http.yaml` management and the health item the
+contract describes are not yet built.
 
 Everything above is remote access for a **technician**: the server authorises
 every request and writes it on a receipt, which requires that the traffic can
@@ -287,11 +290,14 @@ refusal policy: nothing of ours is in the path, and that is the design.
 
 Off until `<config>/ha_dispatch_client/remote_ui/` holds all three:
 
-| File | What it is | Slice 1 source |
-|---|---|---|
-| `remote_ui.json` | The relay to dial, the token to present, the channel's AES key and IV, the token's expiry | ha-dispatch `docker/relay/mint_token.py mint` |
-| `fullchain.pem` | The house's certificate for its hostname | A manual ACME run |
-| `privkey.pem` | Its private key. Never leaves this directory | The same run |
+| File | What it is | Hand-placed (slice 1) | Fetched (slice 2) |
+|---|---|---|---|
+| `remote_ui.json` | The relay to dial, the token to present, the channel's AES key and IV, the token's expiry | ha-dispatch `docker/relay/mint_token.py mint` | `POST .../remote-ui/token`, for a keyset made here |
+| `fullchain.pem` | The house's certificate for its hostname | A manual ACME run | `POST .../remote-ui/csr`, signed from a CSR made here |
+| `privkey.pem` | Its private key. Never leaves this directory | The same run | Generated here (EC P-256), mode 0600 |
+
+The files are the contract between the two slices, and the dial loop neither
+knows nor cares which wrote them.
 
 No directory means no attempt, logged at debug. A directory with a missing or
 unusable file is an **error** logged once, and still no attempt: a server that
@@ -308,11 +314,37 @@ trickle of reconnects rather than a storm. A refused dial is retried the same
 way and remembered in `last_error`. `async_unload` hangs up and leaves the
 files: an integration reload is not the homeowner turning their access off.
 
-### What slice 2 changes
+### How the files get there: the provisioner
 
-The files are the contract. Slice 2 has the agent generate its own key and ask
-Dispatch for the certificate (DNS-01 answered by Dispatch) and the token, and
-writes the same three files. Nothing in the dial changes.
+`HADispatchRemoteUI.async_poll` runs on the coordinator's 60 s cycle, in the
+same arrangement as `backups.async_tick()`: absent unless setup wired a
+coordinator, and unable to raise. It asks `GET .../remote-ui` for the desired
+state and acts on the answer:
+
+| The server says | The agent does |
+|---|---|
+| **404** | The server predates Remote UI. Remembered for the rest of the run and said once at info; hand-placed files keep working untouched. Never mapped to "installation gone" (see `RemoteUiUnavailable`). |
+| `enabled: false` | Hangs up if a dial is live, deletes the three files, forgets the applied version. Leaves `ha_dispatch_client/http.yaml` alone -- a stale proxy list is harmless and removing the include is a config edit nobody asked for. Idempotent: off twice writes and logs nothing. |
+| `enabled: true` | Inspects the directory and writes only what is needed (`plan_provisioning`): a key if there is none; a certificate if there is none, it is not this key's, it does not name the hostname, it has under 60 days left, or a renewal was requested; a token if `remote_ui.json` is missing, names another hostname or relay, has under 48 h left -- **or `config_version` moved**, since the token names the hostname and the relay. Then (re)loads through `async_load`, the one path that knows how to dial. |
+
+What leaves the house is the **certificate signing request** -- the public
+key and a signature made with the private one -- and the AES keyset the
+relay channel will use. The private key is generated here, written with mode
+0600, and is in no request body; the test suite's guard for this slice
+asserts exactly that. A certificate the server already holds for this very
+key (a lost or hand-replaced file) is written back rather than spent on a
+second signing. `remote_ui.json` is written in exactly the slice-1 shape,
+through the same validator the loader uses, atomically (temp file, then
+replace). An unchanged desired state writes nothing: the mtimes do not move.
+
+A step the server declines -- `409` not switched on, `422` CSR names the wrong
+host, `429` signed in the last 24 h -- or that fails on the wire is backed off
+for five minutes, not retried every poll, and the version is not recorded so
+the next attempt picks up what is left (a key already generated is kept).
+
+Not yet built from the contract: reporting to `POST .../remote-ui/status`
+(the client method exists; nothing calls it), `http.yaml` from
+`trusted_proxies`, and the `ip_ban_enabled` health item.
 
 ## What is not supported
 

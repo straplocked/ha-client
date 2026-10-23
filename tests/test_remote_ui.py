@@ -10,6 +10,14 @@ What is asserted here is the agent's side of the slice-1 contract:
   - a drop is followed by a redial, an expired token is not, and unload hangs
     up without touching the files.
 
+Slice 2's provisioner is asserted the same way, against a fake Dispatch that
+signs CSRs with its own throwaway CA: a server without the feature (404)
+leaves hand-placed files alone; off removes the three files and nothing else;
+a first poll generates a key that **never leaves the house** (the guard: the
+CSR payload holds no private key), has a CSR with the hostname as CN signed,
+writes the minted token, and dials; an unchanged desired state writes
+nothing; a moved config_version re-mints only the token.
+
 The TLS context is built from a real self-signed certificate so a mismatched
 key is caught the way it would be in the house. snitun itself is not driven
 here -- the relay's own ``docker/relay/test_relay.py`` in ha-dispatch does
@@ -19,10 +27,14 @@ records what it was asked to do.
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime as dt
 import json
 import logging
+import os
+import stat
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -32,8 +44,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from test_remote_access import _load  # noqa: E402 -- shares the loader
+from test_remote_access import FakeResponse, FakeSession, _load  # noqa: E402 -- shares the loader
 
+api_client = _load("api_client")
 const = _load("const")
 remote_ui = _load("remote_ui")
 
@@ -414,6 +427,451 @@ class LifecycleTest(unittest.TestCase):
                 self.assertTrue((directory / REMOTE_UI_KEY_FILE).is_file())
 
         run(scenario())
+
+
+# --- slice 2: the provisioner -----------------------------------------------
+
+
+class FakeRemoteUiApi:
+    """Stands in for Dispatch's /remote-ui endpoints, with its own throwaway CA.
+
+    It records every request body, because what the house *sends* is the
+    thing under test. It does not bump config_version on its own: the tests
+    move it by hand, so each one says exactly what the server changed.
+    """
+
+    def __init__(self, desired=None, unavailable=False):
+        self.desired = desired
+        self.unavailable = unavailable
+        self.fetches = 0
+        self.csr_posts = []
+        self.token_posts = []
+        self.status_posts = []
+        self.minted = 0
+        self.ca_key = ec.generate_private_key(ec.SECP256R1())
+        self.ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Fake Origin CA")])
+
+    async def fetch_remote_ui(self, installation_id):
+        self.fetches += 1
+        if self.unavailable:
+            raise api_client.RemoteUiUnavailable("HTTP 404")
+        return copy.deepcopy(self.desired)
+
+    async def sign_remote_ui_csr(self, installation_id, csr_pem):
+        self.csr_posts.append({"csr_pem": csr_pem})
+        csr = x509.load_pem_x509_csr(csr_pem.encode("ascii"))
+        now = dt.datetime.now(dt.timezone.utc)
+        builder = (
+            x509.CertificateBuilder()
+            .subject_name(csr.subject)
+            .issuer_name(self.ca_name)
+            .public_key(csr.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - dt.timedelta(minutes=1))
+            .not_valid_after(now + dt.timedelta(days=1825))
+        )
+        for extension in csr.extensions:
+            builder = builder.add_extension(extension.value, critical=extension.critical)
+        cert = builder.sign(self.ca_key, hashes.SHA256())
+        pem = cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+        expires = (now + dt.timedelta(days=1825)).isoformat()
+        self.desired["certificate"] = {"fullchain_pem": pem, "expires_at": expires}
+        return {"fullchain_pem": pem, "expires_at": expires}
+
+    async def mint_remote_ui_token(self, installation_id, aes_key_hex, aes_iv_hex):
+        self.token_posts.append({"aes_key": aes_key_hex, "aes_iv": aes_iv_hex})
+        self.minted += 1
+        return {"token": f"gAAAAABminted{self.minted}", "valid": FAR_FUTURE, "protocol_version": 2}
+
+    async def report_remote_ui_status(self, installation_id, payload):
+        self.status_posts.append(payload)
+
+
+class FakeCoordinator:
+    def __init__(self, api):
+        self.api_client = api
+        self.installation_id = 7
+
+
+def desired_state(**overrides):
+    state = {
+        "enabled": True,
+        "hostname": HOSTNAME,
+        "relay": {"server": "relay.hadispatch.app", "port": 443},
+        "protocol_version": 2,
+        "trusted_proxies": ["173.245.48.0/20", "2400:cb00::/32"],
+        "ranges_version": 7,
+        "certificate": None,
+        "config_version": 12,
+    }
+    state.update(overrides)
+    return state
+
+
+OLD_MTIME = 1_000_000_000  # 2001: a timestamp no write today could produce
+
+
+def pin_mtimes(directory: Path):
+    """Set every file's mtime to a known old value, so a rewrite is unmistakable."""
+    for path in directory.iterdir():
+        os.utime(path, (OLD_MTIME, OLD_MTIME))
+
+
+def untouched(directory: Path, *names) -> bool:
+    return all(int(os.stat(directory / name).st_mtime) == OLD_MTIME for name in names)
+
+
+class ProvisionerTest(unittest.TestCase):
+    def make(self, tmp: Path, api):
+        hass = FakeHass(tmp)
+        clients = []
+
+        def factory(runner, context, server, port):
+            client = FakeClient(runner, context, server, port)
+            clients.append(client)
+            return client
+
+        manager = HADispatchRemoteUI(hass, FakeCoordinator(api), client_factory=factory, delay=lambda: 0)
+        return hass, manager, clients
+
+    def house_dir(self, tmp: Path) -> Path:
+        return tmp.joinpath(*REMOTE_UI_DIR)
+
+    def test_a_server_without_remote_ui_leaves_hand_placed_files_alone_and_dials_with_them(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(unavailable=True)
+                hass, manager, clients = self.make(Path(tmp), api)
+                directory = write_house(Path(tmp))
+                pin_mtimes(directory)
+                await manager.async_load()
+                await settle()
+                with self.assertLogs(remote_ui._LOGGER, level=logging.INFO) as logs:
+                    await manager.async_poll()
+                    await manager.async_poll()
+                    await manager.async_poll()
+                # Asked once, said once, and the hand-placed token is what is dialled.
+                self.assertEqual(api.fetches, 1)
+                self.assertEqual(sum("no Remote UI endpoint" in line for line in logs.output), 1)
+                self.assertTrue(untouched(directory, REMOTE_UI_CONFIG_FILE, REMOTE_UI_CERT_FILE, REMOTE_UI_KEY_FILE))
+                self.assertEqual(clients[0].connects[0][0], b"gAAAAABtoken")
+                self.assertTrue(manager.connected)
+                self.assertEqual(api.csr_posts, [])
+                self.assertEqual(api.token_posts, [])
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_enabled_false_hangs_up_and_removes_the_three_files_but_not_http_yaml(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(desired={"enabled": False})
+                hass, manager, clients = self.make(Path(tmp), api)
+                directory = write_house(Path(tmp))
+                http_yaml = Path(tmp, "ha_dispatch_client", "http.yaml")
+                http_yaml.write_text("use_x_forwarded_for: true\ntrusted_proxies:\n  - 173.245.48.0/20\n")
+                await manager.async_load()
+                await settle()
+                self.assertTrue(manager.connected)
+
+                await manager.async_poll()
+                self.assertTrue(clients[0].stopped)
+                self.assertFalse(manager.connected)
+                self.assertFalse(manager.enabled)
+                for name in (REMOTE_UI_CONFIG_FILE, REMOTE_UI_CERT_FILE, REMOTE_UI_KEY_FILE):
+                    self.assertFalse((directory / name).exists(), name)
+                self.assertTrue(http_yaml.is_file())
+                self.assertIn("173.245.48.0/20", http_yaml.read_text())
+
+                # Off again is a no-op: nothing to remove, nothing to say.
+                with self.assertNoLogs(remote_ui._LOGGER, level=logging.INFO):
+                    await manager.async_poll()
+                self.assertEqual(len(clients), 1)
+
+        run(scenario())
+
+    def test_a_first_poll_provisions_a_key_that_never_leaves_the_house(self):
+        """THE GUARD. The CSR is the only thing sent; the key is only ever on disk."""
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(desired=desired_state())
+                hass, manager, clients = self.make(Path(tmp), api)
+                directory = self.house_dir(Path(tmp))
+                self.assertFalse(directory.exists())
+
+                await manager.async_poll()
+                await settle()
+
+                # The key: on disk, private to the HA user, and nowhere in what was posted.
+                key_path = directory / REMOTE_UI_KEY_FILE
+                self.assertTrue(key_path.is_file())
+                self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
+                self.assertIn("PRIVATE KEY", key_path.read_text())
+                self.assertEqual(len(api.csr_posts), 1)
+                self.assertNotIn("PRIVATE KEY", json.dumps(api.csr_posts))
+                self.assertNotIn("PRIVATE KEY", json.dumps(api.token_posts))
+
+                # The CSR: CN and SAN are the hostname, and it is this key's.
+                csr = x509.load_pem_x509_csr(api.csr_posts[0]["csr_pem"].encode())
+                self.assertEqual(csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value, HOSTNAME)
+                san = csr.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+                self.assertEqual(san.get_values_for_type(x509.DNSName), [HOSTNAME])
+                key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+                self.assertEqual(
+                    csr.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
+                    key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
+                )
+
+                # The certificate is what the fake signed, verbatim.
+                self.assertEqual((directory / REMOTE_UI_CERT_FILE).read_text(), api.desired["certificate"]["fullchain_pem"])
+
+                # remote_ui.json: exactly the slice-1 shape, holding what was minted
+                # and the keyset that was posted to mint it.
+                written = json.loads((directory / REMOTE_UI_CONFIG_FILE).read_text())
+                self.assertEqual(len(api.token_posts), 1)
+                self.assertEqual(written, {
+                    "hostname": HOSTNAME,
+                    "server": "relay.hadispatch.app",
+                    "port": 443,
+                    "token": "gAAAAABminted1",
+                    "aes_key": api.token_posts[0]["aes_key"],
+                    "aes_iv": api.token_posts[0]["aes_iv"],
+                    "valid": FAR_FUTURE,
+                    "protocol_version": 2,
+                })
+                self.assertEqual(len(bytes.fromhex(written["aes_key"])), 32)
+                self.assertEqual(len(bytes.fromhex(written["aes_iv"])), 16)
+                self.assertEqual(stat.S_IMODE((directory / REMOTE_UI_CONFIG_FILE).stat().st_mode), 0o600)
+
+                # And it dialled with them.
+                self.assertEqual(len(clients), 1)
+                self.assertEqual(clients[0].connects, [(
+                    b"gAAAAABminted1", bytes.fromhex(written["aes_key"]), bytes.fromhex(written["aes_iv"]), 2,
+                )])
+                self.assertTrue(manager.connected)
+                self.assertEqual(manager.dials, 1)
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_an_unchanged_desired_state_writes_nothing(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(desired=desired_state())
+                hass, manager, clients = self.make(Path(tmp), api)
+                directory = self.house_dir(Path(tmp))
+                await manager.async_poll()
+                await settle()
+                pin_mtimes(directory)
+
+                await manager.async_poll()
+                await manager.async_poll()
+                await settle()
+                self.assertEqual(api.fetches, 3)
+                self.assertTrue(untouched(directory, REMOTE_UI_CONFIG_FILE, REMOTE_UI_CERT_FILE, REMOTE_UI_KEY_FILE))
+                self.assertEqual(len(api.csr_posts), 1)
+                self.assertEqual(len(api.token_posts), 1)
+                # No redial either: the connection it had is the one it keeps.
+                self.assertEqual(len(clients), 1)
+                self.assertEqual(manager.dials, 1)
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_a_moved_config_version_re_mints_the_token_only(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(desired=desired_state())
+                hass, manager, clients = self.make(Path(tmp), api)
+                directory = self.house_dir(Path(tmp))
+                await manager.async_poll()
+                await settle()
+                pin_mtimes(directory)
+
+                api.desired["config_version"] = 13
+                await manager.async_poll()
+                await settle()
+
+                self.assertEqual(len(api.csr_posts), 1, "the certificate was still good; no new signing")
+                self.assertEqual(len(api.token_posts), 2)
+                self.assertTrue(untouched(directory, REMOTE_UI_CERT_FILE, REMOTE_UI_KEY_FILE))
+                self.assertFalse(untouched(directory, REMOTE_UI_CONFIG_FILE))
+                written = json.loads((directory / REMOTE_UI_CONFIG_FILE).read_text())
+                self.assertEqual(written["token"], "gAAAAABminted2")
+                self.assertEqual(written["aes_key"], api.token_posts[1]["aes_key"])
+                # Hung up and redialled with the new token.
+                self.assertTrue(clients[0].stopped)
+                self.assertEqual(len(clients), 2)
+                self.assertEqual(clients[1].connects[0][0], b"gAAAAABminted2")
+                self.assertTrue(manager.connected)
+
+                # And a third poll at the same version is quiet again.
+                pin_mtimes(directory)
+                await manager.async_poll()
+                self.assertTrue(untouched(directory, REMOTE_UI_CONFIG_FILE, REMOTE_UI_CERT_FILE, REMOTE_UI_KEY_FILE))
+                self.assertEqual(len(api.token_posts), 2)
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_a_refusal_is_backed_off_not_retried_every_minute(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(desired=desired_state())
+
+                async def refuse(installation_id, csr_pem):
+                    api.csr_posts.append({"csr_pem": csr_pem})
+                    raise api_client.RemoteUiRefused(429, "signed in the last 24 hours")
+
+                api.sign_remote_ui_csr = refuse
+                hass, manager, clients = self.make(Path(tmp), api)
+                with self.assertLogs(remote_ui._LOGGER, level=logging.WARNING):
+                    await manager.async_poll()
+                await manager.async_poll()
+                await manager.async_poll()
+                self.assertEqual(len(api.csr_posts), 1)
+                self.assertEqual(api.token_posts, [])
+                self.assertEqual(clients, [])
+                # The key it generated is kept for the retry; nothing else exists yet.
+                directory = self.house_dir(Path(tmp))
+                self.assertTrue((directory / REMOTE_UI_KEY_FILE).is_file())
+                self.assertFalse((directory / REMOTE_UI_CONFIG_FILE).exists())
+
+        run(scenario())
+
+
+class PlanningTest(unittest.TestCase):
+    """The pure decision, with hand-written expectations."""
+
+    def files(self, tmp: Path, long_cert: bool = False, **config_overrides):
+        """Hand-placed files, inspected. The slice-1 fixture's cert lasts a day."""
+        config_overrides.setdefault("server", "relay.hadispatch.app")
+        config_overrides.setdefault("port", 443)
+        directory = write_house(tmp, good_config(**config_overrides))
+        if long_cert:
+            key = remote_ui.inspect_remote_ui_files(directory).key
+            self._write_long_cert(directory, key, config_overrides.get("hostname", HOSTNAME))
+        return remote_ui.inspect_remote_ui_files(directory)
+
+    def test_first_poll_with_good_files_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self.files(Path(tmp), long_cert=True)
+            plan = remote_ui.plan_provisioning(desired_state(), files, None, now=time.time())
+            self.assertEqual((plan["key"], plan["certificate"], plan["token"]), (False, False, False))
+
+    def test_a_cert_within_sixty_days_is_renewed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self.files(Path(tmp))  # the one-day certificate
+            plan = remote_ui.plan_provisioning(desired_state(), files, None, now=time.time())
+            self.assertEqual((plan["key"], plan["certificate"], plan["token"]), (False, True, False))
+
+    def test_a_token_within_48h_is_re_minted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self.files(Path(tmp), long_cert=True, valid=1_000_000 + 47 * 3600)
+            self.assertTrue(remote_ui.plan_provisioning(desired_state(), files, 12, now=1_000_000)["token"])
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self.files(Path(tmp), long_cert=True, valid=1_000_000 + 49 * 3600)
+            self.assertFalse(remote_ui.plan_provisioning(desired_state(), files, 12, now=1_000_000)["token"])
+
+    def test_a_moved_version_re_mints_the_token_and_a_renew_request_re_signs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self.files(Path(tmp), long_cert=True)
+            now = time.time()
+            same = remote_ui.plan_provisioning(desired_state(config_version=12), files, 12, now=now)
+            moved = remote_ui.plan_provisioning(desired_state(config_version=13), files, 12, now=now)
+            renew = remote_ui.plan_provisioning(desired_state(config_version=13, renew_requested=True), files, 12, now=now)
+            self.assertEqual((same["certificate"], same["token"]), (False, False))
+            self.assertEqual((moved["certificate"], moved["token"]), (False, True))
+            self.assertEqual((renew["certificate"], renew["token"]), (True, True))
+
+    def test_a_different_hostname_or_relay_re_mints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self.files(Path(tmp), long_cert=True, server="old-relay.example")
+            self.assertTrue(remote_ui.plan_provisioning(desired_state(), files, 12, now=time.time())["token"])
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self.files(Path(tmp), long_cert=True, hostname="other.remote.hadispatch.app")
+            plan = remote_ui.plan_provisioning(desired_state(), files, 12, now=time.time())
+            # A renamed house needs both: the certificate names the old hostname too.
+            self.assertEqual((plan["certificate"], plan["token"]), (True, True))
+
+    def test_a_cert_for_another_key_is_not_usable(self):
+        other = ec.generate_private_key(ec.SECP256R1())
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self.files(Path(tmp), long_cert=True)
+            usable, why = remote_ui.certificate_is_usable(files.cert_pem, other, HOSTNAME, time.time())
+            self.assertFalse(usable)
+            self.assertIn("does not match", why)
+
+    def _write_long_cert(self, directory: Path, key, hostname: str = HOSTNAME):
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostname)])
+        now = dt.datetime.now(dt.timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - dt.timedelta(minutes=1))
+            .not_valid_after(now + dt.timedelta(days=1825))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(hostname)]), critical=False)
+            .sign(key, hashes.SHA256())
+        )
+        (directory / REMOTE_UI_CERT_FILE).write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+
+class RemoteUiApiTest(unittest.TestCase):
+    """The wire: a 404 is "no such feature", never "no such installation"."""
+
+    def make(self, status=200, payload=None, text=""):
+        session = FakeSession(FakeResponse(status=status, payload=payload, text=text))
+        return session, api_client.HADispatchApiClient(session, "https://dispatch.example.com", token="t")
+
+    def test_a_404_is_unavailable_not_gone(self):
+        self.assertFalse(issubclass(api_client.RemoteUiUnavailable, api_client.InstallationAuthError))
+        session, client = self.make(status=404)
+        for call in (
+            client.fetch_remote_ui(7),
+            client.sign_remote_ui_csr(7, "-----BEGIN CERTIFICATE REQUEST-----"),
+            client.mint_remote_ui_token(7, "ab" * 32, "cd" * 16),
+            client.report_remote_ui_status(7, {"connected": True}),
+        ):
+            with self.subTest(call=call.__name__):
+                with self.assertRaises(api_client.RemoteUiUnavailable):
+                    run(call)
+
+    def test_enabled_false_is_an_ordinary_answer(self):
+        session, client = self.make(payload={"enabled": False, "hostname": None})
+        self.assertEqual(run(client.fetch_remote_ui(7)), {"enabled": False, "hostname": None})
+        self.assertEqual(session.calls[0][:2], ("GET", "https://dispatch.example.com/api/v1/installations/7/remote-ui"))
+
+    def test_the_bodies_and_paths_are_the_contracts(self):
+        session, client = self.make(payload={"token": "x", "valid": 1, "protocol_version": 2})
+        run(client.mint_remote_ui_token(7, "ab" * 32, "cd" * 16))
+        run(client.sign_remote_ui_csr(7, "CSR"))
+        run(client.report_remote_ui_status(7, {"connected": True}))
+        self.assertEqual(
+            [(m, u.split("/installations/7", 1)[1], body) for m, u, body, _ in session.calls],
+            [
+                ("POST", "/remote-ui/token", {"aes_key": "ab" * 32, "aes_iv": "cd" * 16}),
+                ("POST", "/remote-ui/csr", {"csr_pem": "CSR"}),
+                ("POST", "/remote-ui/status", {"connected": True}),
+            ],
+        )
+
+    def test_a_refusal_carries_its_status(self):
+        for status in (409, 422, 429):
+            with self.subTest(status=status):
+                session, client = self.make(status=status, text="no")
+                with self.assertRaises(api_client.RemoteUiRefused) as caught:
+                    run(client.sign_remote_ui_csr(7, "CSR"))
+                self.assertEqual(caught.exception.status, status)
+
+
+class WiringTest(unittest.TestCase):
+    def test_the_coordinator_polls_the_provisioner_each_cycle(self):
+        source = Path(__file__).resolve().parent.parent.joinpath(
+            "custom_components", "ha_dispatch_client", "coordinator.py"
+        ).read_text()
+        self.assertIn("await self.remote_ui.async_poll()", source)
 
 
 if __name__ == "__main__":

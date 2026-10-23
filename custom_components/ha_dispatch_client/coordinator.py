@@ -181,6 +181,12 @@ class HADispatchCoordinator(DataUpdateCoordinator):
             if self.backups is not None:
                 self.backups.async_tick()
 
+            # Remote UI: ask Dispatch what this house should be and make it
+            # so. Same cadence, same inability to raise; one GET when nothing
+            # has changed, which is almost every poll.
+            if self.remote_ui is not None:
+                await self.remote_ui.async_poll()
+
             # Return combined data for sensors
             return {
                 "status": status_data.get("installation_status"),

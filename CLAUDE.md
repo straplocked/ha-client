@@ -120,7 +120,14 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   it, so Home Assistant applies its own login and MFA and no system user, token
   substitution or local policy is involved. It is **off until that directory
   holds `remote_ui.json`, `fullchain.pem` and `privkey.pem`** -- a server
-  cannot make a house reachable. This is the opposite property from the
+  cannot make a house reachable. Those three files are the contract between
+  slice 1 (hand-placed) and slice 2 (fetched): `async_poll` runs on the
+  coordinator cycle, asks `GET .../remote-ui` and writes only what the
+  desired state needs -- the key is generated **here** and is never in a
+  request body (only the CSR is), the token is re-minted when
+  `config_version` moves, and an unchanged state writes nothing. A 404 is
+  `RemoteUiUnavailable`, asked once per run; `enabled: false` is a 200 that
+  removes the three files and never `http.yaml`. This is the opposite property from the
   technician tunnel (which must be readable to be audited); never route
   technician access through it, and never put a credential of ours in it.
   Design: ha-dispatch `docs/technical/homeowner-remote-access.md`; the
@@ -145,11 +152,16 @@ All under `/api/v1/installations/`:
 - `POST .../{id}/access/{session}/revoke` - End a live session
 - `GET  .../{id}/access/poll` - Long-poll for authorised requests (held up to 25s)
 - `POST .../{id}/access/exchanges/{request_id}/respond` - Return a local response
+- `GET  .../{id}/remote-ui` - Remote UI desired state (`enabled: false` is a 200)
+- `POST .../{id}/remote-ui/csr` - Have the house's CSR signed (the key stays home)
+- `POST .../{id}/remote-ui/token` - Mint the relay token for a keyset made here
+- `POST .../{id}/remote-ui/status` - The house reports (204)
 
 A **404 on any `/access/` path means the server has no remote access**, not
 that this installation has vanished. It maps to `RemoteAccessUnavailable`, and
 must never map to `InstallationGoneError` -- the re-enrolment handler would
-re-register a healthy installation once a minute, forever.
+re-register a healthy installation once a minute, forever. The same holds for
+`/remote-ui` paths (`RemoteUiUnavailable`).
 
 ### Services (11 total)
 
@@ -226,7 +238,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `374 passed, 69 subtests passed`. Two standing limits on
+That currently prints `391 passed, 76 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not

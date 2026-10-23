@@ -67,6 +67,13 @@ API_FLOORPLAN_PENDING = "/api/v1/installations/{installation_id}/floorplan/pendi
 API_FLOORPLAN_REPORT = (
     "/api/v1/installations/{installation_id}/floorplan/{id}/report"
 )
+# Remote UI: the homeowner's own way in, through the Dispatch relay. A 404 on
+# any of these means the server predates the feature (RemoteUiUnavailable),
+# never that the installation is gone. 'enabled: false' is a 200.
+API_REMOTE_UI = "/api/v1/installations/{installation_id}/remote-ui"
+API_REMOTE_UI_CSR = "/api/v1/installations/{installation_id}/remote-ui/csr"
+API_REMOTE_UI_TOKEN = "/api/v1/installations/{installation_id}/remote-ui/token"
+API_REMOTE_UI_STATUS = "/api/v1/installations/{installation_id}/remote-ui/status"
 
 # --- Component inventory ----------------------------------------------------
 # Full design: docs/technical/component-inventory.md
@@ -620,3 +627,16 @@ REMOTE_UI_CONNECT_TIMEOUT = 30
 # relay restart is followed by a trickle of reconnects rather than a storm.
 REMOTE_UI_RECONNECT_MIN = 1.0
 REMOTE_UI_RECONNECT_MAX = 15.0
+# The provisioner (slice 2) asks Dispatch for the desired state on the
+# coordinator's cadence and acts only when config_version moves, so the
+# common "nothing changed" poll costs one GET and writes nothing.
+REMOTE_UI_POLL_SECONDS = 60
+# The relay token lives 30 days; re-mint it when this little of it is left.
+REMOTE_UI_TOKEN_REFRESH_SECONDS = 48 * 3600
+# The certificate lives five years; ask for a new one when this few days remain.
+REMOTE_UI_CERT_RENEW_DAYS = 60
+# A provisioning step the server refused (409/422/429) or that failed on the
+# wire is not retried every minute: wait this long before asking again.
+REMOTE_UI_RETRY_SECONDS = 300
+# Private key and config carry secrets; the certificate is public.
+REMOTE_UI_SECRET_FILE_MODE = 0o600
