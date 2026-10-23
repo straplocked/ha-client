@@ -602,3 +602,21 @@ ATTR_HA_VERSION = "ha_version"
 ATTR_CONFIG_VERSION = "config_version"
 ATTR_POLL_INTERVAL = "poll_interval_seconds"
 
+
+# Remote UI: the homeowner's own way in, through the Dispatch relay
+# (docs/technical/remote-access.md, "Remote UI"). Slice 1 is configured by
+# files placed in this directory under the HA config dir; no directory means
+# the feature is off and nothing is attempted -- fail closed, like the tunnel.
+REMOTE_UI_DIR = ("ha_dispatch_client", "remote_ui")
+REMOTE_UI_CONFIG_FILE = "remote_ui.json"
+REMOTE_UI_CERT_FILE = "fullchain.pem"
+REMOTE_UI_KEY_FILE = "privkey.pem"
+REMOTE_UI_DEFAULT_PORT = 443
+# Must match what the relay's minter writes into the token.
+REMOTE_UI_DEFAULT_PROTOCOL_VERSION = 2
+# A dial that has not completed in this long is given up and retried.
+REMOTE_UI_CONNECT_TIMEOUT = 30
+# After a drop, wait a random spell in this range before redialling, so a
+# relay restart is followed by a trickle of reconnects rather than a storm.
+REMOTE_UI_RECONNECT_MIN = 1.0
+REMOTE_UI_RECONNECT_MAX = 15.0

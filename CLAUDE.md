@@ -28,6 +28,7 @@ custom_components/ha_dispatch_client/
 ├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
 ├── backups.py      # HADispatchBackups - reports the installation's own backups (+ sha256)
 ├── screen.py         # ScreenSockets - Remote Screen's loopback WebSocket, frames over the poll
+├── remote_ui.py      # HADispatchRemoteUI - the homeowner's own way in, through the Dispatch relay (TLS ends here)
 ├── repairs.py        # Approve/Deny dialog and the end-access off-switch
 ├── floorplan.py      # HADispatchFloorplan - plan assets -> the room-first "Home 3D" dashboard
 ├── www/
@@ -109,6 +110,21 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   upright. `floorplan.py::rotate_percent_point` is the normative definition of
   a quarter turn in percent space, tested there and cited by the card.
 - **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. Full design: `docs/technical/remote-access.md`. A `screen` session (Remote Screen) carries the frontend itself to a headless browser on the Dispatch side: its own local policy (no `/auth`, no raw socket, writes only to `/api`), the admin user, and `screen.py` swapping our token into the browser's WebSocket `auth` frame so a real credential never leaves the house.
+
+- **Remote UI is the homeowner's path, and nothing of ours is in it:**
+  `remote_ui.py` dials out to the Dispatch relay (snitun, the library Nabu
+  Casa runs for HA Cloud, already installed by Core) and holds one
+  connection; the relay matches a phone's TLS SNI to it and copies bytes. TLS
+  terminates **inside Home Assistant's own aiohttp server** with a certificate
+  whose key sits in `<config>/ha_dispatch_client/remote_ui/` and never leaves
+  it, so Home Assistant applies its own login and MFA and no system user, token
+  substitution or local policy is involved. It is **off until that directory
+  holds `remote_ui.json`, `fullchain.pem` and `privkey.pem`** -- a server
+  cannot make a house reachable. This is the opposite property from the
+  technician tunnel (which must be readable to be audited); never route
+  technician access through it, and never put a credential of ours in it.
+  Design: ha-dispatch `docs/technical/homeowner-remote-access.md`; the
+  relay and its runbook live in that repo's `docker/relay/`.
 
 ### API Endpoints (server-side)
 
@@ -210,7 +226,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `342 passed, 39 subtests passed`. Two standing limits on
+That currently prints `374 passed, 69 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not

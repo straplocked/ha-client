@@ -27,6 +27,7 @@ from .remote_access import (
     async_all_managers,
     async_find_manager,
 )
+from .remote_ui import HADispatchRemoteUI
 from .updates import HADispatchUpdates
 from .updater import ClientUpdater
 
@@ -628,6 +629,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # notice a schedule that stopped or an archive that shrank.
     coordinator.backups = HADispatchBackups(hass, coordinator)
 
+    # Remote UI: the homeowner's own way in through the Dispatch relay. Off
+    # unless this house has been given its files; dials out and holds the
+    # connection otherwise. Nothing of ours is in that path -- see remote_ui.py.
+    remote_ui = HADispatchRemoteUI(hass, coordinator)
+    coordinator.remote_ui = remote_ui
+    await remote_ui.async_load()
+
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()
 
@@ -661,6 +669,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if getattr(coordinator, "backups", None) is not None:
             coordinator.backups.async_unload()
+
+        # Hang up the Remote UI. The files stay: a reload is not the homeowner
+        # turning their own access off.
+        if getattr(coordinator, "remote_ui", None) is not None:
+            await coordinator.remote_ui.async_unload()
 
         # If this was the last coordinator, remove services
         teardown_services(hass)

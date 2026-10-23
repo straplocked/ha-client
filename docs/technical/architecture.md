@@ -74,6 +74,7 @@ custom_components/ha_dispatch_client/
 ├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and session state
 ├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
 ├── repairs.py        # Approve / Deny and End-access repair flows
+├── remote_ui.py      # HADispatchRemoteUI - the homeowner's own way in, through the Dispatch relay
 ├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
 ├── manifest.json     # Integration metadata
 ├── services.yaml     # 9 service definitions with UI fields
@@ -178,6 +179,19 @@ Deny dialog and the one-tap off-switch.
 
 Neither enforces scope -- the server does that before anything is queued. See
 [Remote Access](remote-access.md).
+
+#### `remote_ui.py`
+
+The homeowner's own way in: the stock companion app reaching this Home
+Assistant through the Dispatch relay with no port forward. The module dials
+out and holds one multiplexed connection (snitun, already installed by Core);
+the relay matches a phone's TLS SNI to it and copies bytes; TLS terminates
+here, inside Home Assistant's own aiohttp server, with a certificate whose key
+never leaves the house. Home Assistant applies its own login and MFA. There is
+no credential of ours in the path, which is the opposite property from the
+technician tunnel above, and the reason the two never share a transport. Off
+until `<config>/ha_dispatch_client/remote_ui/` holds its three files. See
+[Remote Access](remote-access.md#remote-ui-the-homeowners-own-way-in).
 
 #### `floorplan.py`, `www/ayvra-room-plan.js`
 

@@ -257,6 +257,63 @@ base64 encoded, keeps its original `Content-Type`, and is labelled
 
 ---
 
+## Remote UI: the homeowner's own way in
+
+**Status:** slice 1 (home lab), agent side built; not yet in a release.
+
+Everything above is remote access for a **technician**: the server authorises
+every request and writes it on a receipt, which requires that the traffic can
+be read. Remote UI is remote access for the **homeowner** -- the stock
+companion app on their phone reaching their own Home Assistant through
+Dispatch's infrastructure with no port forward -- and its value depends on the
+traffic **not** being readable by anyone of ours. The two share nothing but the
+word "remote". Design and reasoning: ha-dispatch
+`docs/technical/homeowner-remote-access.md`.
+
+### How it works
+
+`remote_ui.py` dials out to the Dispatch relay and holds one multiplexed
+connection open. The relay is snitun's SNI passthrough server (the library
+Nabu Casa runs for HA Cloud; Core already installs it through hass-nabucasa).
+When the phone connects to `https://<label>.remote.hadispatch.app`, the relay
+matches the TLS SNI to this house's connection and copies bytes. The TLS
+session terminates **here**, inside Home Assistant's own aiohttp runner, with a
+certificate whose private key sits on this disk. Home Assistant then sees an
+ordinary request from an ordinary client and applies its own login, its own
+MFA and its own permissions. No system user, no token substitution, no local
+refusal policy: nothing of ours is in the path, and that is the design.
+
+### The files, and the off-switch
+
+Off until `<config>/ha_dispatch_client/remote_ui/` holds all three:
+
+| File | What it is | Slice 1 source |
+|---|---|---|
+| `remote_ui.json` | The relay to dial, the token to present, the channel's AES key and IV, the token's expiry | ha-dispatch `docker/relay/mint_token.py mint` |
+| `fullchain.pem` | The house's certificate for its hostname | A manual ACME run |
+| `privkey.pem` | Its private key. Never leaves this directory | The same run |
+
+No directory means no attempt, logged at debug. A directory with a missing or
+unusable file is an **error** logged once, and still no attempt: a server that
+wants a house reachable cannot make it so, and a typo cannot make it
+half-reachable. `parse_remote_ui_config` checks every field the dial needs so a
+mistake fails at load with a reason. An expired token is not presented.
+
+### Dial, hold, redial
+
+The connection is dialled on setup and held. When it drops -- a relay restart,
+the house's internet, Home Assistant itself restarting -- the agent waits a
+random 1 to 15 seconds and dials again, so a relay restart is followed by a
+trickle of reconnects rather than a storm. A refused dial is retried the same
+way and remembered in `last_error`. `async_unload` hangs up and leaves the
+files: an integration reload is not the homeowner turning their access off.
+
+### What slice 2 changes
+
+The files are the contract. Slice 2 has the agent generate its own key and ask
+Dispatch for the certificate (DNS-01 answered by Dispatch) and the token, and
+writes the same three files. Nothing in the dial changes.
+
 ## What is not supported
 
 WebSockets are carried only for `screen` sessions, as frames. Other scopes

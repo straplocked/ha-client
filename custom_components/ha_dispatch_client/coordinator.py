@@ -95,6 +95,11 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         # Backup reporting. Same arrangement: absent unless setup wires it.
         self.backups = None
 
+        # Remote UI: the homeowner's own way in through the relay. Same
+        # arrangement: absent unless setup wires it, and even then it dials
+        # nothing unless the house has been given its files.
+        self.remote_ui = None
+
         # Component inventory. Reported on its own slow cadence rather than on
         # every metrics poll: versions change rarely, and the fleet's
         # attribution window is two hours wide. None means "never reported",
