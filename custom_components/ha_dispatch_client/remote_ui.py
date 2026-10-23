@@ -205,6 +205,29 @@ def build_server_context(cert_path: Path, key_path: Path) -> ssl.SSLContext:
     return context
 
 
+def installed_relay_protocol() -> Tuple[Optional[str], Optional[int]]:
+    """The snitun this Home Assistant has, and the newest relay protocol it speaks.
+
+    The agent imports whatever snitun Core bundles (through hass-nabucasa), and
+    that lags the relay: Home Assistant 2026.6 ships snitun 0.45.1, protocol 1,
+    while the relay image speaks 2. A token minted for a newer protocol than
+    the house speaks connects and then every channel hangs, silently, so the
+    version is checked here and sent to Dispatch at mint time. Returns
+    ``(None, None)`` when snitun is not importable at all.
+    """
+    try:
+        import importlib.metadata as metadata
+        from snitun.utils import server as snitun_server
+    except Exception:  # noqa: BLE001 - absent or broken snitun is answered the same way
+        return None, None
+    try:
+        version = metadata.version("snitun")
+    except Exception:  # noqa: BLE001
+        version = "unknown"
+    protocol = getattr(snitun_server, "PROTOCOL_VERSION", None)
+    return version, protocol if isinstance(protocol, int) else None
+
+
 def _default_client_factory(runner, context: ssl.SSLContext, server: str, port: int):
     # Imported here so the integration loads on an install without snitun
     # (every current Home Assistant has it, via hass-nabucasa) and so the
@@ -329,6 +352,18 @@ class HADispatchRemoteUI:
                 _LOGGER.error("Remote UI: the token expired at %s; the house is unreachable until a new one is placed",
                               _when(config["valid"]))
                 return
+            snitun_version, supported = installed_relay_protocol()
+            if supported is not None and config["protocol_version"] > supported:
+                self.last_error = (
+                    f"token minted for relay protocol {config['protocol_version']}, "
+                    f"but this Home Assistant's snitun {snitun_version} speaks up to {supported}"
+                )
+                _LOGGER.error(
+                    "Remote UI: %s. Not dialling: the connection would open and every channel would hang. "
+                    "Mint the token for protocol %s (Dispatch does this itself once it is asked)",
+                    self.last_error, supported,
+                )
+                return
             try:
                 async with asyncio.timeout(REMOTE_UI_CONNECT_TIMEOUT):
                     await self._client.connect(
@@ -339,7 +374,10 @@ class HADispatchRemoteUI:
                     )
                 self.dials += 1
                 self.last_error = None
-                _LOGGER.info("Remote UI: dialled %s:%s as %s", config["server"], config["port"], config["hostname"])
+                _LOGGER.info(
+                    "Remote UI: dialled %s:%s as %s (snitun %s, relay protocol %s)",
+                    config["server"], config["port"], config["hostname"], snitun_version, config["protocol_version"],
+                )
                 await self._client.wait()
                 if self._stopping:
                     return
@@ -624,12 +662,20 @@ class HADispatchRemoteUI:
             if plan["token"]:
                 aes_key = os.urandom(32).hex()
                 aes_iv = os.urandom(16).hex()
-                minted = await api.mint_remote_ui_token(installation_id, aes_key, aes_iv)
+                snitun_version, supported = installed_relay_protocol()
+                minted = await api.mint_remote_ui_token(
+                    installation_id, aes_key, aes_iv, protocol_version=supported
+                )
                 if not isinstance(minted, dict):
                     raise RemoteUIConfigError("the token endpoint did not return an object")
                 protocol_version = minted.get(
                     "protocol_version", desired.get("protocol_version", REMOTE_UI_DEFAULT_PROTOCOL_VERSION)
                 )
+                if supported is not None and isinstance(protocol_version, int) and protocol_version > supported:
+                    raise RemoteUIConfigError(
+                        f"Dispatch minted a token for relay protocol {protocol_version}, but this Home "
+                        f"Assistant's snitun {snitun_version} speaks up to {supported}; the server ignored the cap"
+                    )
                 # Exactly the slice-1 shape, through the same validator the
                 # loader uses, so what is written is what will load.
                 config = parse_remote_ui_config({

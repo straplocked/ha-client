@@ -896,17 +896,21 @@ class HADispatchApiClient:
             return await response.json()
 
     async def mint_remote_ui_token(
-        self, installation_id: str, aes_key_hex: str, aes_iv_hex: str
+        self, installation_id: str, aes_key_hex: str, aes_iv_hex: str,
+        protocol_version: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Mint the relay token for the house's own channel keyset.
 
         The house generates aes_key (32 bytes) and aes_iv (16 bytes) and sends
         them as hex; the server seals them into a Fernet token the relay can
-        open and stores nothing but an audit line. Returns token, valid and
-        protocol_version.
+        open and stores nothing but an audit line. ``protocol_version`` is the
+        newest relay protocol this house's snitun speaks; the server mints for
+        the lower of that and its own. Returns token, valid and protocol_version.
         """
         url = self.server_url + API_REMOTE_UI_TOKEN.format(installation_id=installation_id)
-        data = {"aes_key": aes_key_hex, "aes_iv": aes_iv_hex}
+        data: Dict[str, Any] = {"aes_key": aes_key_hex, "aes_iv": aes_iv_hex}
+        if protocol_version is not None:
+            data["protocol_version"] = protocol_version
 
         _LOGGER.debug("Asking Dispatch to mint a Remote UI relay token")
         async with self.session.post(

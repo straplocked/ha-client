@@ -441,6 +441,7 @@ class FakeRemoteUiApi:
     """
 
     def __init__(self, desired=None, unavailable=False):
+        self.protocol_versions_asked = []
         self.desired = desired
         self.unavailable = unavailable
         self.fetches = 0
@@ -478,7 +479,8 @@ class FakeRemoteUiApi:
         self.desired["certificate"] = {"fullchain_pem": pem, "expires_at": expires}
         return {"fullchain_pem": pem, "expires_at": expires}
 
-    async def mint_remote_ui_token(self, installation_id, aes_key_hex, aes_iv_hex):
+    async def mint_remote_ui_token(self, installation_id, aes_key_hex, aes_iv_hex, protocol_version=None):
+        self.protocol_versions_asked.append(protocol_version)
         self.token_posts.append({"aes_key": aes_key_hex, "aes_iv": aes_iv_hex})
         self.minted += 1
         return {"token": f"gAAAAABminted{self.minted}", "valid": FAR_FUTURE, "protocol_version": 2}
@@ -903,6 +905,81 @@ class WiringTest(unittest.TestCase):
             "custom_components", "ha_dispatch_client", "coordinator.py"
         ).read_text()
         self.assertIn("await self.remote_ui.async_poll()", source)
+
+
+class RelayProtocolTest(unittest.TestCase):
+    """Home Assistant bundles an older snitun than the relay; the agent must say so, not hang."""
+
+    def _with_installed(self, version, protocol, body):
+        original = remote_ui.installed_relay_protocol
+        remote_ui.installed_relay_protocol = lambda: (version, protocol)
+        try:
+            return run(body())
+        finally:
+            remote_ui.installed_relay_protocol = original
+
+    def test_a_token_minted_for_a_newer_protocol_than_the_house_speaks_is_refused_not_dialled(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                hass = FakeHass(Path(tmp))
+                clients = []
+
+                def factory(runner, context, server, port):
+                    client = FakeClient(runner, context, server, port)
+                    clients.append(client)
+                    return client
+
+                manager = HADispatchRemoteUI(hass, coordinator=None, client_factory=factory, delay=lambda: 0)
+                write_house(Path(tmp), good_config(protocol_version=2))
+                with self.assertLogs(remote_ui._LOGGER, level=logging.ERROR) as logs:
+                    await manager.async_load()
+                    await settle(5)
+                self.assertEqual(clients[0].connects, [])
+                self.assertEqual(manager.dials, 0)
+                self.assertIn("speaks up to 1", manager.last_error or "")
+                self.assertTrue(any("Not dialling" in line for line in logs.output))
+                await manager.async_unload()
+
+        self._with_installed("0.45.1", 1, scenario)
+
+    def test_a_token_at_or_below_the_houses_protocol_dials(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                hass = FakeHass(Path(tmp))
+                clients = []
+
+                def factory(runner, context, server, port):
+                    client = FakeClient(runner, context, server, port)
+                    clients.append(client)
+                    return client
+
+                manager = HADispatchRemoteUI(hass, coordinator=None, client_factory=factory, delay=lambda: 0)
+                write_house(Path(tmp), good_config(protocol_version=1))
+                await manager.async_load()
+                await settle(5)
+                self.assertEqual(manager.dials, 1)
+                self.assertEqual(clients[0].connects[0][3], 1)
+                await manager.async_unload()
+
+        self._with_installed("0.45.1", 1, scenario)
+
+    def test_the_mint_request_carries_what_the_house_speaks_and_a_higher_answer_is_refused(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                # The fake always mints protocol 2: a server that ignored the cap.
+                api = FakeRemoteUiApi(desired=desired_state())
+                hass = FakeHass(Path(tmp))
+                coordinator = FakeCoordinator(api)
+                manager = HADispatchRemoteUI(hass, coordinator, client_factory=lambda *a: FakeClient(*a), delay=lambda: 0)
+                with self.assertLogs(remote_ui._LOGGER, level=logging.WARNING) as logs:
+                    await manager.async_poll()
+                    await settle(5)
+                self.assertEqual(api.protocol_versions_asked, [1])
+                self.assertTrue(any("ignored the cap" in line for line in logs.output))
+                self.assertFalse((Path(tmp) / "ha_dispatch_client" / "remote_ui" / REMOTE_UI_CONFIG_FILE).exists())
+                await manager.async_unload()
+
+        self._with_installed("0.45.1", 1, scenario)
 
 
 if __name__ == "__main__":

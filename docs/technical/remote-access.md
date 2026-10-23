@@ -307,6 +307,19 @@ wants a house reachable cannot make it so, and a typo cannot make it
 half-reachable. `parse_remote_ui_config` checks every field the dial needs so a
 mistake fails at load with a reason. An expired token is not presented.
 
+### The relay protocol is the house's, not the relay's
+
+The agent imports whatever snitun Home Assistant bundles through
+hass-nabucasa, and that lags the relay: Home Assistant 2026.6 ships snitun
+0.45.1 (relay protocol 1) while the relay image speaks 2. A token minted for
+a newer protocol than the house speaks **connects and then hangs every
+channel**, silently, which is how the first lab dial failed on 2026-10-23.
+So `installed_relay_protocol()` reads the installed snitun's
+`PROTOCOL_VERSION`; the provisioner sends it with the mint request and
+refuses a token minted above it; and the dial loop refuses to present a
+hand-placed token minted above it, with an error that says which number to
+re-mint for. The "dialled" log line names the snitun version and protocol.
+
 ### Dial, hold, redial
 
 The connection is dialled on setup and held. When it drops -- a relay restart,
