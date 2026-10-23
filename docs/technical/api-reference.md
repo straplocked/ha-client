@@ -915,7 +915,7 @@ per run, and is never `InstallationGoneError`. `enabled: false` is a **200**.
 {
   "enabled": true,
   "hostname": "quiet-maple-42.remote.hadispatch.app",
-  "relay": {"server": "relay.hadispatch.app", "port": 443},
+  "relay": {"server": "remote.hadispatch.app", "port": 443},
   "protocol_version": 2,
   "trusted_proxies": ["173.245.48.0/20", "2400:cb00::/32"],
   "ranges_version": 7,

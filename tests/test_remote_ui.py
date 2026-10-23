@@ -72,7 +72,7 @@ FAR_FUTURE = 4_000_000_000
 def good_config(**overrides):
     config = {
         "hostname": HOSTNAME,
-        "server": "relay.hadispatch.app",
+        "server": "remote.hadispatch.app",
         "port": 8443,
         "token": "gAAAAABtoken",
         "aes_key": "ab" * 32,
@@ -300,7 +300,7 @@ class LifecycleTest(unittest.TestCase):
                 client = clients[0]
                 self.assertTrue(client.started)
                 self.assertIs(client.runner, hass.http.runner)
-                self.assertEqual((client.server, client.port), ("relay.hadispatch.app", 8443))
+                self.assertEqual((client.server, client.port), ("remote.hadispatch.app", 8443))
                 self.assertEqual(
                     client.connects,
                     [(b"gAAAAABtoken", bytes.fromhex("ab" * 32), bytes.fromhex("cd" * 16), 2)],
@@ -497,7 +497,7 @@ def desired_state(**overrides):
     state = {
         "enabled": True,
         "hostname": HOSTNAME,
-        "relay": {"server": "relay.hadispatch.app", "port": 443},
+        "relay": {"server": "remote.hadispatch.app", "port": 443},
         "protocol_version": 2,
         "trusted_proxies": ["173.245.48.0/20", "2400:cb00::/32"],
         "ranges_version": 7,
@@ -663,7 +663,7 @@ class ProvisionerTest(unittest.TestCase):
                 self.assertEqual(written, {
                     "managed_by": "dispatch",
                     "hostname": HOSTNAME,
-                    "server": "relay.hadispatch.app",
+                    "server": "remote.hadispatch.app",
                     "port": 443,
                     "token": "gAAAAABminted1",
                     "aes_key": api.token_posts[0]["aes_key"],
@@ -777,7 +777,7 @@ class PlanningTest(unittest.TestCase):
 
     def files(self, tmp: Path, long_cert: bool = False, **config_overrides):
         """Hand-placed files, inspected. The slice-1 fixture's cert lasts a day."""
-        config_overrides.setdefault("server", "relay.hadispatch.app")
+        config_overrides.setdefault("server", "remote.hadispatch.app")
         config_overrides.setdefault("port", 443)
         directory = write_house(tmp, good_config(**config_overrides))
         if long_cert:
