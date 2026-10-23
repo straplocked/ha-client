@@ -326,7 +326,7 @@ state and acts on the answer:
 | The server says | The agent does |
 |---|---|
 | **404** | The server predates Remote UI. Remembered for the rest of the run and said once at info; hand-placed files keep working untouched. Never mapped to "installation gone" (see `RemoteUiUnavailable`). |
-| `enabled: false` | Hangs up if a dial is live, deletes the three files, forgets the applied version. Leaves `ha_dispatch_client/http.yaml` alone -- a stale proxy list is harmless and removing the include is a config edit nobody asked for. Idempotent: off twice writes and logs nothing. |
+| `enabled: false` | Hangs up if a dial is live, deletes the three files **if the provisioner wrote them** (its `remote_ui.json` carries `"managed_by": "dispatch"`; a hand-placed slice-1 set is left in place and logged once, since a private key this client did not create is not its to delete), forgets the applied version. Leaves `ha_dispatch_client/http.yaml` alone -- a stale proxy list is harmless and removing the include is a config edit nobody asked for. Idempotent: off twice writes and logs nothing. |
 | `enabled: true` | Inspects the directory and writes only what is needed (`plan_provisioning`): a key if there is none; a certificate if there is none, it is not this key's, it does not name the hostname, it has under 60 days left, or a renewal was requested; a token if `remote_ui.json` is missing, names another hostname or relay, has under 48 h left -- **or `config_version` moved**, since the token names the hostname and the relay. Then (re)loads through `async_load`, the one path that knows how to dial. |
 
 What leaves the house is the **certificate signing request** -- the public

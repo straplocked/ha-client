@@ -64,6 +64,8 @@ from .const import (
     REMOTE_UI_DIR,
     REMOTE_UI_HTTP_FILE,
     REMOTE_UI_KEY_FILE,
+    REMOTE_UI_MANAGED_KEY,
+    REMOTE_UI_MANAGED_VALUE,
     REMOTE_UI_RECONNECT_MAX,
     REMOTE_UI_RECONNECT_MIN,
     REMOTE_UI_RETRY_SECONDS,
@@ -246,6 +248,7 @@ class HADispatchRemoteUI:
         self.desired: Optional[Dict[str, Any]] = None
         self._applied_version: Optional[int] = None
         self._unavailable = False
+        self._kept_hand_placed = False
         self._retry_after: float = 0.0
         self._provisioning = False
         # What the house reports (POST .../remote-ui/status). http_block and
@@ -552,6 +555,19 @@ class HADispatchRemoteUI:
         self._http_applied = None
         self._status_sent = None
         removed = await self.hass.async_add_executor_job(remove_remote_ui_files, self.directory())
+        if removed is None:
+            # Hand-placed files (slice 1, or an operator's own set) are not
+            # ours to delete. Say so once and leave them; the dial stops
+            # because the server said off, which is the part that is ours.
+            if was_dialling or not self._kept_hand_placed:
+                _LOGGER.info(
+                    "Remote UI: the server says off, but the files in %s were placed by hand, "
+                    "not by this client, so they are left in place. Remove them yourself to finish turning it off",
+                    self.directory(),
+                )
+            self._kept_hand_placed = True
+            return
+        self._kept_hand_placed = False
         if was_dialling or removed:
             _LOGGER.info(
                 "Remote UI: switched off by the homeowner; hung up and removed %s",
@@ -626,9 +642,13 @@ class HADispatchRemoteUI:
                     "valid": minted.get("valid"),
                     "protocol_version": protocol_version,
                 })
+                # Marked as ours, so a later "off" from the server removes only
+                # files this provisioner wrote and never a hand-placed set.
+                on_disk = dict(config)
+                on_disk[REMOTE_UI_MANAGED_KEY] = REMOTE_UI_MANAGED_VALUE
                 await self.hass.async_add_executor_job(
                     write_atomic, directory / REMOTE_UI_CONFIG_FILE,
-                    (json.dumps(config, indent=2) + "\n").encode("utf-8"), REMOTE_UI_SECRET_FILE_MODE,
+                    (json.dumps(on_disk, indent=2) + "\n").encode("utf-8"), REMOTE_UI_SECRET_FILE_MODE,
                 )
                 written.append(REMOTE_UI_CONFIG_FILE)
                 _LOGGER.info("Remote UI: relay token for %s minted, valid until %s", hostname, _when(config["valid"]))
@@ -864,8 +884,32 @@ def inspect_remote_ui_files(directory: Path) -> RemoteUiFiles:
     return files
 
 
-def remove_remote_ui_files(directory: Path) -> List[str]:
-    """Delete the three files, and only those. Blocking I/O. Returns what went."""
+def remote_ui_files_are_managed(directory: Path) -> bool:
+    """Whether the files in the directory were written by this client.
+
+    The provisioner stamps ``remote_ui.json`` with ``"managed_by": "dispatch"``.
+    A file without the stamp was placed by hand (slice 1, or an operator) and
+    is not ours to delete. No config file at all counts as managed: there is
+    nothing hand-placed to protect, and a stray certificate or key is ours.
+    """
+    config_path = directory / REMOTE_UI_CONFIG_FILE
+    if not config_path.is_file():
+        return True
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return isinstance(raw, dict) and raw.get(REMOTE_UI_MANAGED_KEY) == REMOTE_UI_MANAGED_VALUE
+
+
+def remove_remote_ui_files(directory: Path) -> Optional[List[str]]:
+    """Delete the three files, and only those, and only if we wrote them.
+
+    Blocking I/O. Returns what went, or ``None`` when the files were placed by
+    hand and were therefore left alone.
+    """
+    if not remote_ui_files_are_managed(directory):
+        return None
     removed: List[str] = []
     for name in (REMOTE_UI_CONFIG_FILE, REMOTE_UI_CERT_FILE, REMOTE_UI_KEY_FILE):
         path = directory / name

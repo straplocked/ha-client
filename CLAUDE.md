@@ -130,7 +130,9 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   request body (only the CSR is), the token is re-minted when
   `config_version` moves, and an unchanged state writes nothing. A 404 is
   `RemoteUiUnavailable`, asked once per run; `enabled: false` is a 200 that
-  removes the three files and never `http.yaml`. This is the opposite property from the
+  removes the three files **if this client wrote them** (the provisioner stamps
+  `remote_ui.json` with `"managed_by": "dispatch"`; a hand-placed set is left alone and
+  said so once) and never `http.yaml`. This is the opposite property from the
   technician tunnel (which must be readable to be audited); never route
   technician access through it, and never put a credential of ours in it.
   Design: ha-dispatch `docs/technical/homeowner-remote-access.md`; the
@@ -265,7 +267,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `424 passed, 84 subtests passed`. Two standing limits on
+That currently prints `425 passed, 84 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not

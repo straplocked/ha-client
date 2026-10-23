@@ -661,3 +661,8 @@ REMOTE_UI_STATUS_INTERVAL_SECONDS = 600
 # to anything longer, which would silence every status report from a house
 # whose dial error happens to be verbose. Cut it here, not there.
 REMOTE_UI_STATUS_ERROR_MAX_CHARS = 500
+
+# The provisioner stamps the config file it writes, so "off" from the server
+# removes only files this client wrote and never a hand-placed set.
+REMOTE_UI_MANAGED_KEY = "managed_by"
+REMOTE_UI_MANAGED_VALUE = "dispatch"

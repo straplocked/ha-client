@@ -562,12 +562,13 @@ class ProvisionerTest(unittest.TestCase):
 
         run(scenario())
 
-    def test_enabled_false_hangs_up_and_removes_the_three_files_but_not_http_yaml(self):
+    def test_enabled_false_hangs_up_and_removes_the_three_files_it_wrote_but_not_http_yaml(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as tmp:
                 api = FakeRemoteUiApi(desired={"enabled": False})
                 hass, manager, clients = self.make(Path(tmp), api)
-                directory = write_house(Path(tmp))
+                # Files the provisioner wrote carry its stamp.
+                directory = write_house(Path(tmp), {**good_config(), "managed_by": "dispatch"})
                 http_yaml = Path(tmp, "ha_dispatch_client", "http.yaml")
                 http_yaml.write_text("use_x_forwarded_for: true\ntrusted_proxies:\n  - 173.245.48.0/20\n")
                 await manager.async_load()
@@ -587,6 +588,35 @@ class ProvisionerTest(unittest.TestCase):
                 with self.assertNoLogs(remote_ui._LOGGER, level=logging.INFO):
                     await manager.async_poll()
                 self.assertEqual(len(clients), 1)
+
+        run(scenario())
+
+    def test_enabled_false_leaves_hand_placed_files_alone_and_says_so_once(self):
+        # Slice 1's lab files, or an operator's own set, carry no stamp. The
+        # server saying off ends the dial -- that part is ours -- but deleting
+        # a private key this client did not create is not.
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(desired={"enabled": False})
+                hass, manager, clients = self.make(Path(tmp), api)
+                directory = write_house(Path(tmp))  # no managed_by stamp
+                await manager.async_load()
+                await settle()
+                self.assertTrue(manager.connected)
+
+                with self.assertLogs(remote_ui._LOGGER, level=logging.INFO) as logs:
+                    await manager.async_poll()
+                self.assertTrue(clients[0].stopped)
+                self.assertFalse(manager.connected)
+                for name in (REMOTE_UI_CONFIG_FILE, REMOTE_UI_CERT_FILE, REMOTE_UI_KEY_FILE):
+                    self.assertTrue((directory / name).is_file(), name)
+                self.assertTrue(any("placed by hand" in line for line in logs.output))
+
+                # Said once; the next poll with the same answer is silent.
+                with self.assertNoLogs(remote_ui._LOGGER, level=logging.INFO):
+                    await manager.async_poll()
+                for name in (REMOTE_UI_CONFIG_FILE, REMOTE_UI_CERT_FILE, REMOTE_UI_KEY_FILE):
+                    self.assertTrue((directory / name).is_file(), name)
 
         run(scenario())
 
@@ -626,11 +656,12 @@ class ProvisionerTest(unittest.TestCase):
                 # The certificate is what the fake signed, verbatim.
                 self.assertEqual((directory / REMOTE_UI_CERT_FILE).read_text(), api.desired["certificate"]["fullchain_pem"])
 
-                # remote_ui.json: exactly the slice-1 shape, holding what was minted
+                # remote_ui.json: the slice-1 shape plus our stamp, holding what was minted
                 # and the keyset that was posted to mint it.
                 written = json.loads((directory / REMOTE_UI_CONFIG_FILE).read_text())
                 self.assertEqual(len(api.token_posts), 1)
                 self.assertEqual(written, {
+                    "managed_by": "dispatch",
                     "hostname": HOSTNAME,
                     "server": "relay.hadispatch.app",
                     "port": 443,
