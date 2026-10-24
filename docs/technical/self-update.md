@@ -479,7 +479,6 @@ What remains true: the updater is the authority for fleet installs, HACS for ind
 - swap: success, failure mid-swap with the working version restored, the unrecoverable case naming both paths, missing staged directory, first install with nothing to back up
 - version ordering, prerelease ranking, and the refusal to act on unparseable versions
 - update windows including the wrap past midnight and the malformed-value case
-
 - download: the request carries the raised header limits, a host outside `RELEASE_ALLOWED_HOSTS` is refused before any request, and the byte cap aborts an oversized body
 
 Not covered by automated tests: the real network download, the restart call, and boot-time confirmation, all of which need a running Home Assistant. Exercise those on a canary instance.
