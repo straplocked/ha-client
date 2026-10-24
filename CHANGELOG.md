@@ -2,6 +2,20 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.9.1] - 2026-10-24
+
+### Fixed
+- Updates download again. GitHub now answers a release download with a
+  redirect whose `content-security-policy` header is over 9 KB, longer than
+  any header line aiohttp reads by default, so every self-update failed in
+  the download phase ("Got more than 8190 bytes when reading") -- including
+  the one that would have carried this fix. HA Dispatch now hands the house
+  the address the redirect lands on, which is what let 1.9.0 install; this
+  release also raises the download request's own header limits to 16 KB
+  (`RELEASE_MAX_HEADER_BYTES`) so the house no longer depends on the server
+  for it. The archive is still verified against the key pinned in the client
+  before a byte of it is written.
+
 ## [1.9.0] - 2026-10-23
 
 ### Added -- your home, reachable from anywhere
