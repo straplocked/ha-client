@@ -95,6 +95,11 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         # Backup reporting. Same arrangement: absent unless setup wires it.
         self.backups = None
 
+        # Remote UI: the homeowner's own way in through the relay. Same
+        # arrangement: absent unless setup wires it, and even then it dials
+        # nothing unless the house has been given its files.
+        self.remote_ui = None
+
         # Component inventory. Reported on its own slow cadence rather than on
         # every metrics poll: versions change rarely, and the fleet's
         # attribution window is two hours wide. None means "never reported",
@@ -175,6 +180,12 @@ class HADispatchCoordinator(DataUpdateCoordinator):
             # archive can take a while), so this only decides whether one is due.
             if self.backups is not None:
                 self.backups.async_tick()
+
+            # Remote UI: ask Dispatch what this house should be and make it
+            # so. Same cadence, same inability to raise; one GET when nothing
+            # has changed, which is almost every poll.
+            if self.remote_ui is not None:
+                await self.remote_ui.async_poll()
 
             # Return combined data for sensors
             return {
@@ -440,6 +451,7 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                 stale_hours=self.stale_entity_hours,
                 battery_low=self.battery_low_percent,
                 battery_critical=self.battery_critical_percent,
+                remote_ui=self.remote_ui,
             )
         except (AttributeError, KeyError, TypeError, ValueError) as err:
             _LOGGER.error("Error collecting health signals: %s", err)

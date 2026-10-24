@@ -36,6 +36,10 @@ HEALTH_TYPE_FAILED_INTEGRATION = "failed_integration"
 HEALTH_TYPE_LOW_BATTERY = "low_battery"
 HEALTH_TYPE_DISABLED_AUTOMATION = "disabled_automation"
 HEALTH_TYPE_UNAVAILABLE_AUTOMATION = "unavailable_automation"
+# Not a fault in a device: a configuration the house has while its Remote UI is
+# on. Dispatch's HealthSignalService drops any type it does not list, so this
+# string has to be added to InstallationHealthItem::TYPES over there.
+HEALTH_TYPE_REMOTE_UI_LOCKOUT_OFF = "remote_ui_brute_force_protection_off"
 
 # API endpoints
 API_REGISTER = "/api/v1/installations/register"
@@ -67,6 +71,13 @@ API_FLOORPLAN_PENDING = "/api/v1/installations/{installation_id}/floorplan/pendi
 API_FLOORPLAN_REPORT = (
     "/api/v1/installations/{installation_id}/floorplan/{id}/report"
 )
+# Remote UI: the homeowner's own way in, through the Dispatch relay. A 404 on
+# any of these means the server predates the feature (RemoteUiUnavailable),
+# never that the installation is gone. 'enabled: false' is a 200.
+API_REMOTE_UI = "/api/v1/installations/{installation_id}/remote-ui"
+API_REMOTE_UI_CSR = "/api/v1/installations/{installation_id}/remote-ui/csr"
+API_REMOTE_UI_TOKEN = "/api/v1/installations/{installation_id}/remote-ui/token"
+API_REMOTE_UI_STATUS = "/api/v1/installations/{installation_id}/remote-ui/status"
 
 # --- Component inventory ----------------------------------------------------
 # Full design: docs/technical/component-inventory.md
@@ -615,3 +626,69 @@ ATTR_HA_VERSION = "ha_version"
 ATTR_CONFIG_VERSION = "config_version"
 ATTR_POLL_INTERVAL = "poll_interval_seconds"
 
+
+# Remote UI: the homeowner's own way in, through the Dispatch relay
+# (docs/technical/remote-access.md, "Remote UI"). Slice 1 is configured by
+# files placed in this directory under the HA config dir; no directory means
+# the feature is off and nothing is attempted -- fail closed, like the tunnel.
+REMOTE_UI_DIR = ("ha_dispatch_client", "remote_ui")
+REMOTE_UI_CONFIG_FILE = "remote_ui.json"
+REMOTE_UI_CERT_FILE = "fullchain.pem"
+REMOTE_UI_KEY_FILE = "privkey.pem"
+REMOTE_UI_DEFAULT_PORT = 443
+# Must match what the relay's minter writes into the token.
+REMOTE_UI_DEFAULT_PROTOCOL_VERSION = 2
+# A dial that has not completed in this long is given up and retried.
+REMOTE_UI_CONNECT_TIMEOUT = 30
+# After a drop, wait a random spell in this range before redialling, so a
+# relay restart is followed by a trickle of reconnects rather than a storm.
+REMOTE_UI_RECONNECT_MIN = 1.0
+REMOTE_UI_RECONNECT_MAX = 15.0
+# The provisioner (slice 2) asks Dispatch for the desired state on the
+# coordinator's cadence and acts only when config_version moves, so the
+# common "nothing changed" poll costs one GET and writes nothing.
+REMOTE_UI_POLL_SECONDS = 60
+# The relay token lives 30 days; re-mint it when this little of it is left.
+REMOTE_UI_TOKEN_REFRESH_SECONDS = 48 * 3600
+# The certificate lives five years; ask for a new one when this few days remain.
+REMOTE_UI_CERT_RENEW_DAYS = 60
+# A provisioning step the server refused (409/422/429) or that failed on the
+# wire is not retried every minute: wait this long before asking again.
+REMOTE_UI_RETRY_SECONDS = 300
+# Private key and config carry secrets; the certificate is public.
+REMOTE_UI_SECRET_FILE_MODE = 0o600
+
+# Remote UI sits behind a proxy the house does not control, so Home Assistant
+# must be told which peers may set X-Forwarded-For. The list is written to
+# http.yaml, beside (not inside) the remote_ui/ secrets directory, and pulled
+# into configuration.yaml by one include line -- only when there is no http:
+# key already. See http_config.py.
+REMOTE_UI_HTTP_FILE = ("ha_dispatch_client", "http.yaml")
+REMOTE_UI_HTTP_INCLUDE = "http: !include ha_dispatch_client/http.yaml"
+REMOTE_UI_HTTP_COMMENT = (
+    "# Managed by HA Dispatch Client (remote access): trusted proxies for the relay."
+)
+# The house tells Dispatch how it is doing on change and at least this often.
+REMOTE_UI_STATUS_INTERVAL_SECONDS = 600
+# The server validates last_error at this many characters and answers 422
+# to anything longer, which would silence every status report from a house
+# whose dial error happens to be verbose. Cut it here, not there.
+REMOTE_UI_STATUS_ERROR_MAX_CHARS = 500
+
+# The provisioner stamps the config file it writes, so "off" from the server
+# removes only files this client wrote and never a hand-placed set.
+REMOTE_UI_MANAGED_KEY = "managed_by"
+REMOTE_UI_MANAGED_VALUE = "dispatch"
+
+# The homeowner is told, in their own Home Assistant, when their home becomes
+# reachable: one persistent notification under this id, updated in place when
+# the address changes and dismissed when the server says off. Raised only
+# when the desired state carries an ``announce`` block -- hand-placed files
+# announce nothing. There is deliberately no Repairs issue: the notification
+# is the surface and the consent page is the switch.
+REMOTE_UI_NOTIFICATION_ID = "remote_ui_on"
+# ``announce.consent_method`` when the installer's Offer was covered by the
+# homeowner's standing enhanced-permissions grant (no separate tap).
+REMOTE_UI_CONSENT_ENHANCED = "enhanced"
+# The port left out of the address the homeowner types.
+REMOTE_UI_PUBLIC_PORT = 443

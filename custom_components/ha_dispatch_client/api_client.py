@@ -16,6 +16,10 @@ from .const import (
     API_COMPONENTS,
     API_FLOORPLAN_PENDING,
     API_FLOORPLAN_REPORT,
+    API_REMOTE_UI,
+    API_REMOTE_UI_CSR,
+    API_REMOTE_UI_STATUS,
+    API_REMOTE_UI_TOKEN,
     API_UPDATES_PENDING,
     API_UPDATES_REPORT,
     ACCESS_POLL_TIMEOUT,
@@ -101,6 +105,33 @@ class FloorplanUnavailable(Exception):
     same reason: a server predating this feature answers 404 for every
     /floorplan/ path while the installation itself is perfectly healthy.
     """
+
+
+class RemoteUiUnavailable(Exception):
+    """Raised when this server does not offer the Remote UI endpoints.
+
+    Same reasoning as the other *Unavailable errors, and the same trap: a
+    server predating Remote UI answers 404 for every /remote-ui path while the
+    installation itself is perfectly healthy. Mapping that onto
+    InstallationGoneError would re-enrol a working installation once a minute,
+    forever. The provisioner asks once per run and then leaves whatever files
+    were placed by hand exactly as they are.
+    """
+
+
+class RemoteUiRefused(Exception):
+    """Raised when the server declines a Remote UI provisioning step.
+
+    409: the house is not switched on. 422: the CSR does not name the house's
+    hostname. 429: a certificate was signed in the last 24 hours. None of
+    these is a transport failure and none is fixed by asking again at once,
+    so the provisioner backs off rather than retrying every poll.
+    """
+
+    def __init__(self, status: int, detail: str = ""):
+        super().__init__(f"HTTP {status}: {detail}" if detail else f"HTTP {status}")
+        self.status = status
+        self.detail = detail
 
 
 class HADispatchApiClient:
@@ -812,6 +843,92 @@ class HADispatchApiClient:
                 )
             await self._raise_for_status(response, installation_scoped=False)
             return await response.json()
+
+    # --- Remote UI: the homeowner's own way in --------------------------------
+    #
+    # A 404 on a /remote-ui path means the server predates Remote UI, not that
+    # this installation has vanished -- see RemoteUiUnavailable. 'enabled:
+    # false' arrives as a 200 with that body.
+
+    @staticmethod
+    async def _raise_for_remote_ui_status(response) -> None:
+        if response.status == 404:
+            raise RemoteUiUnavailable(
+                f"Server has no Remote UI endpoint at {response.url}"
+            )
+        if response.status in (409, 422, 429):
+            raise RemoteUiRefused(response.status, (await response.text())[:500])
+        await HADispatchApiClient._raise_for_status(
+            response, installation_scoped=False
+        )
+
+    async def fetch_remote_ui(self, installation_id: str) -> Dict[str, Any]:
+        """Fetch the desired Remote UI state for this house.
+
+        The body carries enabled, hostname, relay, protocol_version,
+        trusted_proxies, ranges_version, certificate and config_version.
+        When enabled is false every other field may be null.
+        """
+        url = self.server_url + API_REMOTE_UI.format(installation_id=installation_id)
+
+        async with self.session.get(url, headers=self._get_headers()) as response:
+            await self._raise_for_remote_ui_status(response)
+            payload = await response.json()
+            return payload if isinstance(payload, dict) else {}
+
+    async def sign_remote_ui_csr(
+        self, installation_id: str, csr_pem: str
+    ) -> Dict[str, Any]:
+        """Have the house's certificate signing request signed.
+
+        Only the request leaves the house; the key it was signed with never
+        does. Returns fullchain_pem and expires_at. Raises RemoteUiRefused on
+        409 (not switched on), 422 (CN/SAN is not the hostname) or 429 (signed
+        in the last 24 hours).
+        """
+        url = self.server_url + API_REMOTE_UI_CSR.format(installation_id=installation_id)
+
+        _LOGGER.debug("Asking Dispatch to sign the Remote UI certificate request")
+        async with self.session.post(
+            url, json={"csr_pem": csr_pem}, headers=self._get_headers()
+        ) as response:
+            await self._raise_for_remote_ui_status(response)
+            return await response.json()
+
+    async def mint_remote_ui_token(
+        self, installation_id: str, aes_key_hex: str, aes_iv_hex: str,
+        protocol_version: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Mint the relay token for the house's own channel keyset.
+
+        The house generates aes_key (32 bytes) and aes_iv (16 bytes) and sends
+        them as hex; the server seals them into a Fernet token the relay can
+        open and stores nothing but an audit line. ``protocol_version`` is the
+        newest relay protocol this house's snitun speaks; the server mints for
+        the lower of that and its own. Returns token, valid and protocol_version.
+        """
+        url = self.server_url + API_REMOTE_UI_TOKEN.format(installation_id=installation_id)
+        data: Dict[str, Any] = {"aes_key": aes_key_hex, "aes_iv": aes_iv_hex}
+        if protocol_version is not None:
+            data["protocol_version"] = protocol_version
+
+        _LOGGER.debug("Asking Dispatch to mint a Remote UI relay token")
+        async with self.session.post(
+            url, json=data, headers=self._get_headers()
+        ) as response:
+            await self._raise_for_remote_ui_status(response)
+            return await response.json()
+
+    async def report_remote_ui_status(
+        self, installation_id: str, payload: Dict[str, Any]
+    ) -> None:
+        """Report how the house's Remote UI is doing. The server answers 204."""
+        url = self.server_url + API_REMOTE_UI_STATUS.format(installation_id=installation_id)
+
+        async with self.session.post(
+            url, json=payload, headers=self._get_headers()
+        ) as response:
+            await self._raise_for_remote_ui_status(response)
 
     async def download_floorplan_asset(self, url: str, dest_path: Any) -> int:
         """Stream one authenticated floorplan asset to a local file.

@@ -313,6 +313,7 @@ def install_stubs() -> None:
     )
 
     const = _module("homeassistant.const")
+    _set_missing(const, EVENT_HOMEASSISTANT_STARTED="homeassistant_started")
     _set_missing(
         const,
         __version__="2026.6.4",

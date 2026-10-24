@@ -132,6 +132,31 @@ class FakeHass:
         self.config_entries = types.SimpleNamespace(async_entries=lambda: list(entries))
 
 
+async def ban_middleware(request, handler):
+    """Same name as the one Home Assistant's http component installs."""
+
+
+async def some_other_middleware(request, handler):
+    pass
+
+
+def http_with(*middlewares):
+    """A hass.http as far as health.py looks at it."""
+    return types.SimpleNamespace(app=types.SimpleNamespace(middlewares=list(middlewares)))
+
+
+class RemoteUiStub:
+    def __init__(self, enabled):
+        self.enabled = enabled
+
+
+WARNING_KEY = "remote_ui_brute_force_protection_off"
+
+
+def remote_ui_items(health):
+    return [i for i in health["items"] if i["key"] == WARNING_KEY]
+
+
 class HealthCollectionTest(unittest.TestCase):
     def test_it_counts_unavailable_entities(self):
         hass = FakeHass([
@@ -284,6 +309,76 @@ class HealthCollectionTest(unittest.TestCase):
         kept = {i["type"] for i in health["items"]}
         self.assertIn("failed_integration", kept)
         self.assertIn("unavailable_automation", kept)
+
+
+class RemoteUiLockoutTest(unittest.TestCase):
+    def hass(self, http):
+        hass = FakeHass([])
+        if http is not None:
+            hass.http = http
+        return hass
+
+    def test_warns_when_remote_ui_is_on_and_login_lockout_is_off(self):
+        hass = self.hass(http_with(some_other_middleware))
+
+        health = collect_health(hass, remote_ui=RemoteUiStub(True))
+
+        items = remote_ui_items(health)
+        self.assertEqual(1, len(items))
+        self.assertEqual("warning", items[0]["severity"])
+        self.assertEqual("Remote access is on but login lockout is off", items[0]["label"])
+        self.assertEqual(WARNING_KEY, items[0]["type"])
+        text = items[0]["detail"]["text"]
+        self.assertIn("ip_ban_enabled", text)
+        self.assertIn("login_attempts_threshold", text)
+
+    def test_absent_when_login_lockout_is_on(self):
+        hass = self.hass(http_with(some_other_middleware, ban_middleware))
+
+        health = collect_health(hass, remote_ui=RemoteUiStub(True))
+
+        self.assertEqual([], remote_ui_items(health))
+
+    def test_absent_when_remote_ui_is_off_even_with_lockout_off(self):
+        # THE GUARD: a house that is not reachable has nothing to lock out.
+        hass = self.hass(http_with(some_other_middleware))
+
+        health = collect_health(hass, remote_ui=RemoteUiStub(False))
+
+        self.assertEqual([], remote_ui_items(health))
+
+    def test_absent_when_there_is_no_manager(self):
+        hass = self.hass(http_with())
+
+        self.assertEqual([], remote_ui_items(collect_health(hass)))
+
+    def test_nothing_is_emitted_when_the_http_config_cannot_be_read(self):
+        # "Could not tell" must never be reported as "off".
+        no_http = self.hass(None)
+        no_app = self.hass(types.SimpleNamespace())
+        no_middlewares = self.hass(types.SimpleNamespace(app=types.SimpleNamespace()))
+
+        for hass in (no_http, no_app, no_middlewares):
+            health = collect_health(hass, remote_ui=RemoteUiStub(True))
+            self.assertEqual([], remote_ui_items(health))
+
+    def test_the_warning_is_not_a_counted_problem(self):
+        hass = self.hass(http_with())
+
+        health = collect_health(hass, remote_ui=RemoteUiStub(True))
+
+        self.assertEqual(0, health["entities"]["total"])
+        self.assertEqual(0, health["integrations"]["failed"])
+
+    def test_the_warning_outlives_truncation_ahead_of_entity_noise(self):
+        hass = self.hass(http_with())
+        hass.states = types.SimpleNamespace(
+            async_all=lambda: [FakeState(f"sensor.e{i}", "unavailable") for i in range(600)]
+        )
+
+        health = collect_health(hass, remote_ui=RemoteUiStub(True))
+
+        self.assertEqual(1, len(remote_ui_items(health)))
 
 
 if __name__ == "__main__":

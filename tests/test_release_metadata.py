@@ -15,10 +15,17 @@ version is not decoration here: it is the cache key. A batch that changes the
 card and leaves the version alone re-registers a URL identical to the one
 already on the tablet, and the homeowner keeps the card they downloaded
 before.
+
+The third place the version lives is prose: the header of CLAUDE.md, the top
+entry of CHANGELOG.md, and the release notes in docs/user/updating.md -- the
+text the homeowner's Settings -> Updates page is written from. A release
+whose notes describe the version before it is the kind of drift nobody
+notices until a homeowner reads it, so those files are read here too.
 """
 import importlib
 import json
 import os
+import re
 import sys
 import types
 import unittest
@@ -79,6 +86,29 @@ class ReleaseMetadataTest(unittest.TestCase):
             floorplan.card_resource_url(version),
             f"/local/ha_dispatch/floorplan/ayvra-room-plan.js?v={version}",
         )
+
+    def test_the_docs_name_the_same_version(self):
+        # Each file is read for the version it actually states; nothing here
+        # is derived from a constant in the code.
+        version = _version_file()
+
+        with open(os.path.join(REPO_ROOT, "CLAUDE.md"), encoding="utf-8") as handle:
+            claude_md = handle.read()
+        header = re.search(r"^- \*\*Version:\*\* (\S+)", claude_md, re.MULTILINE)
+        self.assertIsNotNone(header, "CLAUDE.md has no '- **Version:** x.y.z' line")
+        self.assertEqual(header.group(1), version, "CLAUDE.md's header names another version")
+
+        with open(os.path.join(REPO_ROOT, "CHANGELOG.md"), encoding="utf-8") as handle:
+            changelog = handle.read()
+        top_entry = re.search(r"^## \[(\d+\.\d+\.\d+)\]", changelog, re.MULTILINE)
+        self.assertIsNotNone(top_entry, "CHANGELOG.md has no '## [x.y.z]' entry")
+        self.assertEqual(top_entry.group(1), version, "CHANGELOG.md's newest entry is not this version")
+
+        with open(os.path.join(REPO_ROOT, "docs", "user", "updating.md"), encoding="utf-8") as handle:
+            updating = handle.read()
+        notes = re.search(r"^### (\d+\.\d+\.\d+)", updating, re.MULTILINE)
+        self.assertIsNotNone(notes, "docs/user/updating.md has no '### x.y.z' release-notes heading")
+        self.assertEqual(notes.group(1), version, "docs/user/updating.md's newest release notes are not this version")
 
 
 if __name__ == "__main__":

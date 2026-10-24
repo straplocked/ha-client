@@ -272,6 +272,26 @@ This guide consolidates all common issues and their solutions for the HA Dispatc
    ha core logs | grep ha_dispatch
    ```
 
+## Remote Access
+
+Remote access to your home (reaching your own Home Assistant from your phone through Dispatch) is off until your installer switches it on. These are the three things that most often keep it from working. Log lines mentioned below start with `Remote UI`:
+
+```bash
+ha core logs | grep "Remote UI"
+```
+
+**Remote access is set up but I cannot connect: a restart is needed.**
+Setting it up changes Home Assistant's web configuration, and Home Assistant only reads that at start. Restart Home Assistant (Settings > System > Restart). Dispatch never restarts your Home Assistant for you, and the installation reports "restart required" until you do.
+
+**Your Home Assistant already has its own `http:` section (reported as "present unmanaged").**
+Dispatch does not edit a web configuration you wrote yourself. A technician needs to add two things to your existing `http:` block: `use_x_forwarded_for: true`, and the `trusted_proxies` list found in `/config/ha_dispatch_client/http.yaml`. Then restart Home Assistant. Until that is done, remote access will not work for this home. Your existing settings are never changed or overwritten.
+
+**The access token has expired.**
+The log says "the token expired" and the home cannot be reached. Normally the integration renews it by itself, so this means it could not reach Dispatch for a long time (the internet was down, or the server was unavailable). Check the connection under "Cannot Connect Errors" above; once Dispatch is reachable again it is renewed within a minute or two. If the files were placed by hand rather than fetched, a technician has to mint a new token.
+
+**Technician note: "Remote access is on but login lockout is off".**
+Dispatch shows this warning when remote access is on and Home Assistant is not locking out repeated failed logins. Add `ip_ban_enabled: true` and `login_attempts_threshold: 5` to the `http:` block and restart. The warning clears on its own once lockout is on.
+
 ## General Debugging Steps
 
 When none of the above sections match your issue:

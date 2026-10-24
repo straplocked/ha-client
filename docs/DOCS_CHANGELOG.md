@@ -6,6 +6,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-23] — Remote UI: the house tells its owner; 1.9.0
+
+### Added
+- `docs/user/updating.md`: a "Release notes" section, opening with 1.9.0 in the product's voice (your home, reachable from anywhere; your login stays yours; off in one tap) and the technical note that the house needs nothing but this update
+- `docs/technical/remote-access.md`: "Telling the homeowner" (the `announce` block, the one notification under `remote_ui_on`, the enhanced-versus-tap wording, update-in-place and dismissal, why there is no Repairs issue) and the two deployment modes at the head of the `http:` section, with `not_needed`
+- `CHANGELOG.md`: the 1.9.0 entry
+
+### Changed
+- `docs/technical/api-reference.md`: Endpoint 14 carries `announce`, and `trusted_proxies: []` is named as DNS-only mode; Endpoint 17's `http_block` enum gains `not_needed`
+- `CLAUDE.md`: version 1.9.0 (the header had still said 1.8.0 at 1.8.1), the Remote UI pattern's announcement and DNS-only bullets, and the test count
+- `CLAUDE.md`: the architecture tree now lists `updates.py` (`HADispatchUpdates`, shipped since 1.7.0 and in every release archive, but absent from the tree), and the comment columns line up again
+
+## [2026-10-22] — Remote UI slice 2: integration pass
+
+### Added
+- `docs/technical/api-reference.md`: Endpoints 14-17 (`GET .../remote-ui`, `POST .../remote-ui/csr`, `.../token`, `.../status`) with the contract's bodies, the 404 rule and the refusal codes. They were listed in `CLAUDE.md` and described in `remote-access.md` but absent from the reference
+
+### Changed
+- `docs/technical/remote-access.md`: the status table says `last_error` is cut to 500 characters (the server's validation limit, now applied by the agent); the provisioner section says how renewal is actually signalled -- a `config_version` bump met by the certificate's own 60-day horizon, no flag
+- `CLAUDE.md`: the test count (423 → 424)
+
+## [2026-10-22] — Remote UI slice 2: the login-lockout health item
+
+### Added
+- `docs/technical/remote-access.md`: "The login-lockout health item" (when it appears, what it says, how `ip_ban_enabled` is detected and why cannot-tell emits nothing) and "What is still manual" (restart, merging an existing `http:` block, turning on lockout, hand-placed files, live verification). The Remote UI status line no longer lists anything as unbuilt
+- `docs/user/troubleshooting.md`: a "Remote Access" section (restart required, an existing `http:` block, an expired token, the lockout warning)
+
+### Changed
+- `docs/technical/architecture.md`: the `remote_ui.py` paragraph says the files are fetched when Dispatch supports it and hand-placed otherwise, and names the health item
+- `CLAUDE.md`: the Remote UI bullets (fetched versus hand-placed, never re-serialise `configuration.yaml`, the health item) and the test count (416 → 423)
+
+## [2026-10-22] — Remote UI slice 2: the http include and the readiness report
+
+### Added
+- `docs/technical/remote-access.md`: "The `http:` block, and the restart it owes" (what `http.yaml` holds, the scan-and-append rule for `configuration.yaml`, why the file is written before the include, `present_unmanaged`, and how `restart_required` clears without any state of ours) and "Reporting readiness" (the status payload field by field, on change and every ten minutes). The unbuilt list is now only the `ip_ban_enabled` health item
+- `docs/technical/architecture.md`: `http_config.py` given its own section and a line in the module tree
+
+### Changed
+- `CLAUDE.md`: a pattern bullet for the append-only include and the homeowner's `http:` winning, `http_config.py` in the tree, and the test count (391 → 416, 76 → 84 subtests)
+
+## [2026-10-22] — Remote UI slice 2: the agent fetches its files
+
+### Changed
+- `docs/technical/remote-access.md`: the Remote UI section's "What slice 2 changes" became what it does — the provisioner's three answers to `GET .../remote-ui` (404, off, on), what leaves the house (the CSR and the AES keyset, never the key), why a moved `config_version` re-mints the token, the back-off on a refusal, and what from the contract is still unbuilt (status reporting, `http.yaml`, the health item). The files table gained a "Fetched" column beside "Hand-placed"
+- `CLAUDE.md`: the four `/remote-ui` endpoints, the 404 rule extended to them, the slice-1/slice-2 file contract in the Remote UI pattern, and the test count (374 → 391, 69 → 76 subtests)
+
 ## [2026-10-20] — Room-first Home 3D plan (v1.8.0)
 
 ### Changed

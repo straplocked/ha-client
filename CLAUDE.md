@@ -5,7 +5,7 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.8.0 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.9.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
 - **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`, `cryptography>=41.0.0`
@@ -22,12 +22,15 @@ custom_components/ha_dispatch_client/
 ├── binary_sensor.py  # Pending remote access consent indicator
 ├── update.py         # HADispatchUpdateEntity - client version as an HA update entity
 ├── updater.py        # ClientUpdater - signed self-update (download, verify, swap, restart)
+├── updates.py        # HADispatchUpdates - consent-gated Core/OS/add-on updates via the Supervisor
 ├── health.py         # Home Assistant health signal collection
 ├── components.py     # Component inventory - core, OS, Supervisor, add-ons, integrations, HACS
 ├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and live session state
 ├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
-├── backups.py      # HADispatchBackups - reports the installation's own backups (+ sha256)
+├── backups.py        # HADispatchBackups - reports the installation's own backups (+ sha256)
 ├── screen.py         # ScreenSockets - Remote Screen's loopback WebSocket, frames over the poll
+├── remote_ui.py      # HADispatchRemoteUI - the homeowner's own way in, through the Dispatch relay (TLS ends here)
+├── http_config.py    # http.yaml (trusted proxies) + the one include line in configuration.yaml
 ├── repairs.py        # Approve/Deny dialog and the end-access off-switch
 ├── floorplan.py      # HADispatchFloorplan - plan assets -> the room-first "Home 3D" dashboard
 ├── www/
@@ -121,6 +124,66 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   a quarter turn in percent space, tested there and cited by the card.
 - **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. Full design: `docs/technical/remote-access.md`. A `screen` session (Remote Screen) carries the frontend itself to a headless browser on the Dispatch side: its own local policy (no `/auth`, no raw socket, writes only to `/api`), the admin user, and `screen.py` swapping our token into the browser's WebSocket `auth` frame so a real credential never leaves the house.
 
+- **Remote UI is the homeowner's path, and nothing of ours is in it:**
+  `remote_ui.py` dials out to the Dispatch relay (snitun, the library Nabu
+  Casa runs for HA Cloud, already installed by Core) and holds one
+  connection; the relay matches a phone's TLS SNI to it and copies bytes. TLS
+  terminates **inside Home Assistant's own aiohttp server** with a certificate
+  whose key sits in `<config>/ha_dispatch_client/remote_ui/` and never leaves
+  it, so Home Assistant applies its own login and MFA and no system user, token
+  substitution or local policy is involved. It is **off until that directory
+  holds `remote_ui.json`, `fullchain.pem` and `privkey.pem`** -- a server
+  cannot make a house reachable. Those three files are the contract between
+  hand-placed and fetched: they are **fetched from Dispatch when it supports
+  Remote UI and hand-placed otherwise**, and the dial loop cannot tell which.
+  `async_poll` runs on the
+  coordinator cycle, asks `GET .../remote-ui` and writes only what the
+  desired state needs -- the key is generated **here** and is never in a
+  request body (only the CSR is), the token is re-minted when
+  `config_version` moves, and an unchanged state writes nothing. A 404 is
+  `RemoteUiUnavailable`, asked once per run; `enabled: false` is a 200 that
+  removes the three files **if this client wrote them** (the provisioner stamps
+  `remote_ui.json` with `"managed_by": "dispatch"`; a hand-placed set is left alone and
+  said so once) and never `http.yaml`. This is the opposite property from the
+  technician tunnel (which must be readable to be audited); never route
+  technician access through it, and never put a credential of ours in it.
+  Design: ha-dispatch `docs/technical/homeowner-remote-access.md`; the
+  relay and its runbook live in that repo's `docker/relay/`.
+  **The house tells its owner, and only when the server has something to
+  announce:** an `announce {hostname, consent_url, consent_method}` block in
+  the desired state raises one persistent notification (`remote_ui_on`,
+  "Remote access to your home is on") once the house is dialling, with the
+  address for the app and the off-switch link; it updates in place on a
+  hostname change and is dismissed on `enabled: false`. No `announce` means
+  nothing is said, so hand-placed files never produce one, and there is
+  deliberately no Repairs issue -- the consent page is the switch. In
+  **DNS-only mode** (`trusted_proxies: []`) no `http.yaml` is written and
+  `http_block` is reported `not_needed`, never `missing`.
+- **The `http:` include is append-only, and the homeowner's `http:` wins:**
+  the relay's records are proxied, so Home Assistant must trust the proxy
+  ranges the server sends (`trusted_proxies`, plus `use_x_forwarded_for`).
+  `http_config.py` writes them to `<config>/ha_dispatch_client/http.yaml`
+  (atomically, only when the text differs) and then -- only if
+  `configuration.yaml` has **no top-level `http:` key at all** -- appends one
+  comment and one `http: !include ha_dispatch_client/http.yaml` line. The file
+  is **scanned line by line and appended to, never parsed and re-dumped**:
+  comments, `!include` and `!secret` lines must survive byte for byte (the
+  original bytes are always a prefix of the new file; a test fails the day a
+  writer re-serialises). An `http:` block that is not ours is never touched,
+  reported as `http_block: present_unmanaged` for a technician to merge. Order
+  matters: `http.yaml` is written **before** anything includes it, because an
+  include of a missing file stops Home Assistant loading its config. The
+  agent **never restarts Home Assistant**: a rewrite (or a first include) is
+  reported `restart_required` until the HA process is newer than the file's
+  mtime -- stateless, so an integration reload does not clear it. Status goes
+  to `POST .../remote-ui/status` on change and at least every 10 minutes and
+  cannot raise. **Never re-serialise `configuration.yaml`** (it is the homeowner's file), and an `http:`
+  block that is not ours stays `present_unmanaged`. When Remote UI is on and
+  Home Assistant's login lockout (`ip_ban_enabled`) is off, `health.py` adds a
+  `warning` item (`remote_ui_brute_force_protection_off`); if the setting
+  cannot be read it adds nothing. The ranges ride a proxied (Cloudflare) DNS
+  record; never write that vendor's name into customer-facing copy.
+
 ### API Endpoints (server-side)
 
 All under `/api/v1/installations/`:
@@ -140,11 +203,16 @@ All under `/api/v1/installations/`:
 - `POST .../{id}/access/{session}/revoke` - End a live session
 - `GET  .../{id}/access/poll` - Long-poll for authorised requests (held up to 25s)
 - `POST .../{id}/access/exchanges/{request_id}/respond` - Return a local response
+- `GET  .../{id}/remote-ui` - Remote UI desired state (`enabled: false` is a 200)
+- `POST .../{id}/remote-ui/csr` - Have the house's CSR signed (the key stays home)
+- `POST .../{id}/remote-ui/token` - Mint the relay token for a keyset made here
+- `POST .../{id}/remote-ui/status` - The house reports (204)
 
 A **404 on any `/access/` path means the server has no remote access**, not
 that this installation has vanished. It maps to `RemoteAccessUnavailable`, and
 must never map to `InstallationGoneError` -- the re-enrolment handler would
-re-register a healthy installation once a minute, forever.
+re-register a healthy installation once a minute, forever. The same holds for
+`/remote-ui` paths (`RemoteUiUnavailable`).
 
 ### Services (11 total)
 
@@ -221,7 +289,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `342 passed, 39 subtests passed`. Two standing limits on
+That currently prints `450 passed, 88 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not

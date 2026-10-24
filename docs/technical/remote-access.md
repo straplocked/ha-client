@@ -257,6 +257,256 @@ base64 encoded, keeps its original `Content-Type`, and is labelled
 
 ---
 
+## Remote UI: the homeowner's own way in
+
+**Status:** slice 1 (hand-placed files) and slice 2 (the agent fetches its
+certificate, token and desired state from Dispatch, manages the `http:` include,
+reports its readiness and warns when login lockout is off) built on the agent
+side; not yet in a release. Needs the matching Dispatch release: until the
+server lists the health item's type it drops it (see "The login-lockout health
+item").
+
+Everything above is remote access for a **technician**: the server authorises
+every request and writes it on a receipt, which requires that the traffic can
+be read. Remote UI is remote access for the **homeowner** -- the stock
+companion app on their phone reaching their own Home Assistant through
+Dispatch's infrastructure with no port forward -- and its value depends on the
+traffic **not** being readable by anyone of ours. The two share nothing but the
+word "remote". Design and reasoning: ha-dispatch
+`docs/technical/homeowner-remote-access.md`.
+
+### How it works
+
+`remote_ui.py` dials out to the Dispatch relay and holds one multiplexed
+connection open. The relay is snitun's SNI passthrough server (the library
+Nabu Casa runs for HA Cloud; Core already installs it through hass-nabucasa).
+When the phone connects to `https://<label>.remote.hadispatch.app`, the relay
+matches the TLS SNI to this house's connection and copies bytes. The TLS
+session terminates **here**, inside Home Assistant's own aiohttp runner, with a
+certificate whose private key sits on this disk. Home Assistant then sees an
+ordinary request from an ordinary client and applies its own login, its own
+MFA and its own permissions. No system user, no token substitution, no local
+refusal policy: nothing of ours is in the path, and that is the design.
+
+### The files, and the off-switch
+
+Off until `<config>/ha_dispatch_client/remote_ui/` holds all three:
+
+| File | What it is | Hand-placed (slice 1) | Fetched (slice 2) |
+|---|---|---|---|
+| `remote_ui.json` | The relay to dial, the token to present, the channel's AES key and IV, the token's expiry | ha-dispatch `docker/relay/mint_token.py mint` | `POST .../remote-ui/token`, for a keyset made here |
+| `fullchain.pem` | The house's certificate for its hostname | A manual ACME run | `POST .../remote-ui/csr`, signed from a CSR made here |
+| `privkey.pem` | Its private key. Never leaves this directory | The same run | Generated here (EC P-256), mode 0600 |
+
+The files are the contract between the two slices, and the dial loop neither
+knows nor cares which wrote them.
+
+No directory means no attempt, logged at debug. A directory with a missing or
+unusable file is an **error** logged once, and still no attempt: a server that
+wants a house reachable cannot make it so, and a typo cannot make it
+half-reachable. `parse_remote_ui_config` checks every field the dial needs so a
+mistake fails at load with a reason. An expired token is not presented.
+
+### Two things the first real house taught (2026-10-23)
+
+- **At boot, Home Assistant's HTTP server does not exist yet.** Config entries
+  are set up before it starts, so `hass.http.runner` is `None` during
+  `async_load`. The manager now waits for `EVENT_HOMEASSISTANT_STARTED` once
+  and loads again, the way hass-nabucasa waits for the runner.
+- **A reload used to leave a dead listener behind.** The snitun Home Assistant
+  bundles (0.45) serves TLS on a loopback site; its `stop()` closes the socket
+  but not the asyncio server behind it, and the next client in the same
+  process could inherit a listener that never accepted. The symptom was a
+  house that dialled, a relay that held the handshake open, and a loopback
+  accept queue that only grew. `async_unload` now closes the site first.
+  Verified: a fresh process served `401: Unauthorized` through the relay at
+  once.
+
+### The relay protocol is the house's, not the relay's
+
+The agent imports whatever snitun Home Assistant bundles through
+hass-nabucasa, and that lags the relay: Home Assistant 2026.6 ships snitun
+0.45.1 (relay protocol 1) while the relay image speaks 2. A token minted for
+a newer protocol than the house speaks **connects and then hangs every
+channel**, silently, which is how the first lab dial failed on 2026-10-23.
+So `installed_relay_protocol()` reads the installed snitun's
+`PROTOCOL_VERSION`; the provisioner sends it with the mint request and
+refuses a token minted above it; and the dial loop refuses to present a
+hand-placed token minted above it, with an error that says which number to
+re-mint for. The "dialled" log line names the snitun version and protocol.
+
+### Dial, hold, redial
+
+The connection is dialled on setup and held. When it drops -- a relay restart,
+the house's internet, Home Assistant itself restarting -- the agent waits a
+random 1 to 15 seconds and dials again, so a relay restart is followed by a
+trickle of reconnects rather than a storm. A refused dial is retried the same
+way and remembered in `last_error`. `async_unload` hangs up and leaves the
+files: an integration reload is not the homeowner turning their access off.
+
+### How the files get there: the provisioner
+
+`HADispatchRemoteUI.async_poll` runs on the coordinator's 60 s cycle, in the
+same arrangement as `backups.async_tick()`: absent unless setup wired a
+coordinator, and unable to raise. It asks `GET .../remote-ui` for the desired
+state and acts on the answer:
+
+| The server says | The agent does |
+|---|---|
+| **404** | The server predates Remote UI. Remembered for the rest of the run and said once at info; hand-placed files keep working untouched. Never mapped to "installation gone" (see `RemoteUiUnavailable`). |
+| `enabled: false` | Hangs up if a dial is live, deletes the three files **if the provisioner wrote them** (its `remote_ui.json` carries `"managed_by": "dispatch"`; a hand-placed slice-1 set is left in place and logged once, since a private key this client did not create is not its to delete), forgets the applied version. Leaves `ha_dispatch_client/http.yaml` alone -- a stale proxy list is harmless and removing the include is a config edit nobody asked for. Idempotent: off twice writes and logs nothing. |
+| `enabled: true` | Inspects the directory and writes only what is needed (`plan_provisioning`): a key if there is none; a certificate if there is none, it is not this key's, it does not name the hostname, it has under 60 days left, or a renewal was requested; a token if `remote_ui.json` is missing, names another hostname or relay, has under 48 h left -- **or `config_version` moved**, since the token names the hostname and the relay. Then (re)loads through `async_load`, the one path that knows how to dial. |
+
+What leaves the house is the **certificate signing request** -- the public
+key and a signature made with the private one -- and the AES keyset the
+relay channel will use. The private key is generated here, written with mode
+0600, and is in no request body; the test suite's guard for this slice
+asserts exactly that. A certificate the server already holds for this very
+key (a lost or hand-replaced file) is written back rather than spent on a
+second signing. `remote_ui.json` is written in exactly the slice-1 shape,
+through the same validator the loader uses, atomically (temp file, then
+replace). An unchanged desired state writes nothing: the mtimes do not move.
+
+A step the server declines -- `409` not switched on, `422` CSR names the wrong
+host, `429` signed in the last 24 h -- or that fails on the wire is backed off
+for five minutes, not retried every poll, and the version is not recorded so
+the next attempt picks up what is left (a key already generated is kept).
+
+Renewal needs no flag: Dispatch's sweep bumps `config_version` when a
+certificate is inside its last 60 days, the agent re-reads the desired state
+and `plan_provisioning` finds the certificate on disk short of the same
+60-day horizon, so a new CSR goes. A `renew_requested` field is honoured if
+a server ever sends one, but the current server does not.
+
+### The `http:` block, and the restart it owes
+
+Two deployment modes, chosen on the server and told to the house through
+`trusted_proxies`. In **DNS-only mode** (the one in service: one grey
+wildcard answers every `<label>.remote.hadispatch.app`) the phone talks
+straight to the relay, the relay copies bytes, and TLS ends in the house. No
+peer rewrites the client address, so Home Assistant needs no `http:` block
+and no `trusted_proxies`: the server sends an empty list, nothing is written,
+and `http_block` is reported **`not_needed`**. In **proxied mode** (kept in
+the code as the other path, selected by server config) the relay's DNS
+records sit behind an edge, so a request reaches Home Assistant from the
+edge's address with the phone's address in `X-Forwarded-For`, and Home
+Assistant refuses that unless it has been told which peers it may believe.
+Every house on that path therefore needs `use_x_forwarded_for: true` and the
+server's `trusted_proxies` in its `http:` configuration. `http_config.py`
+owns that, and is deliberately timid about it, because `configuration.yaml`
+is the homeowner's file:
+
+| Step | What happens |
+|---|---|
+| The list arrives | When `trusted_proxies` is first seen, or changes, `ha_dispatch_client/http.yaml` is written (atomically, and **only if its text differs**). Malformed entries are dropped rather than written, since a bad address there would stop Home Assistant starting. An empty list (DNS-only mode) writes nothing and reports `not_needed`; an `http.yaml` written earlier on the proxied path is left where it is, and no restart is owed. |
+| The include | `configuration.yaml` is **scanned line by line**. If no top-level `http:` key exists, a comment and `http: !include ha_dispatch_client/http.yaml` are **appended**; the original bytes are always a prefix of the new file, so comments, `!include`, `!secret`, line endings and a byte-order mark all survive. It is never parsed and re-dumped. A symlinked file stays a symlink. |
+| The homeowner has an `http:` block | Anything that is not our exact include line: left untouched, reported `http_block: present_unmanaged`. `http.yaml` is still written, as the text a technician merges from; since nothing reads it, no restart is owed. |
+| No `configuration.yaml` | Not invented. Reported `missing`. |
+
+`http.yaml` is written **before** the include line goes in: an `!include` of a
+file that is not there stops Home Assistant loading its configuration. When
+the include is newly added, `http.yaml` is rewritten even if its text is
+identical, so its mtime stays a faithful record of the last change a restart
+must pick up.
+
+The `http:` block is read only at start, so a change is not live until Home
+Assistant restarts, and **the agent never restarts it**. `restart_required` is
+true while `http.yaml` is newer than the Home Assistant process (`psutil`'s
+process start): no state of ours to lose, an integration reload does not clear
+it, and a restart does. Switching Remote UI off leaves `http.yaml` and the
+include in place -- a stale proxy list is harmless, and removing the line is a
+config edit the homeowner did not ask for.
+
+### Reporting readiness
+
+`async_report_status` ends every `async_poll`. It posts to
+`POST .../remote-ui/status` when the payload differs from the last one sent,
+and at least every ten minutes regardless (the heartbeat that distinguishes a
+quiet house from a silent one). Nothing is sent for a house that is off or a
+server that predates the feature, and it cannot raise.
+
+| Field | From |
+|---|---|
+| `connected`, `dials`, `drops`, `last_error` | The dial loop. `last_error` is cut to 500 characters, the server's validation limit, so a verbose dial error cannot cost the house its report |
+| `http_block` | `managed`, `present_unmanaged`, `missing` or `not_needed` (above) |
+| `ranges_version` | The desired state the server last sent |
+| `restart_required` | Above |
+| `certificate_expires_at` | Parsed from `fullchain.pem` on load, ISO 8601 UTC; `null` if unreadable |
+| `token_valid` | The `valid` timestamp in `remote_ui.json`, `null` if not dialling |
+
+A `404` on the status path is remembered like any other; a `409` (not yet
+switched on) is not retried every minute.
+
+### Telling the homeowner
+
+The desired state may carry an `announce` block,
+`{hostname, consent_url, consent_method}` (plus an optional public `port`,
+for a relay that answers the phone somewhere other than 443). When it does,
+and the house is dialling, `_sync_announcement` raises **one** persistent
+notification, id `remote_ui_on`, title "Remote access to your home is on",
+in the homeowner's voice: the address to enter in the Home Assistant app
+(`https://<hostname>[:port]`), who turned it on -- "Your installer turned this
+on, under the permission you gave them." when `consent_method` is `enhanced`,
+"You turned this on yourself." otherwise -- the line "Your login stays yours:
+your Home Assistant password and two-factor, applied here.", and the
+off-switch, `[Turn it off any time](consent_url)`. The same id is reused, so
+a changed hostname updates the notification in place rather than adding a
+second; `enabled: false` dismisses it. The text is built by
+`build_announcement`, which is pure and returns nothing for a block without
+an address or without the off-switch link: a notification that says "on"
+with no way off is not shown.
+
+No `announce` means nothing is said. A server that predates the feature
+(404) and a house running on hand-placed slice-1 files never produce a
+notification; neither does a server that provisions the house without
+announcing it. There is deliberately **no Repairs issue** here, unlike
+technician access: the notification is the surface and the consent page is
+the switch, and a Repairs "fix" flow would be a second off-switch to keep in
+step with the first.
+
+### The login-lockout health item
+
+A house that is reachable from the internet should be locking out someone who
+guesses passwords. Home Assistant's `ip_ban_enabled` does that, and with the
+relay in front it only works against the right address because of the
+`trusted_proxies` the include above supplies: the address that gets banned is
+the real client's, not the relay's.
+
+`collect_health` takes the Remote UI manager and, when it reports `enabled`
+(the three files are in place and a token is current) and the `http`
+component is **not** locking out failed logins, adds one item to the health
+payload:
+
+| Field | Value |
+|---|---|
+| `type`, `key` | `remote_ui_brute_force_protection_off` |
+| `label` | Remote access is on but login lockout is off |
+| `severity` | `warning` |
+| `detail.text` | For a technician: set `ip_ban_enabled: true` and a `login_attempts_threshold` in the `http:` block, then restart |
+
+Home Assistant exposes no public getter for the setting. The `http` component
+installs its `ban_middleware` on the web app only when `ip_ban_enabled` is
+true, so `health.py::_ip_ban_enabled` takes that middleware's presence as the
+setting being on. If there is no `hass.http`, no app or no middleware list, it
+**cannot tell**, and cannot-tell emits nothing -- never "off". The item is not
+part of the rollup counts, sits just behind failed integrations so the item
+cap does not cut it, and clears by absence like every other item. This
+detection has been exercised against stubs only; confirm it on a live Home
+Assistant (set `ip_ban_enabled: true`, restart, expect the item to go).
+
+### What is still manual
+
+- **Restarting Home Assistant** after `restart_required`: the agent never does.
+- **Merging an existing `http:` block** (`present_unmanaged`): a technician
+  adds `use_x_forwarded_for: true` and the `trusted_proxies` from
+  `ha_dispatch_client/http.yaml` to the homeowner's own block. Remote UI does
+  not work for that house until then.
+- **Turning on login lockout**, per the health item above.
+- **Hand-placing the files** when the server predates Remote UI (the 404 case).
+- **Checking against a live Home Assistant**: the whole Remote UI path runs
+  under stubs in the suite; the dial, the TLS termination and the ban detection
+  need a real house.
+
 ## What is not supported
 
 WebSockets are carried only for `screen` sessions, as frames. Other scopes

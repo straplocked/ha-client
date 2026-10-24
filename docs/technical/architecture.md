@@ -74,6 +74,8 @@ custom_components/ha_dispatch_client/
 ├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and session state
 ├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
 ├── repairs.py        # Approve / Deny and End-access repair flows
+├── remote_ui.py      # HADispatchRemoteUI - the homeowner's own way in, through the Dispatch relay
+├── http_config.py    # http.yaml (trusted proxies) + the include line in configuration.yaml
 ├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
 ├── manifest.json     # Integration metadata
 ├── services.yaml     # 9 service definitions with UI fields
@@ -178,6 +180,32 @@ Deny dialog and the one-tap off-switch.
 
 Neither enforces scope -- the server does that before anything is queued. See
 [Remote Access](remote-access.md).
+
+#### `remote_ui.py`
+
+The homeowner's own way in: the stock companion app reaching this Home
+Assistant through the Dispatch relay with no port forward. The module dials
+out and holds one multiplexed connection (snitun, already installed by Core);
+the relay matches a phone's TLS SNI to it and copies bytes; TLS terminates
+here, inside Home Assistant's own aiohttp server, with a certificate whose key
+never leaves the house. Home Assistant applies its own login and MFA. There is
+no credential of ours in the path, which is the opposite property from the
+technician tunnel above, and the reason the two never share a transport. Off
+until `<config>/ha_dispatch_client/remote_ui/` holds its three files, which it
+fetches from Dispatch when the server supports Remote UI and which a technician
+places by hand when it does not. `health.py` takes the manager and warns
+(`remote_ui_brute_force_protection_off`) when Remote UI is on but Home
+Assistant is not locking out failed logins. See
+[Remote Access](remote-access.md#remote-ui-the-homeowners-own-way-in).
+
+#### `http_config.py`
+
+Owns the `http:` block Remote UI needs because the relay's records are
+proxied: `ha_dispatch_client/http.yaml` (`use_x_forwarded_for` and the server's
+`trusted_proxies`) and, only when `configuration.yaml` has no `http:` key of its
+own, one appended include line. The configuration file is scanned and appended
+to, never parsed and re-dumped. See
+[Remote Access](remote-access.md#the-http-block-and-the-restart-it-owes).
 
 #### `floorplan.py`, `www/ayvra-room-plan.js`
 

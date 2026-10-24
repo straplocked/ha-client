@@ -28,6 +28,7 @@ from .const import (
     HEALTH_TYPE_DISABLED_AUTOMATION,
     HEALTH_TYPE_FAILED_INTEGRATION,
     HEALTH_TYPE_LOW_BATTERY,
+    HEALTH_TYPE_REMOTE_UI_LOCKOUT_OFF,
     HEALTH_TYPE_STALE_ENTITY,
     HEALTH_TYPE_UNAVAILABLE_AUTOMATION,
     HEALTH_TYPE_UNAVAILABLE_ENTITY,
@@ -88,12 +89,16 @@ def collect_health(
     stale_hours: int = DEFAULT_STALE_ENTITY_HOURS,
     battery_low: int = DEFAULT_BATTERY_LOW_PERCENT,
     battery_critical: int = DEFAULT_BATTERY_CRITICAL_PERCENT,
+    remote_ui: Any = None,
 ) -> dict[str, Any]:
     """Build the health payload sent alongside metrics.
 
     Returns rollup counts plus per-item detail. The counts are computed over
     everything; the item list is capped, so the counts remain truthful even when
     the detail is truncated by a mass outage.
+
+    `remote_ui` is the Remote UI manager, or None. It is read for one thing: a
+    house that is reachable from the internet should be locking out guessers.
     """
     now = dt_util.utcnow()
     stale_cutoff = now - timedelta(hours=stale_hours)
@@ -194,10 +199,12 @@ def collect_health(
                 )
 
     integrations_total, integrations_failed, integration_items = _collect_integrations(hass)
+    remote_ui_items = _collect_remote_ui(hass, remote_ui)
 
     # Ordered most to least actionable, because the cap truncates from the end.
     items = (
         integration_items
+        + remote_ui_items
         + [i for i in automation_items if i["type"] == HEALTH_TYPE_UNAVAILABLE_AUTOMATION]
         + [i for i in battery_items if i["severity"] == "critical"]
         + unavailable_items
@@ -278,6 +285,58 @@ def _collect_integrations(hass: HomeAssistant) -> tuple[int, int, list[dict[str,
         )
 
     return total, failed, items
+
+
+REMOTE_UI_LOCKOUT_TITLE = "Remote access is on but login lockout is off"
+REMOTE_UI_LOCKOUT_TEXT = (
+    "This installation is reachable from the internet through the Dispatch "
+    "relay, and Home Assistant is not locking out repeated failed logins. "
+    "Add ip_ban_enabled: true and a login_attempts_threshold (5 is "
+    "reasonable) to the http: block, then restart Home Assistant. With the "
+    "relay in front, the trusted_proxies setting makes the address that gets "
+    "banned the real client's, not the relay's."
+)
+
+
+def _ip_ban_enabled(hass: HomeAssistant) -> bool | None:
+    """Whether Home Assistant's http component is locking out failed logins.
+
+    The http component installs its `ban_middleware` on the web app only when
+    `ip_ban_enabled` is true, so the middleware being there is the setting
+    being on. Returns None when this cannot be read -- no http component yet,
+    an app shaped differently -- because "could not tell" must not be reported
+    as "off".
+    """
+    app = getattr(getattr(hass, "http", None), "app", None)
+    middlewares = getattr(app, "middlewares", None)
+    if middlewares is None:
+        return None
+    try:
+        return any(
+            getattr(middleware, "__name__", "") == "ban_middleware"
+            for middleware in middlewares
+        )
+    except TypeError:
+        return None
+
+
+def _collect_remote_ui(hass: HomeAssistant, remote_ui: Any) -> list[dict[str, Any]]:
+    """A technician-facing warning when Remote UI is on and login lockout is off."""
+    if remote_ui is None or not getattr(remote_ui, "enabled", False):
+        return []
+
+    if _ip_ban_enabled(hass) is not False:
+        return []
+
+    return [
+        {
+            "type": HEALTH_TYPE_REMOTE_UI_LOCKOUT_OFF,
+            "key": HEALTH_TYPE_REMOTE_UI_LOCKOUT_OFF,
+            "label": REMOTE_UI_LOCKOUT_TITLE,
+            "severity": "warning",
+            "detail": {"text": REMOTE_UI_LOCKOUT_TEXT},
+        }
+    ]
 
 
 def _iso(value: Any) -> str | None:
