@@ -16,6 +16,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 - `docs/technical/api-reference.md`: Endpoint 14 carries `announce`, and `trusted_proxies: []` is named as DNS-only mode; Endpoint 17's `http_block` enum gains `not_needed`
 - `CLAUDE.md`: version 1.9.0 (the header had still said 1.8.0 at 1.8.1), the Remote UI pattern's announcement and DNS-only bullets, and the test count
+- `CLAUDE.md`: the architecture tree now lists `updates.py` (`HADispatchUpdates`, shipped since 1.7.0 and in every release archive, but absent from the tree), and the comment columns line up again
 
 ## [2026-10-22] — Remote UI slice 2: integration pass
 

@@ -22,14 +22,15 @@ custom_components/ha_dispatch_client/
 ├── binary_sensor.py  # Pending remote access consent indicator
 ├── update.py         # HADispatchUpdateEntity - client version as an HA update entity
 ├── updater.py        # ClientUpdater - signed self-update (download, verify, swap, restart)
+├── updates.py        # HADispatchUpdates - consent-gated Core/OS/add-on updates via the Supervisor
 ├── health.py         # Home Assistant health signal collection
 ├── components.py     # Component inventory - core, OS, Supervisor, add-ons, integrations, HACS
 ├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and live session state
 ├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
-├── backups.py      # HADispatchBackups - reports the installation's own backups (+ sha256)
+├── backups.py        # HADispatchBackups - reports the installation's own backups (+ sha256)
 ├── screen.py         # ScreenSockets - Remote Screen's loopback WebSocket, frames over the poll
 ├── remote_ui.py      # HADispatchRemoteUI - the homeowner's own way in, through the Dispatch relay (TLS ends here)
-├── http_config.py   # http.yaml (trusted proxies) + the one include line in configuration.yaml
+├── http_config.py    # http.yaml (trusted proxies) + the one include line in configuration.yaml
 ├── repairs.py        # Approve/Deny dialog and the end-access off-switch
 ├── floorplan.py      # HADispatchFloorplan - plan assets -> the room-first "Home 3D" dashboard
 ├── www/
