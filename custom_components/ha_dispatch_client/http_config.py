@@ -42,6 +42,10 @@ _LOGGER = logging.getLogger(__name__)
 HTTP_BLOCK_MANAGED = "managed"
 HTTP_BLOCK_UNMANAGED = "present_unmanaged"
 HTTP_BLOCK_MISSING = "missing"
+# DNS-only mode: the phone talks straight to the relay, nothing rewrites the
+# client address, so Home Assistant needs no trusted_proxies and no http:
+# block. Reported when the server sends an empty proxy list.
+HTTP_BLOCK_NOT_NEEDED = "not_needed"
 
 # What a scan of configuration.yaml can conclude.
 SCAN_OURS = "ours"          # our include line is there

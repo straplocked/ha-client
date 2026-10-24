@@ -920,13 +920,27 @@ per run, and is never `InstallationGoneError`. `enabled: false` is a **200**.
   "trusted_proxies": ["173.245.48.0/20", "2400:cb00::/32"],
   "ranges_version": 7,
   "certificate": {"fullchain_pem": "-----BEGIN CERTIFICATE-----...", "expires_at": "2031-10-22T00:00:00Z"},
-  "config_version": 12
+  "config_version": 12,
+  "announce": {
+    "hostname": "quiet-maple-42.remote.hadispatch.app",
+    "consent_url": "https://dispatch.example/consent/...",
+    "consent_method": "enhanced"
+  }
 }
 ```
 
 - `enabled: false` → every other field may be null; the agent hangs up and
   deletes `remote_ui.json`, `fullchain.pem` and `privkey.pem`, leaving
-  `http.yaml` and the include line in place.
+  `http.yaml` and the include line in place, and dismisses the homeowner's
+  notification.
+- `trusted_proxies: []` is **DNS-only mode**: no `http.yaml` is written and
+  the house reports `http_block: not_needed`.
+- `announce` (optional) is what the house tells its owner: one persistent
+  notification with `https://<hostname>` (plus `:<port>` if an optional
+  `port` other than 443 is given), who turned it on (`consent_method`
+  `enhanced` = the installer under the standing grant; anything else = the
+  homeowner's own tap) and `consent_url` as the off-switch. Absent → the
+  house says nothing.
 - `certificate` is null until the house has had a CSR signed.
 - `config_version` moves on any change (hostname, certificate, ranges, relay).
   Polled on the coordinator cycle; the agent acts on the first poll and when
@@ -968,8 +982,8 @@ generates. Response `200` `{"token": "<fernet>", "valid": 1793000000,
 ```
 
 Answers `204`. Sent on change and at least every 10 minutes. `http_block` is
-`managed`, `present_unmanaged` or `missing`; `last_error` is cut to 500
-characters, the server's limit. Full design:
+`managed`, `present_unmanaged`, `missing` or `not_needed` (DNS-only mode);
+`last_error` is cut to 500 characters, the server's limit. Full design:
 [Remote Access](remote-access.md#remote-ui-the-homeowners-own-way-in).
 
 ---

@@ -167,6 +167,34 @@ See [Recovering by hand](#recovering-by-hand) above.
 
 ---
 
+## Release notes
+
+### 1.9.0 — Your home, reachable from anywhere
+
+**Your home, reachable from anywhere. Nothing to install.** Open the Home
+Assistant app you already use, enter the address your home was given, and
+sign in the way you always do. Your login stays yours: your Home Assistant
+password and two-factor, applied in your home. We route it. We never see it.
+Off in one tap, from the same page you said yes on.
+
+When remote access is switched on, your home tells you. A notification
+appears in your own Home Assistant — **Remote access to your home is on** —
+with the address to enter in the app, who turned it on (your installer under
+the permission you gave them, or your own tap), and a **Turn it off any time**
+link. It updates if the address ever changes and disappears when remote
+access is turned off.
+
+**For installers and technicians.** The house needs nothing but this update.
+Once it is running 1.9.0, offering remote access from HA Dispatch is enough:
+the house fetches its certificate and relay token from Dispatch, dials the
+relay, and reports its status. No files are placed, no terminal is opened,
+and no `http:` block or `trusted_proxies` entry is needed in DNS-only mode
+(the status report says `http_block: not_needed`). A house that was set up by
+hand before this release keeps working exactly as it is, and is never told
+anything it did not ask to be told.
+
+---
+
 ## Related Guides
 
 - [Deployment](deployment.md) — deploy.sh, versioning, caching caveats

@@ -2,6 +2,32 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.9.0] - 2026-10-23
+
+### Added -- your home, reachable from anywhere
+- Remote access to your home now switches on end to end through HA Dispatch:
+  the house fetches its certificate and relay token, dials the relay, and the
+  homeowner signs in with the Home Assistant app they already have. Nothing to
+  install, nothing to type into a terminal, nothing for a technician to do in
+  the house. The house needs nothing but this update.
+- The house tells its owner. When Dispatch turns remote access on, one
+  persistent notification ("Remote access to your home is on") appears in the
+  homeowner's own Home Assistant with the address to enter in the app, who
+  turned it on (their installer under the permission they gave, or their own
+  tap), the line "Your login stays yours: your Home Assistant password and
+  two-factor, applied here", and the off-switch link. It is updated in place
+  when the address changes and taken down when remote access is switched off.
+  It appears only when Dispatch has something to announce: files placed by
+  hand say nothing. There is no Repairs issue for this -- the notification is
+  the surface and the consent page is the switch.
+
+### Changed
+- DNS-only mode. When Dispatch sends an empty `trusted_proxies` list (the
+  phone talks straight to the relay, which copies bytes; TLS ends in the
+  house) no `http.yaml` is written, `configuration.yaml` is not touched, and
+  `http_block` is reported `not_needed`. An `http.yaml` written earlier on the
+  proxied path is left where it is.
+
 ## [1.8.1] - 2026-10-21
 
 ### Added

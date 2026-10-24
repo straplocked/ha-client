@@ -400,7 +400,11 @@ class ManagerTest(unittest.TestCase):
 
         run(scenario())
 
-    def test_without_trusted_proxies_nothing_is_written(self):
+    def test_dns_only_mode_writes_no_http_yaml_and_reports_not_needed(self):
+        # DNS-only: the phone talks straight to the relay, nothing rewrites
+        # the client address, so the house needs no trusted_proxies. The
+        # server says so with an empty list; the agent writes nothing and
+        # says "not_needed" -- not "missing", which would read as a fault.
         async def scenario():
             with tempfile.TemporaryDirectory() as tmp:
                 tmp = Path(tmp)
@@ -408,9 +412,40 @@ class ManagerTest(unittest.TestCase):
                 manager, _ = self.make(tmp, api)
                 await manager.async_poll()
                 await settle()
+                await manager.async_poll()
                 self.assertFalse(paths(tmp)[0].exists())
                 self.assertEqual(paths(tmp)[1].read_text(), HOMEOWNER_CONFIG)
-                self.assertEqual(api.status_posts[-1]["http_block"], "missing")
+                self.assertEqual(manager.http_block, "not_needed")
+                self.assertEqual(api.status_posts[-1]["http_block"], "not_needed")
+                self.assertIs(api.status_posts[-1]["restart_required"], False)
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_dns_only_mode_leaves_an_http_yaml_written_earlier_alone(self):
+        # A house provisioned on the proxied path and then moved to DNS-only:
+        # the managed http.yaml and the include line stay (harmless, and not
+        # ours to edit out), and no restart is asked for.
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                api = FakeRemoteUiApi(desired=desired_state())
+                manager, _ = self.make(tmp, api)
+                await manager.async_poll()
+                await settle()
+                http_yaml, configuration = paths(tmp)
+                self.assertEqual(http_yaml.read_text(), EXPECTED_HTTP_YAML)
+                after_on = configuration.read_bytes()
+                os.utime(http_yaml, (OLD_MTIME, OLD_MTIME))
+
+                api.desired = desired_state(trusted_proxies=[], ranges_version=8, config_version=13)
+                await manager.async_poll()
+                await settle()
+                self.assertEqual(http_yaml.read_text(), EXPECTED_HTTP_YAML)
+                self.assertEqual(int(os.stat(http_yaml).st_mtime), OLD_MTIME)
+                self.assertEqual(configuration.read_bytes(), after_on)
+                self.assertEqual(manager.http_block, "not_needed")
+                self.assertFalse(manager.restart_required)
                 await manager.async_unload()
 
         run(scenario())

@@ -380,17 +380,25 @@ a server ever sends one, but the current server does not.
 
 ### The `http:` block, and the restart it owes
 
-The relay's DNS records are proxied, so a request reaches Home Assistant from
-the proxy's address with the phone's address in `X-Forwarded-For`, and Home
+Two deployment modes, chosen on the server and told to the house through
+`trusted_proxies`. In **DNS-only mode** (the one in service: one grey
+wildcard answers every `<label>.remote.hadispatch.app`) the phone talks
+straight to the relay, the relay copies bytes, and TLS ends in the house. No
+peer rewrites the client address, so Home Assistant needs no `http:` block
+and no `trusted_proxies`: the server sends an empty list, nothing is written,
+and `http_block` is reported **`not_needed`**. In **proxied mode** (kept in
+the code as the other path, selected by server config) the relay's DNS
+records sit behind an edge, so a request reaches Home Assistant from the
+edge's address with the phone's address in `X-Forwarded-For`, and Home
 Assistant refuses that unless it has been told which peers it may believe.
-Every house therefore needs `use_x_forwarded_for: true` and the server's
-`trusted_proxies` in its `http:` configuration. `http_config.py` owns that,
-and is deliberately timid about it, because `configuration.yaml` is the
-homeowner's file:
+Every house on that path therefore needs `use_x_forwarded_for: true` and the
+server's `trusted_proxies` in its `http:` configuration. `http_config.py`
+owns that, and is deliberately timid about it, because `configuration.yaml`
+is the homeowner's file:
 
 | Step | What happens |
 |---|---|
-| The list arrives | When `trusted_proxies` is first seen, or changes, `ha_dispatch_client/http.yaml` is written (atomically, and **only if its text differs**). Malformed entries are dropped rather than written, since a bad address there would stop Home Assistant starting. An empty list writes nothing. |
+| The list arrives | When `trusted_proxies` is first seen, or changes, `ha_dispatch_client/http.yaml` is written (atomically, and **only if its text differs**). Malformed entries are dropped rather than written, since a bad address there would stop Home Assistant starting. An empty list (DNS-only mode) writes nothing and reports `not_needed`; an `http.yaml` written earlier on the proxied path is left where it is, and no restart is owed. |
 | The include | `configuration.yaml` is **scanned line by line**. If no top-level `http:` key exists, a comment and `http: !include ha_dispatch_client/http.yaml` are **appended**; the original bytes are always a prefix of the new file, so comments, `!include`, `!secret`, line endings and a byte-order mark all survive. It is never parsed and re-dumped. A symlinked file stays a symlink. |
 | The homeowner has an `http:` block | Anything that is not our exact include line: left untouched, reported `http_block: present_unmanaged`. `http.yaml` is still written, as the text a technician merges from; since nothing reads it, no restart is owed. |
 | No `configuration.yaml` | Not invented. Reported `missing`. |
@@ -420,7 +428,7 @@ server that predates the feature, and it cannot raise.
 | Field | From |
 |---|---|
 | `connected`, `dials`, `drops`, `last_error` | The dial loop. `last_error` is cut to 500 characters, the server's validation limit, so a verbose dial error cannot cost the house its report |
-| `http_block` | `managed`, `present_unmanaged` or `missing` (above) |
+| `http_block` | `managed`, `present_unmanaged`, `missing` or `not_needed` (above) |
 | `ranges_version` | The desired state the server last sent |
 | `restart_required` | Above |
 | `certificate_expires_at` | Parsed from `fullchain.pem` on load, ISO 8601 UTC; `null` if unreadable |
@@ -428,6 +436,33 @@ server that predates the feature, and it cannot raise.
 
 A `404` on the status path is remembered like any other; a `409` (not yet
 switched on) is not retried every minute.
+
+### Telling the homeowner
+
+The desired state may carry an `announce` block,
+`{hostname, consent_url, consent_method}` (plus an optional public `port`,
+for a relay that answers the phone somewhere other than 443). When it does,
+and the house is dialling, `_sync_announcement` raises **one** persistent
+notification, id `remote_ui_on`, title "Remote access to your home is on",
+in the homeowner's voice: the address to enter in the Home Assistant app
+(`https://<hostname>[:port]`), who turned it on -- "Your installer turned this
+on, under the permission you gave them." when `consent_method` is `enhanced`,
+"You turned this on yourself." otherwise -- the line "Your login stays yours:
+your Home Assistant password and two-factor, applied here.", and the
+off-switch, `[Turn it off any time](consent_url)`. The same id is reused, so
+a changed hostname updates the notification in place rather than adding a
+second; `enabled: false` dismisses it. The text is built by
+`build_announcement`, which is pure and returns nothing for a block without
+an address or without the off-switch link: a notification that says "on"
+with no way off is not shown.
+
+No `announce` means nothing is said. A server that predates the feature
+(404) and a house running on hand-placed slice-1 files never produce a
+notification; neither does a server that provisions the house without
+announcing it. There is deliberately **no Repairs issue** here, unlike
+technician access: the notification is the surface and the consent page is
+the switch, and a Repairs "fix" flow would be a second off-switch to keep in
+step with the first.
 
 ### The login-lockout health item
 

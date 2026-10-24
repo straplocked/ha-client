@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-23] — Remote UI: the house tells its owner; 1.9.0
+
+### Added
+- `docs/user/updating.md`: a "Release notes" section, opening with 1.9.0 in the product's voice (your home, reachable from anywhere; your login stays yours; off in one tap) and the technical note that the house needs nothing but this update
+- `docs/technical/remote-access.md`: "Telling the homeowner" (the `announce` block, the one notification under `remote_ui_on`, the enhanced-versus-tap wording, update-in-place and dismissal, why there is no Repairs issue) and the two deployment modes at the head of the `http:` section, with `not_needed`
+- `CHANGELOG.md`: the 1.9.0 entry
+
+### Changed
+- `docs/technical/api-reference.md`: Endpoint 14 carries `announce`, and `trusted_proxies: []` is named as DNS-only mode; Endpoint 17's `http_block` enum gains `not_needed`
+- `CLAUDE.md`: version 1.9.0 (the header had still said 1.8.0 at 1.8.1), the Remote UI pattern's announcement and DNS-only bullets, and the test count
+
 ## [2026-10-22] — Remote UI slice 2: integration pass
 
 ### Added

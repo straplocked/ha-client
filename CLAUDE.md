@@ -5,7 +5,7 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.8.0 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.9.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
 - **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`, `cryptography>=41.0.0`
@@ -137,6 +137,16 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   technician access through it, and never put a credential of ours in it.
   Design: ha-dispatch `docs/technical/homeowner-remote-access.md`; the
   relay and its runbook live in that repo's `docker/relay/`.
+  **The house tells its owner, and only when the server has something to
+  announce:** an `announce {hostname, consent_url, consent_method}` block in
+  the desired state raises one persistent notification (`remote_ui_on`,
+  "Remote access to your home is on") once the house is dialling, with the
+  address for the app and the off-switch link; it updates in place on a
+  hostname change and is dismissed on `enabled: false`. No `announce` means
+  nothing is said, so hand-placed files never produce one, and there is
+  deliberately no Repairs issue -- the consent page is the switch. In
+  **DNS-only mode** (`trusted_proxies: []`) no `http.yaml` is written and
+  `http_block` is reported `not_needed`, never `missing`.
 - **The `http:` include is append-only, and the homeowner's `http:` wins:**
   the relay's records are proxied, so Home Assistant must trust the proxy
   ranges the server sends (`trusted_proxies`, plus `use_x_forwarded_for`).
@@ -267,7 +277,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `430 passed, 84 subtests passed`. Two standing limits on
+That currently prints `439 passed, 84 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not

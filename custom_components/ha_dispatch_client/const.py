@@ -666,3 +666,16 @@ REMOTE_UI_STATUS_ERROR_MAX_CHARS = 500
 # removes only files this client wrote and never a hand-placed set.
 REMOTE_UI_MANAGED_KEY = "managed_by"
 REMOTE_UI_MANAGED_VALUE = "dispatch"
+
+# The homeowner is told, in their own Home Assistant, when their home becomes
+# reachable: one persistent notification under this id, updated in place when
+# the address changes and dismissed when the server says off. Raised only
+# when the desired state carries an ``announce`` block -- hand-placed files
+# announce nothing. There is deliberately no Repairs issue: the notification
+# is the surface and the consent page is the switch.
+REMOTE_UI_NOTIFICATION_ID = "remote_ui_on"
+# ``announce.consent_method`` when the installer's Offer was covered by the
+# homeowner's standing enhanced-permissions grant (no separate tap).
+REMOTE_UI_CONSENT_ENHANCED = "enhanced"
+# The port left out of the address the homeowner types.
+REMOTE_UI_PUBLIC_PORT = 443

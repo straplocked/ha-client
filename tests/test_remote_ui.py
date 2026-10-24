@@ -1046,5 +1046,177 @@ class StartupOrderTest(unittest.TestCase):
         run(scenario())
 
 
+CONSENT_URL = "https://dispatch.example.test/consent/abc123"
+
+
+def announce(**overrides):
+    block = {"hostname": HOSTNAME, "consent_url": CONSENT_URL, "consent_method": "enhanced"}
+    block.update(overrides)
+    return block
+
+
+class AnnouncementTest(unittest.TestCase):
+    """The house tells its owner, in the owner's own Home Assistant.
+
+    What is asserted: exactly one notification, carrying the address to type
+    into the app and the off-switch link; updated in place (same id) when the
+    address changes; taken down when the server says off (THE GUARD: skip the
+    dismiss and the homeowner is told their home is reachable after it is
+    not); and nothing at all for hand-placed files or a server that announces
+    nothing. The expected title and id are written out by hand here, so a
+    change to either in const.py has to be made deliberately twice.
+    """
+
+    def setUp(self):
+        self.notifications = remote_ui.persistent_notification
+        self.notifications.reset()
+
+    def make(self, tmp: Path, api):
+        return ProvisionerTest().make(tmp, api)
+
+    def test_the_homeowner_is_told_once_with_the_address_and_the_off_switch(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(desired=desired_state(announce=announce()))
+                hass, manager, clients = self.make(Path(tmp), api)
+                await manager.async_poll()
+                await settle()
+                await manager.async_poll()
+                await manager.async_poll()
+
+                self.assertTrue(manager.connected)
+                self.assertEqual(len(self.notifications.created), 1)
+                note = self.notifications.created[0]
+                self.assertEqual(note["notification_id"], "remote_ui_on")
+                self.assertEqual(note["title"], "Remote access to your home is on")
+                self.assertIn("https://lab1.remote.hadispatch.app", note["message"])
+                self.assertNotIn(":443", note["message"])
+                self.assertIn(f"[Turn it off any time]({CONSENT_URL})", note["message"])
+                self.assertIn("Your installer turned this on, under the permission you gave them.", note["message"])
+                self.assertIn("Your login stays yours: your Home Assistant password and two-factor, applied here.",
+                              note["message"])
+                # Not a word of ours that is not literally true: no vendor name, no credential.
+                for forbidden in ("Dispatch", "Cloudflare", "snitun", "token", "gAAAA"):
+                    self.assertNotIn(forbidden, note["message"])
+                self.assertEqual(self.notifications.dismissed, [])
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_a_tap_consent_is_worded_as_the_homeowners_own_choice_and_a_lab_port_is_shown(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(desired=desired_state(announce=announce(consent_method="tap", port=8443)))
+                hass, manager, clients = self.make(Path(tmp), api)
+                await manager.async_poll()
+                await settle()
+                note = self.notifications.created[0]
+                self.assertIn("**https://lab1.remote.hadispatch.app:8443**", note["message"])
+                self.assertIn("You turned this on yourself.", note["message"])
+                self.assertNotIn("installer", note["message"])
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_a_changed_hostname_updates_the_one_notification_in_place(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(desired=desired_state(announce=announce()))
+                hass, manager, clients = self.make(Path(tmp), api)
+                await manager.async_poll()
+                await settle()
+                self.assertEqual(len(self.notifications.created), 1)
+
+                new_hostname = "calm-birch-17.remote.hadispatch.app"
+                api.desired = desired_state(
+                    hostname=new_hostname, config_version=13, announce=announce(hostname=new_hostname),
+                )
+                await manager.async_poll()
+                await settle()
+                await manager.async_poll()
+
+                self.assertEqual(len(self.notifications.created), 2)
+                self.assertEqual({n["notification_id"] for n in self.notifications.created}, {"remote_ui_on"})
+                self.assertIn("https://calm-birch-17.remote.hadispatch.app", self.notifications.created[1]["message"])
+                self.assertNotIn(HOSTNAME, self.notifications.created[1]["message"])
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_off_takes_the_notification_down(self):
+        """THE GUARD."""
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(desired=desired_state(announce=announce()))
+                hass, manager, clients = self.make(Path(tmp), api)
+                await manager.async_poll()
+                await settle()
+                self.assertEqual(len(self.notifications.created), 1)
+                self.assertEqual(self.notifications.dismissed, [])
+
+                api.desired = {"enabled": False}
+                await manager.async_poll()
+                self.assertFalse(manager.connected)
+                self.assertEqual(self.notifications.dismissed, ["remote_ui_on"])
+
+                # Off again dismisses nothing again; on again says it again.
+                await manager.async_poll()
+                self.assertEqual(self.notifications.dismissed, ["remote_ui_on"])
+                api.desired = desired_state(config_version=14, announce=announce())
+                await manager.async_poll()
+                await settle()
+                self.assertEqual(len(self.notifications.created), 2)
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_nothing_is_said_without_an_announce_block(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                # Dispatch provisions the house but has nothing to announce.
+                api = FakeRemoteUiApi(desired=desired_state())
+                hass, manager, clients = self.make(Path(tmp), api)
+                await manager.async_poll()
+                await settle()
+                self.assertTrue(manager.connected)
+                self.assertEqual(self.notifications.created, [])
+
+                # Off after that dismisses once (harmless if nothing was up) and then stays quiet.
+                api.desired = {"enabled": False}
+                await manager.async_poll()
+                await manager.async_poll()
+                self.assertEqual(self.notifications.dismissed, ["remote_ui_on"])
+
+        run(scenario())
+
+    def test_hand_placed_files_and_a_server_without_the_feature_say_nothing(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                api = FakeRemoteUiApi(unavailable=True)
+                hass, manager, clients = self.make(Path(tmp), api)
+                write_house(Path(tmp))
+                await manager.async_load()
+                await settle()
+                await manager.async_poll()
+                self.assertTrue(manager.connected)
+                self.assertEqual(self.notifications.created, [])
+                self.assertEqual(self.notifications.dismissed, [])
+                await manager.async_unload()
+
+        run(scenario())
+
+    def test_an_announce_block_without_an_off_switch_is_not_shown(self):
+        # Pure: a notification that says "on" with no way off is not one to show.
+        self.assertIsNone(remote_ui.build_announcement(None))
+        self.assertIsNone(remote_ui.build_announcement({"hostname": HOSTNAME}))
+        self.assertIsNone(remote_ui.build_announcement({"hostname": HOSTNAME, "consent_url": ""}))
+        self.assertIsNone(remote_ui.build_announcement({"consent_url": CONSENT_URL}))
+        self.assertEqual(remote_ui.remote_ui_address(HOSTNAME, 443), f"https://{HOSTNAME}")
+        self.assertEqual(remote_ui.remote_ui_address(HOSTNAME, None), f"https://{HOSTNAME}")
+        self.assertEqual(remote_ui.remote_ui_address(HOSTNAME, True), f"https://{HOSTNAME}")
+        self.assertEqual(remote_ui.remote_ui_address(HOSTNAME, 8443), f"https://{HOSTNAME}:8443")
+
+
 if __name__ == "__main__":
     unittest.main()

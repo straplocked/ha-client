@@ -36,6 +36,16 @@ here, and writes the same three files. The file shapes are the contract
 between the two: a house with hand-placed files and a server that predates
 the feature (404) keeps working untouched, and the dial loop neither knows nor
 cares which slice wrote what it reads.
+
+Two more things the provisioner does with the desired state. When it carries
+an ``announce`` block, the homeowner is told in their own Home Assistant --
+one persistent notification with the address to type into the app, who turned
+it on (their installer under the permission they gave, or their own tap), and
+the off-switch link -- updated in place when the address changes and taken
+down when the server says off. No ``announce`` means nothing is said, so
+hand-placed files never produce one. And when ``trusted_proxies`` is empty
+(DNS-only mode: the phone talks straight to the relay, which copies bytes),
+no ``http.yaml`` is written and ``http_block`` is reported ``not_needed``.
 """
 from __future__ import annotations
 
@@ -51,6 +61,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
+from homeassistant.components import persistent_notification
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant
 
@@ -60,6 +71,7 @@ from .const import (
     REMOTE_UI_CERT_RENEW_DAYS,
     REMOTE_UI_CONFIG_FILE,
     REMOTE_UI_CONNECT_TIMEOUT,
+    REMOTE_UI_CONSENT_ENHANCED,
     REMOTE_UI_DEFAULT_PORT,
     REMOTE_UI_DEFAULT_PROTOCOL_VERSION,
     REMOTE_UI_DIR,
@@ -67,6 +79,8 @@ from .const import (
     REMOTE_UI_KEY_FILE,
     REMOTE_UI_MANAGED_KEY,
     REMOTE_UI_MANAGED_VALUE,
+    REMOTE_UI_NOTIFICATION_ID,
+    REMOTE_UI_PUBLIC_PORT,
     REMOTE_UI_RECONNECT_MAX,
     REMOTE_UI_RECONNECT_MIN,
     REMOTE_UI_RETRY_SECONDS,
@@ -78,6 +92,7 @@ from .const import (
 from .http_config import (
     HTTP_BLOCK_MANAGED,
     HTTP_BLOCK_MISSING,
+    HTTP_BLOCK_NOT_NEEDED,
     HTTP_BLOCK_UNMANAGED,
     apply_http_config,
     clean_trusted_proxies,
@@ -287,6 +302,14 @@ class HADispatchRemoteUI:
         self._http_applied: Optional[Tuple[str, ...]] = None
         self._status_sent: Optional[Dict[str, Any]] = None
         self._status_sent_at: float = 0.0
+        # What the homeowner has been told: the (title, message) last put in
+        # the notification, so an unchanged state says nothing again and a
+        # changed address updates the one notification in place. _told_off
+        # remembers that the notification has been taken down this run, so
+        # an "off" answer dismisses it once (also after an integration reload,
+        # which loses _announced but not the notification itself).
+        self._announced: Optional[Tuple[str, str]] = None
+        self._told_off = False
 
     @property
     def enabled(self) -> bool:
@@ -495,6 +518,7 @@ class HADispatchRemoteUI:
 
         if not desired.get("enabled"):
             await self._async_disable()
+            self._dismiss_announcement()
             return
 
         # The proxy list does not depend on the certificate or the token, so a
@@ -502,9 +526,11 @@ class HADispatchRemoteUI:
         # the relay.
         await self._async_apply_http(desired)
 
-        if time.time() < self._retry_after:
-            return
-        await self._async_provision(desired)
+        if time.time() >= self._retry_after:
+            await self._async_provision(desired)
+        # Only once the house is actually dialling: the notification says the
+        # home is reachable, and that must be true when it is read.
+        self._sync_announcement(desired)
 
     async def _async_apply_http(self, desired: Dict[str, Any]) -> None:
         """Write http.yaml and, if the homeowner has no http: key, the include line.
@@ -515,10 +541,19 @@ class HADispatchRemoteUI:
         say-so) restarts when it suits them.
         """
         proxies = clean_trusted_proxies(desired.get("trusted_proxies"))
-        if not proxies:
-            return
         key = tuple(proxies)
         if key == self._http_applied:
+            return
+        if not proxies:
+            # DNS-only mode: the phone reaches the relay directly and the relay
+            # copies bytes, so no peer rewrites the client address and Home
+            # Assistant needs no trusted_proxies. Nothing is written; an
+            # http.yaml a proxied deployment wrote earlier is left where it is
+            # (harmless, and removing the include line is a config edit the
+            # homeowner did not ask for).
+            self._http_applied = key
+            self.http_block = HTTP_BLOCK_NOT_NEEDED
+            self.restart_required = False
             return
 
         http_yaml = Path(self.hass.config.path(*REMOTE_UI_HTTP_FILE))
@@ -642,6 +677,37 @@ class HADispatchRemoteUI:
                 ", ".join(removed) if removed else "nothing (no files were present)",
             )
 
+    # ----------------------------------------------------- the homeowner --
+
+    def _sync_announcement(self, desired: Dict[str, Any]) -> None:
+        """Tell the homeowner their home is reachable -- once, and again only on a change.
+
+        Said only when the server put an ``announce`` block in the desired
+        state **and** this house is dialling. No ``announce`` means nothing is
+        said: hand-placed slice-1 files never produce a notification, and a
+        server that has nothing to announce is not second-guessed.
+        """
+        if self.config is None:
+            return
+        announcement = build_announcement(desired.get("announce"))
+        if announcement is None or announcement == self._announced:
+            return
+        title, message = announcement
+        persistent_notification.async_create(
+            self.hass, message, title=title, notification_id=REMOTE_UI_NOTIFICATION_ID,
+        )
+        self._announced = announcement
+        self._told_off = False
+        _LOGGER.info("Remote UI: told the homeowner their home is reachable at %s", desired["announce"].get("hostname"))
+
+    def _dismiss_announcement(self) -> None:
+        """The server says off: the notification comes down with the connection."""
+        if self._announced is None and self._told_off:
+            return
+        persistent_notification.async_dismiss(self.hass, REMOTE_UI_NOTIFICATION_ID)
+        self._announced = None
+        self._told_off = True
+
     async def _async_provision(self, desired: Dict[str, Any]) -> None:
         installation_id = self.coordinator.installation_id
         api = self.coordinator.api_client
@@ -761,6 +827,57 @@ class HADispatchRemoteUI:
         self._retry_after = 0.0
         if plan["reasons"]:
             _LOGGER.debug("Remote UI: provisioned (%s); wrote %s", ", ".join(plan["reasons"]), written or "nothing")
+
+
+def remote_ui_address(hostname: str, port: Any = None) -> str:
+    """The address the homeowner types into the Home Assistant app.
+
+    ``https://<hostname>``, with ``:<port>`` only when the relay answers the
+    phone somewhere other than 443 (the lab's single 8443 port; production
+    answers on 443 and the port is left out).
+    """
+    if (
+        isinstance(port, int)
+        and not isinstance(port, bool)
+        and 1 <= port <= 65535
+        and port != REMOTE_UI_PUBLIC_PORT
+    ):
+        return f"https://{hostname}:{port}"
+    return f"https://{hostname}"
+
+
+def build_announcement(announce: Any) -> Optional[Tuple[str, str]]:
+    """The notification's (title, message), in the homeowner's voice. Pure; tested directly.
+
+    ``announce`` is the server's ``{hostname, consent_url, consent_method}``
+    (plus an optional public ``port``). ``None`` when there is nothing usable
+    to say -- no block, or a block missing the address or the off-switch --
+    because a notification that says "on" without saying how to turn it off
+    is not one this client puts in front of a homeowner.
+    """
+    if not isinstance(announce, dict):
+        return None
+    hostname = announce.get("hostname")
+    consent_url = announce.get("consent_url")
+    if not isinstance(hostname, str) or not hostname.strip():
+        return None
+    if not isinstance(consent_url, str) or not consent_url.strip():
+        return None
+    address = remote_ui_address(hostname.strip(), announce.get("port"))
+    if announce.get("consent_method") == REMOTE_UI_CONSENT_ENHANCED:
+        turned_on = "Your installer turned this on, under the permission you gave them."
+    else:
+        turned_on = "You turned this on yourself."
+    message = (
+        "Your home, reachable from anywhere. In the Home Assistant app, "
+        "use this address:\n\n"
+        f"**{address}**\n\n"
+        f"{turned_on}\n\n"
+        "Your login stays yours: your Home Assistant password and two-factor, "
+        "applied here.\n\n"
+        f"[Turn it off any time]({consent_url.strip()})"
+    )
+    return "Remote access to your home is on", message
 
 
 class RemoteUiFiles:
