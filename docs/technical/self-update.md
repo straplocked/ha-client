@@ -267,7 +267,11 @@ Two features are deliberately **omitted**, both for the same reason — an entit
       - free disk space >= 5 x size_bytes
 3.  Download the zip to a temp dir under config/.ha_dispatch_client/tmp/,
     streaming, aborting past a hard size cap (size_bytes + slack, absolute
-    max 25 MB).
+    max 25 MB). The request raises aiohttp's per-request header limits
+    (`max_line_size` / `max_field_size`, 16 KB) because github.com's redirect
+    for a release asset carries a >9 KB content-security-policy header, over
+    aiohttp's 8190-byte default. The server resolving that redirect itself is
+    the first line of defence; this is the second.
 4.  Verify:
       - sha256 matches the advertised digest
       - Ed25519 signature verifies against RELEASE_SIGNING_KEYS[key_id]
@@ -476,4 +480,6 @@ What remains true: the updater is the authority for fleet installs, HACS for ind
 - version ordering, prerelease ranking, and the refusal to act on unparseable versions
 - update windows including the wrap past midnight and the malformed-value case
 
-Not covered by automated tests: the download path, the restart call, and boot-time confirmation, all of which need a running Home Assistant. Exercise those on a canary instance.
+- download: the request carries the raised header limits, a host outside `RELEASE_ALLOWED_HOSTS` is refused before any request, and the byte cap aborts an oversized body
+
+Not covered by automated tests: the real network download, the restart call, and boot-time confirmation, all of which need a running Home Assistant. Exercise those on a canary instance.

@@ -37,6 +37,7 @@ from .const import (
     HACS_REPOSITORY_FULL_NAME,
     HACS_REPOSITORY_SIGNAL,
     RELEASE_ALLOWED_HOSTS,
+    RELEASE_MAX_HEADER_BYTES,
     RELEASE_SIGNING_KEYS,
     UPDATE_BACKUP_KEEP,
     UPDATE_BACKUP_SUBDIR,
@@ -634,8 +635,23 @@ class ClientUpdater:
         # No Authorization header: this request goes to the artifact host, not
         # to Dispatch, and the installation token has no business being sent
         # anywhere else.
+        #
+        # The limits are raised per request because github.com's 302 for a
+        # releases/download URL carries a content-security-policy header of
+        # more than 9 KB, over aiohttp's default max_field_size of 8190 bytes,
+        # and aiohttp aborts the response with "Got more than 8190 bytes when
+        # reading". That stranded every house on 2026-10-24. The Dispatch
+        # server resolves the redirect itself and hands us the final asset URL
+        # (ReleaseAssetResolver), which is the first line of defence; this is
+        # the second, so a future header change cannot strand the fleet again.
+        # The shared session is left alone: the kwargs apply to this request
+        # only (aiohttp >= 3.9; Home Assistant bundles well past that).
         try:
-            async with session.get(str(url)) as response:
+            async with session.get(
+                str(url),
+                max_line_size=RELEASE_MAX_HEADER_BYTES,
+                max_field_size=RELEASE_MAX_HEADER_BYTES,
+            ) as response:
                 if response.status != 200:
                     raise UpdateError(
                         f"Release download returned HTTP {response.status}", PHASE_DOWNLOAD
