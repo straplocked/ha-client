@@ -679,3 +679,86 @@ class HacsSyncTest(unittest.TestCase):
 
         self.assertTrue(_run(client.async_sync_hacs()))
         self.assertEqual(data.installed_version, "v1.7.5")
+
+
+# --- download ---------------------------------------------------------------
+
+
+class _FakeContent:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    async def iter_chunked(self, size):
+        for i in range(0, len(self._body), size):
+            yield self._body[i:i + size]
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes, status: int = 200):
+        self.status = status
+        self.content = _FakeContent(body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _RecordingSession:
+    """Records how `get` was called; answers with a canned body."""
+
+    def __init__(self, body: bytes = b"zip-bytes"):
+        self.body = body
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return _FakeResponse(self.body)
+
+
+class DownloadTest(unittest.TestCase):
+    URL = "https://github.com/straplocked/ha-client/releases/download/v1.9.1/ha_dispatch_client.zip"
+
+    def _download(self, release, session):
+        from homeassistant.helpers import aiohttp_client
+
+        original = aiohttp_client.async_get_clientsession
+        aiohttp_client.async_get_clientsession = lambda hass: session
+        try:
+            client = updater.ClientUpdater(_HacsHass(), _Coordinator())
+            return _run(client._async_download(release))
+        finally:
+            aiohttp_client.async_get_clientsession = original
+
+    def test_header_limits_are_raised_for_the_request(self):
+        # github.com's redirect carries a >9 KB content-security-policy header;
+        # aiohttp's default field limit is 8190 bytes.
+        session = _RecordingSession()
+
+        payload = self._download({"url": self.URL, "size_bytes": 9}, session)
+
+        self.assertEqual(payload, b"zip-bytes")
+        self.assertEqual(len(session.calls), 1)
+        url, kwargs = session.calls[0]
+        self.assertEqual(url, self.URL)
+        self.assertEqual(kwargs["max_line_size"], 16384)
+        self.assertEqual(kwargs["max_field_size"], 16384)
+        self.assertGreater(kwargs["max_field_size"], 9243)
+        self.assertNotIn("headers", kwargs)  # the installation token is never sent
+
+    def test_a_host_outside_the_allow_list_is_refused_before_any_request(self):
+        session = _RecordingSession()
+
+        with self.assertRaises(UpdateError):
+            self._download({"url": "https://evil.example.com/x.zip"}, session)
+
+        self.assertEqual(session.calls, [])
+
+    def test_the_byte_cap_still_aborts_an_oversized_download(self):
+        session = _RecordingSession(body=b"x" * 1000)
+
+        with self.assertRaises(UpdateError) as ctx:
+            self._download({"url": self.URL, "size_bytes": 100}, session)
+
+        self.assertIn("exceeded", str(ctx.exception))

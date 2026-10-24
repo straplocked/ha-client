@@ -252,6 +252,10 @@ RELEASE_ALLOWED_HOSTS = frozenset({
     "release-assets.githubusercontent.com",
 })
 
+# Per-request aiohttp header limits for the release download (default 8190).
+# github.com's redirect for a release asset carries a >9 KB CSP header.
+RELEASE_MAX_HEADER_BYTES = 16384
+
 # desired_state keys controlling updates, pushed from the server.
 CONF_UPDATE_CHANNEL = "update_channel"
 CONF_AUTO_UPDATE = "auto_update"
