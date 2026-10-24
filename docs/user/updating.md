@@ -169,6 +169,19 @@ See [Recovering by hand](#recovering-by-hand) above.
 
 ## Release notes
 
+### 1.9.1 — Updates download again
+
+**For installers and technicians.** GitHub changed how it answers a release
+download: the redirect now carries a header longer than the HTTP client in
+Home Assistant will read, so every self-update since then failed in the
+`download` phase with "Got more than 8190 bytes when reading". HA Dispatch
+was fixed first and now hands the house the address the redirect lands on,
+which is how 1.9.0 reached the fleet. This release also raises the house's
+own header limits for that one request, so the next change on GitHub's side
+cannot strand a house that is already running it. Nothing changes for the
+homeowner, and the archive is still checked against the key built into the
+client before anything is written.
+
 ### 1.9.0 — Your home, reachable from anywhere
 
 **Your home, reachable from anywhere. Nothing to install.** Open the Home

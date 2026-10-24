@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-24] — 1.9.1: updates download again
+
+### Added
+- `docs/user/updating.md`: 1.9.1 release notes (GitHub's oversized redirect header, the server-side fix that let 1.9.0 land, the client's own header limits)
+- `CHANGELOG.md`: the 1.9.1 entry
+
+### Changed
+- `CLAUDE.md`: version 1.9.1
+
 ## [2026-10-23] — Remote UI: the house tells its owner; 1.9.0
 
 ### Added
