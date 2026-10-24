@@ -648,6 +648,7 @@ class AyvraRoomPlan extends HTMLElement {
     this._built = false;
     this._rotation = 0;
     this._aspect = 0.625;
+    this._images = {};
     this._onKeyDown = (event) => {
       if (event.key === "Escape" || event.key === "Esc") {
         if (this._activeRoom !== null) {
@@ -667,6 +668,21 @@ class AyvraRoomPlan extends HTMLElement {
     if (!Array.isArray(config.rooms)) {
       throw new Error("ayvra-room-plan: `rooms` must be a list of room shapes");
     }
+    // The plan rendered once per display rotation. Keys are the degrees as
+    // strings, because this arrives as JSON out of Lovelace storage. Missing
+    // or partial is normal -- a plan deployed before per-rotation backplates
+    // existed has none, and then every rotation uses `image`, exactly as
+    // before, with the baked light turning along with the plan.
+    const images = {};
+    if (config.images && typeof config.images === "object") {
+      ROTATIONS.forEach((deg) => {
+        const url = config.images[String(deg)] ?? config.images[deg];
+        if (url) {
+          images[deg] = String(url);
+        }
+      });
+    }
+
     const rooms = config.rooms
       .filter((room) => room && typeof room === "object")
       .map((room, index) => ({
@@ -700,6 +716,8 @@ class AyvraRoomPlan extends HTMLElement {
           : [],
       }))
       .filter((room) => room.poly.length >= 3 || room.label !== null);
+
+    this._images = images;
 
     this._config = {
       image: config.image ? String(config.image) : "",
@@ -775,10 +793,15 @@ class AyvraRoomPlan extends HTMLElement {
     const plan = document.createElement("div");
     plan.className = "layer plan";
 
+    // Declared out here, not inside the branch, because _applyRotation swaps
+    // its src to the variant rendered for the current rotation and therefore
+    // has to be able to reach it. A plan with no image at all leaves it null,
+    // and the swap skips it.
+    let plate = null;
     if (this._config.image) {
-      const plate = document.createElement("img");
+      plate = document.createElement("img");
       plate.className = "plate";
-      plate.src = this._config.image;
+      plate.src = this._plateFor(normaliseRotation(this._rotation));
       plate.alt = this._config.floor_name
         ? `${this._config.floor_name} floor plan`
         : "Floor plan";
@@ -870,7 +893,7 @@ class AyvraRoomPlan extends HTMLElement {
     if (this._config.image) {
       focusPlate = document.createElement("img");
       focusPlate.className = "focus-plate";
-      focusPlate.src = this._config.image;
+      focusPlate.src = this._plateFor(normaliseRotation(this._rotation));
       focusPlate.alt = "";
       focusPlate.setAttribute("aria-hidden", "true");
       focusLayer.appendChild(focusPlate);
@@ -960,6 +983,7 @@ class AyvraRoomPlan extends HTMLElement {
       rotate,
       layers: [plan, focusLayer],
       labelNodes,
+      plate,
       focusPlate,
       focusLabel,
       focusLabelName,
@@ -1009,6 +1033,13 @@ class AyvraRoomPlan extends HTMLElement {
     this._applyRotation();
   }
 
+  /** The backplate for one rotation: its own render if we have it, else the
+   *  unrotated one. Falling back is what keeps an older deploy working -- it
+   *  simply turns a single image, with the light turning too, as before. */
+  _plateFor(degrees) {
+    return (this._images && this._images[degrees]) || this._config.image;
+  }
+
   _applyRotation() {
     if (!this._els) {
       return;
@@ -1016,6 +1047,19 @@ class AyvraRoomPlan extends HTMLElement {
     const degrees = normaliseRotation(this._rotation);
     const ratio = this._aspect > 0 ? this._aspect : 0.625;
     const quarter = degrees === 90 || degrees === 270;
+
+    // Swap in the plan rendered for THIS rotation. The geometry is identical
+    // in every variant -- same camera, same transform -- so the polygons stay
+    // registered; the only difference is where the sun was, which is what
+    // stops the shadow turning with the plan. Both plates, or the focused
+    // room would show a copy lit from somewhere else.
+    const plate = this._plateFor(degrees);
+    if (this._els.plate && this._els.plate.getAttribute("src") !== plate) {
+      this._els.plate.src = plate;
+    }
+    if (this._els.focusPlate && this._els.focusPlate.getAttribute("src") !== plate) {
+      this._els.focusPlate.src = plate;
+    }
 
     // The stage is the box the card actually occupies, so it carries the
     // POST-rotation shape: a 4:3 plan turned a quarter is 3:4 on the wall.

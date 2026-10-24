@@ -427,6 +427,19 @@ FLOORPLAN_PLAN_TRANSFORM_NAME = "plan_transform.json"
 # hotspots.json / plan_transform.json (e.g. "plan_Floor_1.png").
 FLOORPLAN_PLAN_BACKPLATE_NAME_FMT = "plan_{level_key}.png"
 
+# The same plan rendered for one of the other display rotations. The 0 case
+# deliberately keeps the unsuffixed name above, so a plan deployed before
+# per-rotation backplates existed still loads, and an older agent still finds
+# the image it expects.
+#
+# Why four images instead of rotating one: the card turns the whole plan with
+# a single transform, which turns the baked shadow with it and reads as the
+# sun having moved. It cannot be fixed by rendering once, because a house has
+# one tablet per FLOOR and each sets its own rotation -- the same plan is on a
+# panel at 0 and a panel at 270 at the same moment, and only a different image
+# per rotation can be right for both.
+FLOORPLAN_PLAN_BACKPLATE_ROTATED_NAME_FMT = "plan_{level_key}_{degrees}.png"
+
 # Per-floor view rotation, read out of that level's own plan_transform.json
 # entry (beside "name" and "elev"). THE CROSS-REPO CONTRACT, decided before
 # this batch and not ours to rename: ha-dispatch writes the key at import,

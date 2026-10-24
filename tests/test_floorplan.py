@@ -2752,9 +2752,22 @@ class FocusTreatmentSourceTest(unittest.TestCase):
         # was cut from without anything having to be kept in step by hand.
         source = self._source()
         self.assertIn('focusPlate.className = "focus-plate";', source)
-        self.assertIn("focusPlate.src = this._config.image;", source)
         self.assertIn("focusLayer.appendChild(focusPlate);", source)
         self.assertIn("this._els.focusPlate.style.clipPath = clip;", source)
+        # Both plates take their src from the SAME call, so they cannot end up
+        # showing two differently-lit renders of the same floor -- which is
+        # what would happen if only one of them followed the rotation.
+        self.assertIn(
+            "focusPlate.src = this._plateFor(normaliseRotation(this._rotation));",
+            source,
+        )
+        self.assertIn(
+            "plate.src = this._plateFor(normaliseRotation(this._rotation));", source
+        )
+        # ...and when the rotation changes, both are swapped together.
+        swap = source.split("_applyRotation() {", 1)[1].split("\n  _", 1)[0]
+        self.assertIn("this._els.plate.src = plate;", swap)
+        self.assertIn("this._els.focusPlate.src = plate;", swap)
 
     def test_a_device_that_asks_for_less_motion_gets_none(self):
         stylesheet = self._stylesheet()
@@ -2928,3 +2941,124 @@ class RoomLabelTest(unittest.TestCase):
         card = _subcell_card(rooms=rooms, devices=[])
         standalone = [r for r in card["rooms"] if r["same_room_as"] is None]
         self.assertTrue(all(r["show_label"] for r in standalone))
+
+
+# --- per-rotation backplates --------------------------------------------------
+
+
+class PlanFilenameTest(unittest.TestCase):
+    """Reading a backplate's floor and rotation back out of its name."""
+
+    def test_an_unrotated_plan_keeps_the_historic_name(self):
+        self.assertEqual(
+            floorplan_mod._plan_filename("Floor_1", 0), "plan_Floor_1.png"
+        )
+
+    def test_a_rotated_plan_is_suffixed_with_its_degrees(self):
+        self.assertEqual(
+            floorplan_mod._plan_filename("Floor_1", 90), "plan_Floor_1_90.png"
+        )
+
+    def test_a_rotation_suffix_is_not_mistaken_for_part_of_the_floor(self):
+        # THE BUG THIS EXISTS FOR. Splitting on ".png" alone reads
+        # plan_Floor_1_90.png as a floor called "Floor_1_90" and puts a storey
+        # on the dashboard that does not exist.
+        self.assertEqual(
+            floorplan_mod._parse_plan_filename("plan_Floor_1_90.png"), ("Floor_1", 90)
+        )
+        self.assertEqual(
+            floorplan_mod._parse_plan_filename("plan_Floor_1.png"), ("Floor_1", 0)
+        )
+
+    def test_a_level_key_may_itself_contain_underscores_and_digits(self):
+        # Which is why the ROTATION is matched, rather than assuming the key
+        # has no underscore in it.
+        self.assertEqual(
+            floorplan_mod._parse_plan_filename("plan_Floor_1.png"), ("Floor_1", 0)
+        )
+        self.assertEqual(
+            floorplan_mod._parse_plan_filename("plan_Level_2_B.png"), ("Level_2_B", 0)
+        )
+        self.assertEqual(
+            floorplan_mod._parse_plan_filename("plan_Level_2_B_270.png"),
+            ("Level_2_B", 270),
+        )
+
+    def test_a_number_that_is_not_a_legal_rotation_stays_in_the_key(self):
+        # 45 is not a rotation this product has, so plan_Floor_45.png is a
+        # floor called "Floor_45", not Floor at 45 degrees.
+        self.assertEqual(
+            floorplan_mod._parse_plan_filename("plan_Floor_45.png"), ("Floor_45", 0)
+        )
+
+    def test_something_that_is_not_a_plan_is_not_one(self):
+        for name in ("hotspots.json", "backplate.png", "plan_.png", "plan.png"):
+            with self.subTest(name=name):
+                self.assertIsNone(floorplan_mod._parse_plan_filename(name))
+
+
+class RotationBackplateTest(unittest.TestCase):
+    """Carrying the per-rotation renders through to the card."""
+
+    def _discover(self, names):
+        import pathlib
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            for name in names:
+                (directory / name).write_bytes(b"x")
+            return floorplan_mod._discover_assets(directory)
+
+    def test_the_variants_are_grouped_under_their_own_floor(self):
+        paths = self._discover([
+            "plan_Floor_1.png", "plan_Floor_1_90.png",
+            "plan_Floor_1_180.png", "plan_Floor_1_270.png",
+            "plan_Floor_2.png",
+        ])
+        # The wrong answer first: a parser that swallowed the suffix would
+        # report four extra floors here.
+        self.assertEqual(sorted(paths["plan_image_urls"]), ["Floor_1", "Floor_2"])
+        self.assertEqual(
+            sorted(paths["plan_rotation_image_urls"]["Floor_1"]), [0, 90, 180, 270]
+        )
+        self.assertEqual(sorted(paths["plan_rotation_image_urls"]["Floor_2"]), [0])
+
+    def test_the_card_carries_every_variant_it_was_given(self):
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/plan_Floor_1.png",
+            transform=PLAN_TRANSFORM["Floor_1"],
+            images={0: "/local/plan_Floor_1.png", 90: "/local/plan_Floor_1_90.png"},
+        )
+        # String keys: this is JSON by the time the card reads it.
+        self.assertEqual(
+            card["images"],
+            {"0": "/local/plan_Floor_1.png", "90": "/local/plan_Floor_1_90.png"},
+        )
+
+    def test_an_illegal_rotation_cannot_reach_the_card(self):
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/plan.png",
+            transform=PLAN_TRANSFORM["Floor_1"],
+            images={45: "/local/nope.png", 90: "/local/plan_90.png"},
+        )
+        self.assertEqual(sorted(card["images"]), ["90"])
+
+    def test_a_plan_from_before_the_variants_existed_still_builds(self):
+        hass = FakeHass(states=[])
+        card = floorplan_mod.build_room_plan_card(
+            hass, HOTSPOTS["Floor_1"], [], "/local/plan.png",
+            transform=PLAN_TRANSFORM["Floor_1"],
+        )
+        self.assertEqual(card["images"], {})
+        self.assertEqual(card["image"], "/local/plan.png")
+
+    def test_the_card_falls_back_to_the_one_image_it_has(self):
+        source = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "custom_components", "ha_dispatch_client", "www", "ayvra-room-plan.js",
+        )).read()
+        self.assertIn(
+            "return (this._images && this._images[degrees]) || this._config.image;",
+            source,
+        )
