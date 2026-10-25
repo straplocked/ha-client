@@ -116,6 +116,23 @@ Recovery keeps its budget across restarts in `/data/state.json`. A Core that
 dies within an hour of a recovery goes straight to "Needs a human". Any proof
 run inside that hour will see that rule, not the ladder.
 
+## Two things the lab showed that the design has to absorb
+
+- **The Supervisor gives the add-on an update entity.** Home Assistant now
+  shows `update.ha_dispatch_client_recovery_update`, so a homeowner sees and
+  can press "Update" whenever a newer version appears in the repository. That
+  happens before Dispatch's cohort reaches them, because the repository is
+  public and lockstep versions (D10) publish the add-on with every client
+  release. D8's "Dispatch decides when each house moves" needs an answer for
+  this, either through a release channel or by publishing the add-on's
+  version separately.
+- **The local evidence for D12 is enough on its own.** A pending record that
+  outlives 10 minutes of Core serving means the integration didn't load,
+  because the integration clears that record within a minute of loading.
+  Phase 1 acts on that alone. Dispatch's "agent silent" can come in as a
+  report in Phase 2; it isn't needed as a gate, and leaving it out removes a
+  dependency on the network.
+
 ## Tests
 
 `tests/test_recovery.py`, with no Home Assistant needed:
@@ -132,7 +149,8 @@ See the Dispatch repo's design document for the plan. The results so far:
 |---|---|---|
 | — | Install, self-check, own watchdog on, `homeassistant` role, bridge reaches `homeassistant:8123` | **Passed** 2026-10-25 14:49 UTC: every ladder read 200, host journal 403 as expected, `watchdog: true` |
 | 1 | `ha core stop` → Core started again about 3 min later | **Passed** 2026-10-25 (EDT). Stop at 14:53:36; noticed 14:53:47; `POST /core/start` at 14:56:47; Core running 14:57:17; confirmed back 14:59:32. Outage **3 min 41 s**. Incident note written; no failed-login noise in Core's log. The Supervisor's own Core watchdog was switched off for the run and back on afterwards (see below) |
-| 2 | `lab_simulate_start_failure` → rebuild brings Core back | not run yet |
-| 3 | A broken signed test release → restore and restart (Core up, integration not loaded) | not run yet |
-| 4 | The same with the backup removed → restore refused | not run yet |
+| 1b | The 1-hour rule: Core stopped again inside the hour | **Passed** 2026-10-25. Stop at 15:06:28; at 15:09:29 Recovery refused to start Core and logged "Needs a human: Home Assistant stopped again within an hour of being brought back". It took no action; Core was started by hand |
+| 2 | `lab_simulate_start_failure` → rebuild brings Core back | not run yet (the owner chose to prove the 1-hour rule first) |
+| 3 | A broken update (Core up, integration not loaded) → restore and restart | **Passed** 2026-10-25, on a **hand-staged** broken update rather than a signed release (the owner's choice: nothing signed or published). Staged at 15:10:52: a backup of 1.9.1, a pending record 1.9.1 → `1.9.2-labtest`, and a client that raises on import; then Core restarted. Core came up without the integration. At 15:21:16, after exactly 10 minutes, Recovery restored 1.9.1 and restarted Core once. At 15:24:18 the restored client had loaded and cleared its own pending record: **recovered by restore**. The client then reported the update as failed itself, as designed |
+| 4 | The same with the backup removed → restore refused | **Passed** 2026-10-25. Staged at 15:24:40 with no backup of 1.9.1. At 15:35:03, after the 10 minutes, Recovery logged "never confirmed, and restore is not possible (no_backup); leaving Home Assistant running; needs a human", **once**, and moved nothing. The real client was then put back by hand from a safety copy (byte-identical, verified with `diff -r`) and every lab file was removed. The client's backups are back to 1.8.1 and 1.9.0 |
 | 5 | Unit tests for every never-rule, eligibility check and stop condition | **Passed** (38) |
