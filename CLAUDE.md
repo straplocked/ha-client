@@ -44,6 +44,21 @@ custom_components/ha_dispatch_client/
 Release tooling lives in `scripts/`: `release.sh` builds and signs a release
 archive, `generate_signing_key.py` creates the Ed25519 keypair.
 
+The repository is also a Supervisor add-on repository (`repository.yaml`):
+
+```
+recovery/                 # "HA Dispatch Client — Recovery" add-on (engineering name: the watchdog)
+├── config.yaml           # hassio_role: homeassistant, homeassistant_config mapped rw, no ports, no Core credential
+├── Dockerfile            # python:3.12-alpine, stdlib only
+├── DOCS.md               # what the homeowner reads in the add-on's Documentation tab
+└── hadc_recovery/
+    ├── supervisor.py     # the allowlist: every Supervisor call it may make is a named method
+    ├── probe.py          # GET /auth/providers -- never /api/ (401s trip Core's ban middleware)
+    ├── restore.py        # restore eligibility + the swap; the only file writes, path-checked
+    ├── ladder.py         # the pure state machine: detect 3 min, start 5, rebuild 10, restore 10
+    └── __main__.py       # the runner: probe every 15 s, act, write incident notes
+```
+
 ### Key Patterns
 
 - **DataUpdateCoordinator pattern:** `coordinator.py` handles periodic updates (status, config, metrics)
@@ -51,6 +66,7 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
 - **CoordinatorEntity sensors:** All sensors inherit from `HADispatchSensorBase(CoordinatorEntity, SensorEntity)` and read from `self.coordinator.data`
 - **Async everything:** All API calls use `aiohttp` sessions from `homeassistant.helpers.aiohttp_client`
 - **Config entry storage:** Server URL, installation_id, access_token, client_id stored in config entry data
+- **Recovery runs outside Core, on purpose:** the add-on in `recovery/` is a separate container, because the integration dies with Core. It imports nothing from Home Assistant. When Core stops answering for 3 minutes it starts Core, then rebuilds it, then -- only after our own unconfirmed update, and only with a backup on disk -- copies `.ha_dispatch_client/backups/<from_version>/` back into place. Its contract with the integration is the file layout: the updater's pending record `.storage/ha_dispatch_client.update` (`from_version`, `to_version`, `started_at`), the backups directory, and each backup's `manifest.json`. **Changing any of those is a contract change** -- bump `watchdog_contract` in `.ha_dispatch_client/contract.json` (absent means 1, the 1.9.x layout), or the add-on will refuse to restore. It writes only inside `custom_components/ha_dispatch_client/` (the swap) and `.ha_dispatch_client/recovery/`. It never touches another add-on, never runs a command it was sent, and can't update itself (the Supervisor refuses), so its updates will come from the integration. Design and decisions: `docs/technical/core-watchdog-addon.md` in the Dispatch repo; here: `docs/technical/recovery-addon.md`.
 - **Signed self-update:** `updater.py` replaces the integration's own files and restarts HA. Releases must carry an Ed25519 signature verified against a key pinned in `const.py::RELEASE_SIGNING_KEYS` — the server never holds that key, so it can decide whether/when to offer an update but never what code runs. That dict ships **empty**, so self-update fails closed until a key is deliberately pinned. Never add a placeholder.
 - **Component inventory is a full snapshot, never a delta:** `components.py` reports everything the installation is running on every report. The server retires anything absent -- omission *is* removal -- so an agent that sent only what changed would retire almost the whole inventory on its second report. There is deliberately no memory of the previous report in that module. Slugs must be **stable** because the server keys on `(kind, slug)`: they come from the integration domain, the Supervisor add-on slug, or the HACS repository, and **never** from a config entry title or a display name, which users rename. `failing` is set only where Home Assistant actually knows -- a config entry in a failed setup state, or an add-on Supervisor could not start; a *stopped* add-on is not a failure. Cadence is 30 minutes, **not** the 60 s metrics poll, with a forced report immediately after a self-update because the transition is what opens the fleet's observation window. A whole kind being absent is normal: most installs are Core-only. Full design: `docs/technical/component-inventory.md`.
 - **Installer corrections outrank the matcher, and survive a redeploy:** the
@@ -289,7 +305,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `453 passed, 88 subtests passed`. Two standing limits on
+That currently prints `492 passed, 88 subtests passed` (39 of them are the Recovery add-on's, `tests/test_recovery.py`). Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not
