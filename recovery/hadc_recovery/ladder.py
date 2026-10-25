@@ -86,6 +86,7 @@ class Ladder:
     ladder_starts: Deque[float] = field(default_factory=deque)
     incident: Optional[dict] = None
     _waiting_logged: bool = False
+    _reported_unrestorable: Optional[str] = None
 
     # -- the runner's reports
 
@@ -166,6 +167,26 @@ class Ladder:
                 ),
                 note=True,
             )
+
+        # D12, the other half: our update never confirmed but restore is not
+        # possible (no backup, unknown contract...). Report it once per
+        # pending record, and leave the working Core alone.
+        if (
+            obs.pending_present
+            and not obs.restore.eligible
+            and obs.now - self.serving_since >= self.timings.agent_grace
+        ):
+            key = f"{obs.restore.to_version}@{obs.restore.started_at}"
+            if self._reported_unrestorable != key:
+                self._reported_unrestorable = key
+                return Decision(
+                    log=(
+                        f"Client update {obs.restore.from_version} -> {obs.restore.to_version} never "
+                        f"confirmed, and restore is not possible ({obs.restore.reason}); "
+                        "leaving Home Assistant running; needs a human"
+                    ),
+                    escalate=True,
+                )
         return Decision()
 
     def _suspect(self, obs: Observation) -> Decision:

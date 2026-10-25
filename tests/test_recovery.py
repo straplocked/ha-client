@@ -351,6 +351,19 @@ class LadderTest(unittest.TestCase):
         self.assertEqual(ladder.state, L.WATCHING)
         self.assertEqual(ladder.incident["recovered_by"], "restore")
 
+    def test_core_up_unconfirmed_but_unrestorable_is_reported_once_and_left_alone(self):
+        ladder = L.Ladder()
+        no_backup = RestoreCheck(False, "no_backup", "1.9.1", "1.9.2", NOW)
+        decisions = []
+        for t in range(0, 1800, 15):
+            d = ladder.step(obs(t, True, no_backup, pending_present=True))
+            decisions.append(d)
+        self.assertFalse(any(d.action for d in decisions))
+        escalations = [d for d in decisions if d.escalate]
+        self.assertEqual(len(escalations), 1)
+        self.assertIn("no_backup", escalations[0].log)
+        self.assertEqual(ladder.state, L.WATCHING)
+
     def test_core_up_without_our_update_is_left_alone(self):
         ladder = L.Ladder()
         self.assertEqual(self.run_until(ladder, 0, 3600, serving=True, pending_present=False), [])
