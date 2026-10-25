@@ -1,0 +1,32 @@
+# HA Dispatch Client -- Recovery. Design: docs/technical/core-watchdog-addon.md
+# in the Dispatch repo. Phase 1: local only, no Dispatch, built on the house.
+name: "HA Dispatch Client — Recovery"
+description: "Brings Home Assistant back if it stops, and lets your installer know."
+version: "1.10.0-dev1"
+slug: ha_dispatch_recovery
+url: https://github.com/straplocked/ha-client
+arch:
+  - aarch64
+  - amd64
+# No `image:` yet: the Supervisor builds the Dockerfile on the house. From
+# Phase 4 the release publishes images and this gains
+# `image: ghcr.io/straplocked/ha-dispatch-recovery-{arch}` (by tag: the
+# Supervisor accepts no digest here).
+startup: services          # up before Core, so it is already watching when Core boots
+boot: auto
+init: false
+hassio_api: true
+# Everything the ladder needs is covered by `homeassistant`. Only the host
+# journal (where a pre-Python segfault is recorded) and a host reboot (Phase 3)
+# need `manager`.
+hassio_role: homeassistant
+homeassistant_api: false   # no Core credential, ever
+host_network: false
+ingress: false
+map:
+  - type: homeassistant_config   # Core's /config, mounted at /homeassistant
+    read_only: false             # only for the restore swap
+options:
+  lab_simulate_start_failure: false
+schema:
+  lab_simulate_start_failure: bool

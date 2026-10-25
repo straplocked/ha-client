@@ -15,6 +15,7 @@ Central hub for all project documentation. Choose your audience below.
 | API endpoints | [API Reference](technical/api-reference.md) |
 | Remote access | [Remote Access](technical/remote-access.md) |
 | Remote updates | [Remote Updates](technical/remote-updates.md) |
+| Recovery add-on | [Recovery Add-on](technical/recovery-addon.md) |
 | What an install is running | [Component Inventory](technical/component-inventory.md) |
 | Backups the server can verify | [Backup Reporting](technical/backup-reporting.md) |
 | Architecture overview | [Architecture](technical/architecture.md) |
@@ -57,6 +58,7 @@ For developers working on or extending the integration.
 | [Self-Update](technical/self-update.md) | Remote client update design, signing, and rollout (client built in 1.5.0) |
 | [Remote Access](technical/remote-access.md) | Consent-gated remote access: consent surfaces, the tunnel, and the local credential model (built in 1.6.0) |
 | [Remote Updates](technical/remote-updates.md) | Consent-gated HA Core/OS/add-on updates: backup, apply, and confirm on boot (built in 1.7.0) |
+| [Recovery Add-on](technical/recovery-addon.md) | The Supervisor add-on that brings Core back when it stops: the ladder, the restore contract, the allowlist, the lab install (Phase 1) |
 | [Component Inventory](technical/component-inventory.md) | What the installation is running: where each kind comes from, why slugs must be stable, cadence and truncation (built in 1.6.0) |
 | [Backup Reporting](technical/backup-reporting.md) | This installation's own backups: which are reported, slugs, once-each storage, local-only checksums (built in 1.7.8) |
 | [Data Model](technical/data-model/README.md) | Database schema, relationships, business rules |

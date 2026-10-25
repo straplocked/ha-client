@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-10-25] — Recovery add-on, Phase 1 (lab)
+
+### Added
+- `docs/technical/recovery-addon.md`: the add-on as built. It covers the ladder and its timings, the stand-down and wait rules, the file contract with the integration (pending record, backups, `contract.json`), the write allowlist, the never-rules and their tests, the lab install, and the Phase 1 proof table
+- `docs/INDEX.md`: links to it
+
+### Changed
+- `CLAUDE.md`: the `recovery/` tree, a "Recovery runs outside Core" key pattern (the contract and when to bump it), and the test count (491 passed, 88 subtests)
+
 ## [2026-10-24] — 1.9.1: updates download again
 
 ### Added
