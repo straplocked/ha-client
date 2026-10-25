@@ -13,7 +13,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `docs/INDEX.md`: links to it
 
 ### Changed
-- `CLAUDE.md`: the `recovery/` tree, a "Recovery runs outside Core" key pattern (the contract and when to bump it), and the test count (491 passed, 88 subtests)
+- `CLAUDE.md`: the `recovery/` tree, a "Recovery runs outside Core" key pattern (the contract and when to bump it), and the test count (492 passed, 88 subtests)
 
 ## [2026-10-24] — 1.9.1: updates download again
 

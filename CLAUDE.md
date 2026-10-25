@@ -305,7 +305,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `491 passed, 88 subtests passed` (38 of them are the Recovery add-on's, `tests/test_recovery.py`). Two standing limits on
+That currently prints `492 passed, 88 subtests passed` (39 of them are the Recovery add-on's, `tests/test_recovery.py`). Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not
