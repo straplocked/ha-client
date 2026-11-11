@@ -29,7 +29,7 @@
           "registration_secret": "Registration Secret"
         },
         "data_description": {
-          "server_url": "Base URL of the HA Dispatch server, e.g. https://dispatch.example.com",
+          "server_url": "Base URL of the HA Dispatch server, for example {example_url}",
           "pairing_code": "A pairing code made on that server. Leave blank to use the registration secret instead.",
           "registration_secret": "Required by internet-facing servers when no pairing code is given. Leave blank if the server has no enrolment secret configured."
         }

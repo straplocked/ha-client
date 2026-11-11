@@ -38,9 +38,7 @@ custom_components/
   "documentation": "https://github.com/straplocked/ha-client",
   "issue_tracker": "https://github.com/straplocked/ha-client/issues",
   "requirements": [
-    "aiohttp>=3.8.0",
-    "psutil>=5.9.0",
-    "cryptography>=41.0.0"
+    "psutil>=5.9.0"
   ],
   "dependencies": [],
   "codeowners": ["@straplocked"],

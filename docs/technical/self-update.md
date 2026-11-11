@@ -196,7 +196,7 @@ This feature is, by construction, remote code execution on every Home Assistant 
 ### 7.2 Scheme
 
 - **Algorithm:** Ed25519, signature over the raw zip bytes (not over the digest — one fewer link in the chain to reason about).
-- **Verification library:** `cryptography`, which ships with Home Assistant core (`Ed25519PublicKey.from_public_bytes(...).verify(sig, data)`). Declare `cryptography>=41.0.0` in `manifest.json` `requirements` anyway — it resolves as already-satisfied on a normal install and fails loudly rather than silently on an unusual one. Verify this against the target HA version before relying on it.
+- **Verification library:** `cryptography`, which ships with Home Assistant core (`Ed25519PublicKey.from_public_bytes(...).verify(sig, data)`). It is **not** declared in `manifest.json` `requirements`: hassfest rejects a custom integration that lists one of Home Assistant's own dependencies.
 - **Key storage:** public keys pinned as a literal dict in `const.py`:
 
 ```python
@@ -447,7 +447,7 @@ What remains true: the updater is the authority for fleet installs, HACS or the 
 ## 13. Open questions
 
 1. **Who holds the signing key?** GitHub Actions secret (convenient, key lives in CI) vs. offline signing on a workstation (safer, manual step per release). Recommendation: offline to start, given release frequency is low.
-2. **Does `cryptography` resolve cleanly on all target install types?** It is declared in `manifest.json` `requirements` and ships with Home Assistant core, so it should resolve as already-satisfied — but this has only been confirmed on a development machine, not on HA OS, Container, or Core. Verify on a canary before enabling updates. The updater imports it lazily, so a missing copy degrades to "updates do not work" rather than "the integration does not load".
+2. **Does `cryptography` resolve cleanly on all target install types?** It ships with Home Assistant core and is not declared in `manifest.json` (hassfest forbids that) — this has only been confirmed on a development machine, not on HA OS, Container, or Core. Verify on a canary before enabling updates. The updater imports it lazily, so a missing copy degrades to "updates do not work" rather than "the integration does not load".
 3. **Should `target_version` pinning survive a re-enrolment?** After `_async_reregister` the server issues a fresh installation record; the new record's `desired_state` defaults would silently unpin a deliberately-held-back instance. Probably needs pinning keyed on `client_id` rather than `installation_id`.
 4. **Beta channel opt-in** — per installation, or a separate enrolment flag?
 5. **Progress reporting granularity** — download percentage only, or phases? Depends on the HA version's `in_progress` contract ([§8.2](#82-the-update-entity)).

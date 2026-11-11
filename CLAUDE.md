@@ -8,7 +8,7 @@ Home Assistant custom integration that connects to a centralized **HA Dispatch s
 - **Version:** 1.10.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
-- **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`, `cryptography>=41.0.0`
+- **Dependencies:** `psutil>=5.9.0` declared; `aiohttp` and `cryptography` come with Home Assistant and hassfest forbids declaring them
 
 ## Architecture
 
@@ -333,7 +333,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `526 passed, 110 subtests passed`. Two standing limits on
+That currently prints `529 passed, 110 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not

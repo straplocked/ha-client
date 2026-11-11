@@ -2,6 +2,8 @@
   "domain": "ha_dispatch_client",
   "name": "HA Dispatch Client",
   "after_dependencies": [
+    "hassio",
+    "lovelace",
     "marketplace"
   ],
   "codeowners": [
@@ -16,9 +18,7 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/straplocked/ha-client/issues",
   "requirements": [
-    "aiohttp>=3.8.0",
-    "psutil>=5.9.0",
-    "cryptography>=41.0.0"
+    "psutil>=5.9.0"
   ],
   "version": "1.10.0"
 }

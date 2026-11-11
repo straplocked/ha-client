@@ -140,6 +140,8 @@ class HADispatchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
+            # hassfest rejects a URL written into strings.json.
+            description_placeholders={"example_url": "https://dispatch.example.com"},
         )
 
     async def _async_register(

@@ -6,7 +6,7 @@
 
 - **Domain:** `ha_dispatch_client`
 - **Language:** Python 3 (async-first)
-- **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`
+- **Dependencies:** `psutil>=5.9.0` (`aiohttp` and `cryptography` ship with Home Assistant and are not declared)
 
 ---
 

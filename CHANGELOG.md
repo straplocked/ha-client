@@ -45,6 +45,14 @@ All notable changes to HA Dispatch Client will be documented in this file.
   longer holds a credential for it.
 
 ### Fixed
+- hassfest, the Marketplace's integration check, refused the manifest and the
+  translations. `aiohttp` and `cryptography` are no longer listed as
+  requirements (Home Assistant ships both, and a custom integration may not
+  declare them); `hassio` and `lovelace` are now declared as
+  `after_dependencies`, because the integration asks the Supervisor and
+  registers a dashboard resource; and the example server address in the
+  advanced setup step moved out of the translation text into a placeholder.
+  Tests now hold all three.
 - Home Assistant 2026.11 replaced HACS with the built-in Marketplace, and the
   client was still looking for HACS. The component inventory sent no `hacs`
   rows, so Dispatch deleted them on the first report after the upgrade, and a

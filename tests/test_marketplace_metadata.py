@@ -9,7 +9,10 @@ checks reject, read from the shipped files:
 * `translations/en.json` is what Home Assistant loads at runtime for a custom
   integration; `strings.json` is the file everyone edits. They must say the
   same thing, or the homeowner sees stale consent wording in Repairs.
-* The manifest keys the catalog requires, in the order hassfest requires.
+* The manifest keys the catalog requires, in the order hassfest requires, with
+  no requirement Home Assistant already ships and every optional component
+  it reaches for declared.
+* No URL in a translation string (hassfest wants a placeholder).
 * `hacs.json` carries a name and a Home Assistant floor.
 * The brand icon the catalog requires is shipped inside the integration.
 * The workflow runs on main and on demand only.
@@ -90,6 +93,18 @@ class ManifestForTheCatalogTest(unittest.TestCase):
         self.assertEqual(keys[:2], ["domain", "name"])
         self.assertEqual(keys[2:], sorted(keys[2:]), "manifest.json keys are not sorted")
 
+    def test_no_requirement_is_one_home_assistant_already_ships(self):
+        # hassfest refuses aiohttp and cryptography here: both are Home
+        # Assistant's own dependencies.
+        self.assertEqual(self.manifest["requirements"], ["psutil>=5.9.0"])
+
+    def test_every_optional_component_it_reaches_for_is_an_after_dependency(self):
+        # components.py and updates.py ask the Supervisor (hassio), floorplan.py
+        # registers a Lovelace resource; a Core-only install has no Supervisor,
+        # so neither may be a hard dependency.
+        self.assertEqual(self.manifest["after_dependencies"], ["hassio", "lovelace", "marketplace"])
+        self.assertEqual(self.manifest["dependencies"], ["repairs"])
+
     def test_the_domain_is_the_folder_name(self):
         self.assertEqual(self.manifest["domain"], "ha_dispatch_client")
         self.assertEqual(os.path.basename(COMPONENT), "ha_dispatch_client")
@@ -108,6 +123,17 @@ class ManifestForTheCatalogTest(unittest.TestCase):
         # The updater compares this against the release it is offered, and
         # release.sh turns it into a tag: exactly three numbers.
         self.assertRegex(self.manifest["version"], r"^\d+\.\d+\.\d+$")
+
+
+class NoUrlInTranslationsTest(unittest.TestCase):
+    def test_no_string_carries_a_url(self):
+        # hassfest: a URL belongs in description_placeholders, not the text.
+        for name in ("strings.json", os.path.join("translations", "en.json")):
+            for path, leaf in _walk(_json(COMPONENT, name)):
+                if isinstance(leaf, str):
+                    self.assertNotRegex(
+                        leaf, r"https?://", f"{name} has a URL at {'.'.join(map(str, path))}"
+                    )
 
 
 class HacsJsonTest(unittest.TestCase):

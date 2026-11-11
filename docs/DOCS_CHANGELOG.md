@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-11-11] — hassfest fixes
+
+### Changed
+- `CLAUDE.md`, `docs/technical/architecture.md`, `docs/technical/dev-guide/client-implementation.md`: `aiohttp` and `cryptography` are no longer declared requirements; test count
+- `docs/technical/self-update.md`: `cryptography` ships with Home Assistant and is not declared (hassfest forbids it)
+- `CHANGELOG.md`: the hassfest fixes under 1.10.0
+
 ## [2026-11-11] — Marketplace catalog preparation
 
 ### Added
