@@ -5,7 +5,7 @@ integration is the part that lives in your home: it tells HA Dispatch how your
 system is doing, so problems are found and fixed before you have to notice
 them, and it gives you the final say over anything your installer wants to do.
 
-**Version:** 1.10.0 | **Needs:** Home Assistant 2025.1 or later | **License:** [MIT](LICENSE)
+**Version:** 1.11.0 | **Needs:** Home Assistant 2025.1 or later | **License:** [MIT](LICENSE)
 
 ## What it does
 

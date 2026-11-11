@@ -230,7 +230,22 @@ Three layers, in this order, and the order is the design:
    on top of every redeploy's freshly downloaded manifests. The matcher's
    conclusion stays on the record (`matched`) beside what the plan will show
    (`bound`), so the deploy report can say which placements a human had to
-   fix.
+   fix. Since 1.11.0 a correction has an **origin**: `local` (made in the
+   house through `assign_floorplan_device`) or `dispatch` (made by a
+   technician on Dispatch and carried by the deploy payload's `corrections`
+   map, `{"<device_slug>": {"room", "floor_key", "bound_entity"}}`).
+   `async_merge_server_corrections` folds that map into the store after the
+   fresh manifests are downloaded and before `async_plan_devices` runs: every
+   dispatch-origin entry is replaced wholesale by the map (a slug the map no
+   longer names loses its dispatch correction), a local entry is kept unless
+   the map names the same slug (the server wins), and a payload with no
+   `corrections` key -- an older server -- leaves the store untouched. An
+   empty PHP array (`[]`) counts as an empty map. Origins live beside the
+   corrections in the same store document (`{"overrides": {...}, "origins":
+   {slug: origin}}`), so the correction shape is unchanged; an entry with no
+   recorded origin predates the distinction and is local. A local edit of a
+   dispatch correction makes it local. Dispatch corrections are laid over the
+   matcher and pruned exactly as local ones are.
 3. **The card** -- `build_room_plan_card` reads each device's planning
    outcome rather than re-resolving it, and groups devices by room.
    `www/ayvra-room-plan.js` is the custom Lovelace card that draws it:

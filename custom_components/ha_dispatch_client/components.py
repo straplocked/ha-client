@@ -24,6 +24,14 @@ reconciles a report:
   Everything else would be a guess, and a guess here becomes fleet-wide
   evidence against a version somebody else is about to install.
 
+`latest_version` follows the same rule as `failing`: it is sent only where
+Home Assistant itself already knows a newer version exists -- the Core update
+entity, Supervisor's `version_latest` for the OS, Supervisor and each add-on,
+and the community store's own record of a repository's newest release. It is
+omitted, never sent as null, when unknown or equal to the running version;
+the server reads a missing key as "nothing newer known". Nothing here asks a
+remote service for anything.
+
 A whole kind being absent is normal rather than an error: most installations
 are Home Assistant Core with no Supervisor, no add-ons and no HACS. Every
 source degrades to "nothing found" on its own.
@@ -42,6 +50,7 @@ from homeassistant.core import HomeAssistant
 from .community_store import community_store, installed_repositories
 from .const import (
     COMPONENT_ADDON_FAILED_STATES,
+    COMPONENT_CORE_UPDATE_ENTITY,
     COMPONENT_KIND_ADDON,
     COMPONENT_KIND_CORE,
     COMPONENT_KIND_HACS,
@@ -78,7 +87,7 @@ async def async_collect_components(hass: HomeAssistant) -> list[dict[str, Any]]:
     Every call reports everything found, including components that have not
     changed since the last call. That is not redundancy -- it is the contract.
     """
-    collected: list[dict[str, Any]] = [_core_component()]
+    collected: list[dict[str, Any]] = [_core_component(hass)]
     collected.extend(_platform_components(hass))
     collected.extend(_addon_components(hass))
     collected.extend(_hacs_components(hass))
@@ -100,14 +109,40 @@ async def async_collect_components(hass: HomeAssistant) -> list[dict[str, Any]]:
 # --- Home Assistant itself ---------------------------------------------------
 
 
-def _core_component() -> dict[str, Any]:
+def _core_component(hass: HomeAssistant) -> dict[str, Any]:
     """The one row every installation has."""
     return _component(
         COMPONENT_KIND_CORE,
         COMPONENT_SLUG_CORE,
         name="Home Assistant Core",
         version=HA_VERSION,
+        latest_version=_core_latest_version(hass),
     )
+
+
+def _core_latest_version(hass: HomeAssistant) -> Any:
+    """The newer Core release Home Assistant is offering, if it is offering one.
+
+    Read off the Core update entity's state, which Home Assistant keeps in
+    memory: `on` means an update is available and `latest_version` names it.
+    Any other state -- off, unavailable, no entity at all -- says nothing.
+    """
+    getter = getattr(getattr(hass, "states", None), "get", None)
+    if getter is None:
+        return None
+    try:
+        state = getter(COMPONENT_CORE_UPDATE_ENTITY)
+    except _SOFT_ERRORS:
+        return None
+    if state is None or str(getattr(state, "state", "")).lower() != "on":
+        return None
+    attributes = getattr(state, "attributes", None)
+    if not isinstance(attributes, dict):
+        try:
+            attributes = dict(attributes or {})
+        except _SOFT_ERRORS:
+            return None
+    return attributes.get("latest_version")
 
 
 # --- Supervisor: OS, Supervisor itself, add-ons ------------------------------
@@ -130,13 +165,14 @@ def _platform_components(hass: HomeAssistant) -> list[dict[str, Any]]:
                 COMPONENT_SLUG_OS,
                 name="Home Assistant OS",
                 version=os_version,
+                latest_version=os_info.get("version_latest"),
             )
         )
 
     supervisor_info = _ask(hassio, "get_supervisor_info", hass)
-    version = (
-        supervisor_info.get("version") if isinstance(supervisor_info, dict) else None
-    )
+    if not isinstance(supervisor_info, dict):
+        supervisor_info = {}
+    version = supervisor_info.get("version")
     if not version:
         # Older cores expose it only on the /info payload.
         info = _ask(hassio, "get_info", hass)
@@ -148,6 +184,7 @@ def _platform_components(hass: HomeAssistant) -> list[dict[str, Any]]:
                 COMPONENT_SLUG_SUPERVISOR,
                 name="Home Assistant Supervisor",
                 version=version,
+                latest_version=supervisor_info.get("version_latest"),
             )
         )
 
@@ -173,6 +210,7 @@ def _addon_components(hass: HomeAssistant) -> list[dict[str, Any]]:
             slug,
             name=addon.get("name"),
             version=addon.get("version"),
+            latest_version=addon.get("version_latest"),
             failing=state in COMPONENT_ADDON_FAILED_STATES,
         )
         if entry is not None:
@@ -367,6 +405,14 @@ def _hacs_components(hass: HomeAssistant) -> list[dict[str, Any]]:
                 getattr(data, "installed_version", None)
                 or getattr(repository, "display_installed_version", None)
             ),
+            # What the repository's own update entity reports as its
+            # latest_version, read from the same in-memory record that entity
+            # reads -- the entity id is not derivable from the repository
+            # without a registry walk, and the answer would be identical.
+            latest_version=(
+                getattr(repository, "display_available_version", None)
+                or getattr(data, "last_version", None)
+            ),
         )
         if entry is not None:
             found.append(entry)
@@ -383,6 +429,7 @@ def _component(
     *,
     name: Any = None,
     version: Any = None,
+    latest_version: Any = None,
     failing: bool = False,
 ) -> dict[str, Any] | None:
     """Build one wire-format entry, or None when it has no usable slug.
@@ -405,6 +452,13 @@ def _component(
     number = _text(version, COMPONENT_VERSION_MAX)
     if number:
         entry["version"] = number
+
+    # Only when Home Assistant knows of something newer than what is running:
+    # unknown, or the same as `version`, is omitted rather than sent as null.
+    # No running version means "newer" cannot be said either.
+    latest = _text(latest_version, COMPONENT_VERSION_MAX)
+    if number and latest and latest != number:
+        entry["latest_version"] = latest
 
     return entry
 

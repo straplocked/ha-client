@@ -1880,6 +1880,199 @@ class OverrideDropTest(unittest.TestCase):
             self.assertEqual(report["detail"], "Home 3D dashboard deployed; 1 of 2 devices placed")
 
 
+# Two lamps, neither sharing a room word, so the matcher places neither: the
+# only way light_recessed.kitchen.01 reaches the plan is a pin. That makes a
+# local correction for it visible on the dashboard, which is what the
+# corrections-from-Dispatch tests need to see survive.
+def _thermostats_and_lamps():
+    return _two_thermostat_states() + [
+        FakeState("light.hue_lamp_3", "Hue lamp 3"),
+        FakeState("light.hue_lamp_4", "Hue lamp 4"),
+    ]
+
+
+# Hand-written, in the shape InstallationFloorplanController::pending sends.
+SERVER_MOVES_THERMOSTAT = {
+    "thermostat.den.01": {"room": "Kitchen", "floor_key": "Floor_1",
+                          "bound_entity": None},
+}
+
+
+class DispatchCorrectionsTest(unittest.TestCase):
+    """Corrections a technician made on Dispatch, carried by the deploy.
+
+    The guard: a server correction moves a device into its room on the next
+    deploy; a later payload without that slug removes it; a local correction
+    for a different slug survives both.
+    """
+
+    def _manager_with_local_pin(self, tmp):
+        api = FakeApi(assets=OVERRIDE_ASSETS)
+        manager, hass = _manager(api, tmp, states=_thermostats_and_lamps())
+        _run(manager.async_set_override("light_recessed.kitchen.01",
+                                        bound_entity="light.hue_lamp_4"))
+        return manager, api
+
+    def test_a_server_correction_comes_and_goes_and_a_local_one_stays(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager, api = self._manager_with_local_pin(tmp)
+
+            # Deploy 1 carries Dispatch's correction: the thermostat is the
+            # Kitchen's, and the local pin still places the lamp.
+            _run(manager._async_run(_job(job_id=1,
+                                         corrections=SERVER_MOVES_THERMOSTAT)))
+            self.assertEqual(
+                _placed(manager),
+                {"climate.kitchen_thermostat": "Kitchen", "light.hue_lamp_4": "Kitchen"},
+            )
+            self.assertEqual(
+                _run(manager.async_override_origins()),
+                {"thermostat.den.01": "dispatch",
+                 "light_recessed.kitchen.01": "local"},
+            )
+            record = [d for d in api.reports[-1]["devices"]
+                      if d["entity"] == "thermostat.den.01"][0]
+            self.assertEqual(record["reason"], "override_room")
+            self.assertEqual(record["matched"], "climate.den_thermostat")
+
+            # Deploy 2's map no longer names the thermostat: its dispatch
+            # correction goes, the matcher's Den stands, the local pin stays.
+            _run(manager._async_run(_job(job_id=2, corrections={})))
+            self.assertEqual(
+                _placed(manager),
+                {"climate.den_thermostat": "Den", "light.hue_lamp_4": "Kitchen"},
+            )
+            self.assertEqual(
+                _run(manager.async_overrides()),
+                {"light_recessed.kitchen.01": {"room": None, "floor_key": None,
+                                               "bound_entity": "light.hue_lamp_4"}},
+            )
+
+    def test_a_deploy_with_no_corrections_key_leaves_the_store_alone(self):
+        # An older server sends no key at all. That says nothing, so the
+        # dispatch correction from the last deploy that did say something
+        # is still in force.
+        with tempfile.TemporaryDirectory() as tmp:
+            manager, _ = self._manager_with_local_pin(tmp)
+            _run(manager._async_run(_job(job_id=1,
+                                         corrections=SERVER_MOVES_THERMOSTAT)))
+            _run(manager._async_run(_job(job_id=2)))
+            self.assertEqual(
+                _placed(manager),
+                {"climate.kitchen_thermostat": "Kitchen", "light.hue_lamp_4": "Kitchen"},
+            )
+            self.assertEqual(
+                _run(manager.async_override_origins()),
+                {"thermostat.den.01": "dispatch",
+                 "light_recessed.kitchen.01": "local"},
+            )
+
+    def test_the_server_wins_a_slug_both_have_corrected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeApi(assets=OVERRIDE_ASSETS)
+            manager, _ = _manager(api, tmp, states=_thermostats_and_lamps())
+            _run(manager.async_set_override("thermostat.den.01", room="Den",
+                                            floor_key="Floor_1",
+                                            bound_entity="climate.den_thermostat"))
+            _run(manager._async_run(_job(job_id=1,
+                                         corrections=SERVER_MOVES_THERMOSTAT)))
+            self.assertEqual(
+                _run(manager.async_overrides())["thermostat.den.01"],
+                {"room": "Kitchen", "floor_key": "Floor_1", "bound_entity": None},
+            )
+            self.assertEqual(
+                _run(manager.async_override_origins()),
+                {"thermostat.den.01": "dispatch"},
+            )
+            self.assertEqual(_placed(manager),
+                             {"climate.kitchen_thermostat": "Kitchen"})
+
+    def test_a_local_edit_of_a_dispatch_correction_makes_it_local(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager, _ = self._manager_with_local_pin(tmp)
+            _run(manager._async_run(_job(job_id=1,
+                                         corrections=SERVER_MOVES_THERMOSTAT)))
+            _run(manager.async_set_override("thermostat.den.01",
+                                            bound_entity="climate.ecobee_3"))
+            self.assertEqual(
+                _run(manager.async_override_origins())["thermostat.den.01"], "local"
+            )
+            # ...so a map that no longer names the slug leaves it alone.
+            _run(manager._async_run(_job(job_id=2, corrections={})))
+            self.assertIn("thermostat.den.01", _run(manager.async_overrides()))
+
+    def test_an_empty_php_array_means_no_corrections(self):
+        # json_encode([]) is "[]". Still "the server has none".
+        with tempfile.TemporaryDirectory() as tmp:
+            manager, _ = self._manager_with_local_pin(tmp)
+            _run(manager._async_run(_job(job_id=1,
+                                         corrections=SERVER_MOVES_THERMOSTAT)))
+            _run(manager._async_run(_job(job_id=2, corrections=[])))
+            self.assertEqual(sorted(_run(manager.async_overrides())),
+                             ["light_recessed.kitchen.01"])
+
+    def test_a_malformed_map_changes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager, _ = self._manager_with_local_pin(tmp)
+            _run(manager._async_run(_job(job_id=1,
+                                         corrections=SERVER_MOVES_THERMOSTAT)))
+            _run(manager._async_run(_job(job_id=2, corrections="Kitchen")))
+            self.assertEqual(
+                sorted(_run(manager.async_overrides())),
+                ["light_recessed.kitchen.01", "thermostat.den.01"],
+            )
+
+    def test_a_stored_correction_with_no_origin_is_local(self):
+        # Written by 1.10.0, before origins existed.
+        shared = {"ha_dispatch_client.floorplan_overrides": {
+            "overrides": {"light_recessed.kitchen.01": {
+                "room": None, "floor_key": None, "bound_entity": "light.hue_lamp_4",
+            }},
+        }}
+
+        class SharedStore:
+            def __init__(self, hass, version, key):
+                self.key = key
+
+            async def async_load(self):
+                return shared.get(self.key)
+
+            async def async_save(self, data):
+                shared[self.key] = data
+
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = floorplan_mod.Store
+            floorplan_mod.Store = SharedStore
+            try:
+                manager, _ = _manager(FakeApi(assets=OVERRIDE_ASSETS), tmp,
+                                      states=_thermostats_and_lamps())
+                _run(manager._async_run(_job(job_id=1,
+                                             corrections=SERVER_MOVES_THERMOSTAT)))
+            finally:
+                floorplan_mod.Store = saved
+
+            # Survived a server map that did not name it, and the origin of
+            # every entry is now written down.
+            self.assertEqual(
+                shared["ha_dispatch_client.floorplan_overrides"]["origins"],
+                {"light_recessed.kitchen.01": "local",
+                 "thermostat.den.01": "dispatch"},
+            )
+
+    def test_the_merge_happens_after_the_download_and_before_planning(self):
+        # A deploy whose download fails never reaches the merge, so the
+        # store is untouched by a deploy that applied nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            manager, api = self._manager_with_local_pin(tmp)
+            _run(manager._async_run(_job(
+                job_id=1, corrections=SERVER_MOVES_THERMOSTAT,
+                ha_map_url="https://dispatch.example.com/assets/missing.json",
+            )))
+            self.assertEqual(api.reports[-1]["status"], "failed")
+            self.assertEqual(sorted(_run(manager.async_overrides())),
+                             ["light_recessed.kitchen.01"])
+
+
 class OverrideServiceSupportTest(unittest.TestCase):
     """What the assign_floorplan_device service calls into."""
 

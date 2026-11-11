@@ -42,6 +42,7 @@ from .const import (
     DEFAULT_STALE_ENTITY_HOURS,
     DEFAULT_UPDATE_CHANNEL,
     DOMAIN,
+    RELEASE_INSTALL_KEY,
     RELEASE_KEY,
 )
 from .components import async_collect_components
@@ -304,8 +305,19 @@ class HADispatchCoordinator(DataUpdateCoordinator):
 
         Deliberately fire-and-forget: a successful install restarts Home
         Assistant, and that must not happen inside the coordinator's refresh.
+
+        Two things can say "install this": the installation's own
+        `auto_update` policy, or the offer itself carrying `install: true` --
+        Dispatch sets that when a technician pushed this release to this
+        house, or when the house holds a binding enhanced-permissions grant.
+        Only a literal True counts, and a server too old to send the key has
+        sent False. Either way the release still has to clear everything
+        below and every signature check the updater makes: the flag decides
+        *whether* to install, never *what* runs.
         """
-        if not self.auto_update or self.updater is None:
+        if self.updater is None:
+            return
+        if not (self.auto_update or release.get(RELEASE_INSTALL_KEY) is True):
             return
         if self.updater.in_progress:
             return

@@ -2,6 +2,36 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.11.0] - 2026-11-11
+
+### Added -- install when Dispatch says so
+- A client release offered with `install: true` is now installed even when
+  the installation's `auto_update` is off. Dispatch sets the flag when a
+  technician pushes a release to this house, or the house holds a binding
+  enhanced-permissions grant. Every safeguard still applies: the update
+  window, a pinned target version, never reinstalling the same or an older
+  version, signature verification against the pinned keys, and the
+  boot-time confirmation. An older server sends no flag, which means no.
+
+### Added -- newer versions in the component inventory
+- Each component in the inventory may now carry `latest_version` when Home
+  Assistant already knows a newer version is available: Core from its update
+  entity (while it shows an update), the OS, Supervisor and each add-on from
+  Supervisor's `version_latest`, and community-store repositories from the
+  version their own update entity shows. Omitted when unknown or when it
+  equals the running version. Nothing remote is asked.
+
+### Added -- floor plan corrections from Dispatch
+- A floor plan deploy may now carry `corrections` a technician made on
+  Dispatch, keyed by the plan's device slug. They are stored as Dispatch's
+  (`origin: dispatch`) and laid over the automatic placement exactly as a
+  correction made in the house is. Each deploy that carries the map replaces
+  all of Dispatch's earlier corrections; a correction made in the house with
+  `assign_floorplan_device` is kept unless Dispatch corrected the same device,
+  in which case Dispatch's wins. A deploy with no `corrections` at all (an
+  older server) leaves every stored correction as it was. Corrections stored
+  before this version count as made in the house.
+
 ## [1.10.0] - 2026-11-11
 
 ### Added -- ready for the Home Assistant Marketplace

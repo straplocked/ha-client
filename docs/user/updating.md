@@ -169,6 +169,21 @@ See [Recovering by hand](#recovering-by-hand) above.
 
 ## Release notes
 
+### 1.11.0 — Pushed updates install, newer versions reported, plan corrections from Dispatch
+
+**For homeowners.** Nothing to do. Your installer's corrections to where a
+device sits on your Home 3D plan can now come from their own screen, and they
+appear the next time your plan is sent to your home.
+
+**For installers.** A client release pushed to a house from HA Dispatch now
+installs even when that house has automatic updates off, within its update
+window and with every signature check unchanged. The component inventory now
+says when Home Assistant knows a newer Core, OS, Supervisor, add-on or
+community-store version is available, so Dispatch can show what is behind.
+Device corrections made on Dispatch ride the next floor plan deploy; a
+correction made at the tablet is kept unless Dispatch corrected the same
+device, and then Dispatch's wins.
+
 ### 1.10.0 — Pair with a code, and ready for the Marketplace
 
 **For homeowners.** Setting up the integration now asks only for the pairing

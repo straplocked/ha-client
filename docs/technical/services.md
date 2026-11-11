@@ -490,6 +490,12 @@ SERVICE_ASSIGN_FLOORPLAN_DEVICE_SCHEMA = vol.Schema({
 - A correction whose device is absent from the new manifest, or whose room is
   absent from the new plan, is dropped, pruned from the store and reported
   with the deploy as a device record with reason `override_dropped`.
+- A correction made here is recorded with origin `local`. Since 1.11.0 a
+  technician can also correct a device on Dispatch; those arrive with the next
+  deploy (origin `dispatch`) and are laid over the matcher the same way. If
+  Dispatch corrects the same device slug, the server's correction replaces
+  this one on that deploy; a local correction for any other device is never
+  touched. See [Architecture](architecture.md#floorplanpy-wwwayvra-room-planjs).
 
 ---
 

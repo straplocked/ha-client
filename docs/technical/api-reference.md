@@ -174,10 +174,19 @@ installation — so the common "nothing to do" case costs no extra request on th
     "release_url": "https://github.com/straplocked/ha-client/releases/tag/v1.5.1",
     "release_notes": "markdown string",
     "min_ha_version": "2024.1.0",
-    "size_bytes": 48213
+    "size_bytes": 48213,
+    "install": false
   }
 }
 ```
+
+`install` (since client 1.11.0) is `true` when Dispatch wants this release
+installed now: the installation has `auto_update` on, holds a binding
+enhanced-permissions grant, or a technician pushed this release to it. The
+client then installs it exactly as `auto_update` would -- update window,
+`target_version` pin, "never the same or an older version" and every signature
+check still apply. Anything but a literal `true`, including a missing key from
+an older server, means no.
 
 The client verifies `signature` against a public key pinned in its own
 `const.py`, so the server transports this material but is never trusted for it.
@@ -824,7 +833,7 @@ Or, on failure:
     { "kind": "core", "slug": "core", "name": "Home Assistant Core",
       "version": "2026.9.1", "failing": false },
     { "kind": "os", "slug": "os", "name": "Home Assistant OS",
-      "version": "14.2", "failing": false },
+      "version": "14.2", "latest_version": "14.3", "failing": false },
     { "kind": "addon", "slug": "core_mosquitto", "name": "Mosquitto broker",
       "version": "6.5.1", "failing": false },
     { "kind": "integration", "slug": "zha", "name": "Zigbee Home Automation",
@@ -837,7 +846,10 @@ Or, on failure:
 
 `kind` is one of `core`, `os`, `supervisor`, `addon`, `integration`, `hacs` —
 a wire contract with the server's `InstallationComponent::KINDS`. An unknown
-kind is a 422. `name`, `version` and `failing` are optional.
+kind is a 422. `name`, `version`, `latest_version` and `failing` are optional.
+`latest_version` (since client 1.11.0) is sent only when Home Assistant knows a
+newer version than `version` is available, and omitted -- never null -- when
+it does not; see [Component Inventory](component-inventory.md#latest-version).
 
 ### Success Response (201 Created)
 ```json

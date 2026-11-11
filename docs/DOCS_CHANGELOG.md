@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-11-11] — Client 1.11.0: install flag, latest versions, Dispatch corrections
+
+### Changed
+- `docs/technical/self-update.md`, `docs/technical/api-reference.md`: the offer's `install` flag and what still applies to a pushed release
+- `docs/technical/component-inventory.md`, `docs/technical/api-reference.md`: `latest_version`, its sources, and when it is omitted
+- `docs/technical/architecture.md`, `docs/technical/services.md`: floor plan corrections from Dispatch, their origin, and how they merge with local ones
+- `docs/user/updating.md`: 1.11.0 release notes
+- `CHANGELOG.md`: 1.11.0 entry
+- `CLAUDE.md`, `README.md`: version; `CLAUDE.md`: test count
+
+---
+
 ## [2026-11-11] — hassfest fixes
 
 ### Changed
