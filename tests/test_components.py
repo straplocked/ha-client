@@ -21,12 +21,14 @@ Core-only installation does until a test says otherwise.
 """
 import asyncio
 import importlib
+import json
 import os
 import sys
 import tempfile
 import types
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 
 def _load(module: str):
@@ -430,6 +432,50 @@ class PayloadTest(SupervisedInstallation):
             "1.6.1",
             self.find(inventory, "hacs", "straplocked/ha-dispatch-client")["version"],
         )
+
+    def _hass_after_moving_to_the_marketplace(self):
+        """The same installation on 2026.11: no hass.data["hacs"], and
+        `list_downloaded` is now `list_installed`, on a config entry."""
+        manager = types.SimpleNamespace(
+            repositories=types.SimpleNamespace(list_installed=self.repositories)
+        )
+        self.hass.data.pop("hacs")
+        self.hass.config_entries.async_loaded_entries = lambda domain: (
+            [types.SimpleNamespace(runtime_data=manager)]
+            if domain == "marketplace"
+            else []
+        )
+
+    def test_moving_to_the_marketplace_retires_nothing(self):
+        # The server keys on (kind, slug) and deletes whatever a report omits.
+        # Reading only hass.data["hacs"] sent no hacs rows at all from 2026.11.
+        def hacs_rows(components):
+            return sorted(
+                (c["kind"], c["slug"], c.get("version"))
+                for c in components
+                if c["kind"] == "hacs"
+            )
+
+        before = hacs_rows(self.inventory())
+        self.assertTrue(before)
+
+        self._hass_after_moving_to_the_marketplace()
+
+        self.assertEqual(before, hacs_rows(self.inventory()))
+
+    def test_the_client_waits_for_the_marketplace_at_start_up(self):
+        # They load in the same stage. Reporting first would send a snapshot
+        # with no hacs rows, and the server would delete them on every restart.
+        manifest = json.loads(
+            (
+                Path(__file__).parent.parent
+                / "custom_components/ha_dispatch_client/manifest.json"
+            ).read_text()
+        )
+
+        self.assertIn("marketplace", manifest["after_dependencies"])
+        # A hard dependency would stop the client loading before 2026.11.
+        self.assertNotIn("marketplace", manifest["dependencies"])
 
     def test_a_built_in_integration_reports_no_version_rather_than_a_wrong_one(self):
         # zha ships no manifest version. Inventing one -- the core version, say

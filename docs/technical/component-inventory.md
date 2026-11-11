@@ -125,7 +125,13 @@ one definition rather than two that drift.
 | `supervisor` | `hassio.get_supervisor_info()`, falling back to `get_info()["supervisor"]` | Core-only |
 | `addon` | `hassio.get_addons_info()`, falling back to `get_supervisor_info()["addons"]` | Core-only, or no add-ons |
 | `integration` | config entry domains + `loader.async_get_custom_components()`, names and versions from `loader.async_get_integrations()` | never (there is always something) |
-| `hacs` | `hass.data["hacs"].repositories.list_downloaded` | HACS not installed |
+| `hacs` | the Marketplace's `repositories.list_installed` from Home Assistant 2026.11, otherwise `hass.data["hacs"].repositories.list_downloaded` (`community_store.py`) | neither is installed |
+
+The kind stays `hacs` under the Marketplace, with the same `owner/repo` slugs,
+because the server keys on `(kind, slug)` and a new kind would retire every one
+of these rows the day a house moved to 2026.11. For the same reason the client
+waits for the Marketplace at start-up (`after_dependencies` in `manifest.json`):
+the first report after a restart must not be sent before it has loaded.
 
 **A missing kind is normal, not an error.** Most installations are Home
 Assistant Core with no Supervisor, no add-ons and no HACS. Every source above

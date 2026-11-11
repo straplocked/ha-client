@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-11-09] — The Marketplace replaces HACS (Home Assistant 2026.11)
+
+### Changed
+- `docs/technical/self-update.md`: section 12 covers finding the Marketplace, what is renamed, and the start-up ordering
+- `docs/technical/component-inventory.md`: the `hacs` source row, and why the kind and slugs do not change
+- `CHANGELOG.md`: an Unreleased entry for the fix
+- `CLAUDE.md`: `community_store.py` in the architecture tree, and the test count
+
 ## [2026-10-24] — 1.9.1: updates download again
 
 ### Added
