@@ -41,7 +41,7 @@ Authorization: Bearer <access_token>
 {
   "components": [
     { "kind": "core", "slug": "core", "name": "Home Assistant Core",
-      "version": "2026.9.1", "failing": false },
+      "version": "2026.9.1", "latest_version": "2026.10.0", "failing": false },
     { "kind": "addon", "slug": "core_mosquitto", "name": "Mosquitto broker",
       "version": "6.5.1", "failing": false }
   ]
@@ -54,6 +54,7 @@ Authorization: Bearer <access_token>
 | `slug` | yes | stable identifier within its kind, max 191 chars |
 | `name` | no | human label, max 255 chars |
 | `version` | no | max 64 chars; omitted when genuinely unknown |
+| `latest_version` | no | max 64 chars; whenever Home Assistant knows the latest version, equal to `version` included (see [below](#latest-version)) |
 | `failing` | no | defaults `false` |
 
 `kind` is a wire contract with the server — `InstallationComponent::KINDS`. An
@@ -138,6 +139,29 @@ Assistant Core with no Supervisor, no add-ons and no HACS. Every source above
 degrades independently to "nothing found" — an unavailable Supervisor helper, a
 HACS that rearranged its internals, or a manifest that will not load costs that
 one source and nothing else.
+
+<a id="latest-version"></a>
+### `latest_version` (client 1.11.0)
+
+Sent wherever Home Assistant itself already knows the latest version, read
+from in-memory state, never by asking anything remote:
+
+| Kind | Source |
+|---|---|
+| `core` | the `update.home_assistant_core_update` entity's `latest_version` attribute, while its state is `on` (an update is offered) or `off` (Core is on its latest); not when unavailable or unknown |
+| `os` | `get_os_info()["version_latest"]` |
+| `supervisor` | `get_supervisor_info()["version_latest"]` |
+| `addon` | each add-on's `version_latest` |
+| `hacs` | the repository's `display_available_version` (or `data.last_version`) -- the value its own update entity reports, read from the record that entity reads, because the entity id cannot be found from the repository without a registry walk |
+| `integration` | never |
+
+**Sent even when it equals `version`.** That is how the server tells "up to
+date" from "unknown": it records whether the key was present at all
+(`reports_available`), and reads an omitted key as "this agent did not
+answer", falling back to what the rest of the fleet runs. So the key is
+omitted -- never sent as null -- only when Home Assistant does not know the
+latest version. It is sent when the latest is known but the running `version`
+is not (a local add-on, say), since the latest is still a fact.
 
 Built-in integrations ship no manifest `version`, so they are reported with a
 name and no version. Inventing one — the core version, say — would put a

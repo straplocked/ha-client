@@ -77,9 +77,12 @@ from .const import (
     FLOORPLAN_NOTIFICATION_ID,
     FLOORPLAN_OUTDOOR_DOMAINS,
     FLOORPLAN_OUTDOOR_TOKENS,
+    FLOORPLAN_CORRECTIONS_KEY,
     FLOORPLAN_OVERRIDE_DROP_NO_DEVICE,
     FLOORPLAN_OVERRIDE_DROP_NO_ROOM,
     FLOORPLAN_OVERRIDES_STORAGE_KEY,
+    FLOORPLAN_OVERRIDE_ORIGIN_DISPATCH,
+    FLOORPLAN_OVERRIDE_ORIGIN_LOCAL,
     FLOORPLAN_OVERRIDES_STORAGE_VERSION,
     FLOORPLAN_PLAN_BACKPLATE_NAME_FMT,
     FLOORPLAN_PLAN_BACKPLATE_ROTATED_NAME_FMT,
@@ -1770,6 +1773,9 @@ class HADispatchFloorplan:
             hass, FLOORPLAN_OVERRIDES_STORAGE_VERSION, FLOORPLAN_OVERRIDES_STORAGE_KEY
         )
         self._overrides: Optional[Dict[str, Dict[str, Any]]] = None
+        # Where each of those came from (FLOORPLAN_OVERRIDE_ORIGIN_*), keyed
+        # by the same slug. Absent means local.
+        self._origins: Dict[str, str] = {}
 
     @property
     def api(self):
@@ -1802,11 +1808,28 @@ class HADispatchFloorplan:
         if self._overrides is None:
             loaded = await _async_load_or_default(self._overrides_store, {})
             self._overrides = normalise_overrides(loaded.get("overrides"))
+            origins = loaded.get("origins")
+            self._origins = {
+                slug: FLOORPLAN_OVERRIDE_ORIGIN_DISPATCH
+                for slug in self._overrides
+                if isinstance(origins, dict)
+                and origins.get(slug) == FLOORPLAN_OVERRIDE_ORIGIN_DISPATCH
+            }
         return self._overrides
 
+    def _origin(self, slug: str) -> str:
+        """Where one stored correction came from; local unless Dispatch's."""
+        if self._origins.get(slug) == FLOORPLAN_OVERRIDE_ORIGIN_DISPATCH:
+            return FLOORPLAN_OVERRIDE_ORIGIN_DISPATCH
+        return FLOORPLAN_OVERRIDE_ORIGIN_LOCAL
+
     async def _async_save_overrides(self) -> None:
+        overrides = dict(self._overrides or {})
         await self._overrides_store.async_save(
-            {"overrides": dict(self._overrides or {})}
+            {
+                "overrides": overrides,
+                "origins": {slug: self._origin(slug) for slug in overrides},
+            }
         )
 
     async def async_set_override(
@@ -1838,6 +1861,11 @@ class HADispatchFloorplan:
         if correction is None:
             return await self.async_clear_override(key)
         overrides[key] = correction
+        # Made here, so it is local now even if it started as Dispatch's --
+        # which means a later deploy whose map still names this slug will
+        # replace it (the server wins a tie), and one whose map does not
+        # will leave it alone.
+        self._origins.pop(key, None)
         await self._async_save_overrides()
         _LOGGER.info("Recorded a floorplan correction for %s: %s", key, correction)
         return True
@@ -1849,6 +1877,7 @@ class HADispatchFloorplan:
         if key not in overrides:
             return False
         overrides.pop(key)
+        self._origins.pop(key, None)
         await self._async_save_overrides()
         _LOGGER.info("Cleared the floorplan correction for %s", key)
         return True
@@ -1856,6 +1885,63 @@ class HADispatchFloorplan:
     async def async_overrides(self) -> Dict[str, Dict[str, Any]]:
         """A copy of the stored corrections, for diagnostics and tests."""
         return {k: dict(v) for k, v in (await self._async_overrides()).items()}
+
+    async def async_override_origins(self) -> Dict[str, str]:
+        """Where each stored correction came from, for diagnostics and tests."""
+        return {slug: self._origin(slug) for slug in await self._async_overrides()}
+
+    async def async_merge_server_corrections(
+        self, corrections: Any
+    ) -> Dict[str, Dict[str, Any]]:
+        """Lay the corrections Dispatch sent with a deploy into the store.
+
+        The server's map is the whole of what the server has to say, so every
+        dispatch-origin correction is replaced by it wholesale: a slug the
+        map no longer names loses its dispatch correction. A local
+        correction is kept unless the map names the same slug, in which case
+        the server wins. A deploy carrying no map at all (an older server)
+        leaves the store exactly as it was. Returns the corrections to plan
+        with.
+        """
+        overrides = await self._async_overrides()
+        if corrections is None:
+            return overrides
+        if isinstance(corrections, list) and not corrections:
+            # PHP encodes an empty array as [] unless told otherwise; that is
+            # still "no corrections", not a malformed payload.
+            corrections = {}
+        if not isinstance(corrections, dict):
+            _LOGGER.warning(
+                "Ignoring floorplan corrections from Dispatch that are not a "
+                "map of device slugs; the stored corrections are unchanged"
+            )
+            return overrides
+
+        incoming = normalise_overrides(corrections)
+        before = (dict(overrides), {s: self._origin(s) for s in overrides})
+
+        for slug in [
+            s for s in overrides if self._origin(s) == FLOORPLAN_OVERRIDE_ORIGIN_DISPATCH
+        ]:
+            overrides.pop(slug, None)
+            self._origins.pop(slug, None)
+        for slug, correction in incoming.items():
+            overrides[slug] = correction
+            self._origins[slug] = FLOORPLAN_OVERRIDE_ORIGIN_DISPATCH
+
+        after = (dict(overrides), {s: self._origin(s) for s in overrides})
+        if after != before:
+            await self._async_save_overrides()
+            _LOGGER.info(
+                "Applied %d floorplan correction(s) from Dispatch; %d local "
+                "correction(s) kept",
+                len(incoming),
+                sum(
+                    1 for s in overrides
+                    if self._origin(s) == FLOORPLAN_OVERRIDE_ORIGIN_LOCAL
+                ),
+            )
+        return overrides
 
     async def _async_drop_overrides(self, dropped: List[Dict[str, Any]]) -> None:
         """Prune the corrections this deploy's manifests have moved past."""
@@ -1869,6 +1955,7 @@ class HADispatchFloorplan:
         ]
         for slug in removed:
             overrides.pop(slug, None)
+            self._origins.pop(slug, None)
         if removed:
             await self._async_save_overrides()
             _LOGGER.warning(
@@ -2141,12 +2228,19 @@ class HADispatchFloorplan:
         decisions: List[Dict[str, Any]] = []
         dropped: List[Dict[str, Any]] = []
         try:
-            overrides = await self._async_overrides()
             paths = await self._async_download_assets(job)
             # The card is the dashboard: it has to be on disk and registered
             # before the views that reference it mean anything.
             _card_url, card_live = await self._async_install_card()
             hotspots, ha_map, plan_transform = await self._async_load_manifests(paths)
+            # Dispatch's own corrections ride the deploy. Merged now -- after
+            # the fresh manifests are on disk, before anything is planned --
+            # so they are laid over the *new* manifests exactly as a local
+            # correction is, and pruned by the same rules if this plan has
+            # moved past them.
+            overrides = await self.async_merge_server_corrections(
+                job.get(FLOORPLAN_CORRECTIONS_KEY)
+            )
             # Matching first, then the installer's corrections on top of it,
             # and only then the dashboard. A redeploy rebuilds everything
             # from manifests that have just been downloaded afresh, so this

@@ -96,10 +96,22 @@ The status response gains an optional `client_release` object, present only when
     "release_url": "https://github.com/straplocked/ha-client/releases/tag/v1.5.0",
     "release_notes": "markdown string",
     "min_ha_version": "2024.1.0",
-    "size_bytes": 48213
+    "size_bytes": 48213,
+    "install": true
   }
 }
 ```
+
+`install` (client 1.11.0) is Dispatch saying "install this one now": true when
+the installation's `auto_update` is on, when it holds a binding
+enhanced-permissions grant, or when a technician pushed this release to this
+house. `coordinator.py::_schedule_auto_update` proceeds when `auto_update` is
+on **or** `install` is literally `True`; a missing key (an older server) or any
+other value is false. Everything else is unchanged and still applies to a
+pushed release: the update window, a `target_version` pin, "never the same or
+an older version", one install at a time, the signature against the pinned
+keys, and the boot-time confirmation. The flag decides *whether* to install,
+never *what* runs.
 
 Carried on the status response rather than a separate endpoint so the common case — "no update available" — costs zero extra requests on the 60s poll.
 
@@ -117,7 +129,7 @@ Applied in `_apply_configuration` alongside the existing interval and threshold 
 | `update_window` | string \| null | `null` | Local-time window, `"03:00-05:00"`. Outside it, defer. |
 | `restart_after_update` | bool | `true` | Call `homeassistant.restart` after a successful swap |
 
-`auto_update` defaults to **false**. Opt-in, per installation, set from the dashboard.
+`auto_update` defaults to **false**. Opt-in, per installation, set from the dashboard. A single release can still be pushed to an installation with `auto_update` off: the offer then carries `install: true` (see [§5.2](#52-release-metadata-in-the-status-response)).
 
 ### 5.4 Update result reporting
 

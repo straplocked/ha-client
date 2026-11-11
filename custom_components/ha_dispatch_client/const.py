@@ -120,6 +120,11 @@ COMPONENT_SLUG_CORE = "core"
 COMPONENT_SLUG_OS = "os"
 COMPONENT_SLUG_SUPERVISOR = "supervisor"
 
+# The entity Home Assistant uses to offer a newer Core. Its state is "on" when
+# one is available and its `latest_version` attribute names it; that is where
+# the Core row's `latest_version` comes from.
+COMPONENT_CORE_UPDATE_ENTITY = "update.home_assistant_core_update"
+
 # How often the full inventory is posted. The contract asks for 15-60 minutes:
 # component versions change rarely and the fleet's attribution window is two
 # hours wide, so riding the 60 s metrics poll would cost bandwidth without
@@ -339,6 +344,11 @@ UPDATE_STORAGE_VERSION = 1
 
 # Release payload keys, as sent by the server on the status response.
 RELEASE_KEY = "client_release"
+# On the release object: true when Dispatch wants this release installed now --
+# a technician pushed it to this house, or the house holds a binding
+# enhanced-permissions grant. Installs exactly as auto_update would, window,
+# pin and signature checks included. Absent (an older server) means false.
+RELEASE_INSTALL_KEY = "install"
 
 # --- Consent-gated remote updates -------------------------------------------
 # Full design: docs/technical/remote-updates.md
@@ -556,6 +566,21 @@ FLOORPLAN_STORAGE_VERSION = 1
 # id to pin (or None to leave the matcher's own conclusion in place).
 FLOORPLAN_OVERRIDES_STORAGE_KEY = "ha_dispatch_client.floorplan_overrides"
 FLOORPLAN_OVERRIDES_STORAGE_VERSION = 1
+
+# Where a stored correction came from. `local` is one made in this house
+# through assign_floorplan_device; `dispatch` is one a technician made on
+# Dispatch and the server sent with a deploy, in the pending payload's
+# `corrections` map (same shape, keyed by the same device slug). The server's
+# map is authoritative for its own entries: each deploy that carries it
+# replaces every dispatch-origin entry wholesale, and outranks a local entry
+# for the same slug. A local entry for any other slug is never touched by it.
+# A stored entry with no recorded origin predates the distinction and is
+# local. Kept beside the corrections in the same store document
+# ({"overrides": {...}, "origins": {slug: origin}}) so the correction shape
+# itself is unchanged.
+FLOORPLAN_CORRECTIONS_KEY = "corrections"
+FLOORPLAN_OVERRIDE_ORIGIN_LOCAL = "local"
+FLOORPLAN_OVERRIDE_ORIGIN_DISPATCH = "dispatch"
 
 # Why an installer's correction was thrown away at redeploy time. Dropped
 # rather than kept: a manifest that no longer lists the device, or a plan

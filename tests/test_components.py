@@ -518,8 +518,12 @@ class PayloadTest(SupervisedInstallation):
             self.assertIsInstance(entry["failing"], bool)
             self.assertLessEqual(len(entry.get("name") or ""), 255)
             self.assertLessEqual(len(entry.get("version") or ""), 64)
+            if "latest_version" in entry:
+                # Never null, never empty: omitted is the only "unknown".
+                self.assertIsInstance(entry["latest_version"], str)
+                self.assertTrue(0 < len(entry["latest_version"]) <= 64)
             self.assertEqual(set(), set(entry) - {
-                "kind", "slug", "name", "version", "failing",
+                "kind", "slug", "name", "version", "latest_version", "failing",
             })
 
     def test_over_long_fields_are_trimmed_rather_than_costing_the_report(self):
@@ -530,6 +534,140 @@ class PayloadTest(SupervisedInstallation):
 
         self.assertEqual(255, len(addon["name"]))
         self.assertEqual(64, len(addon["version"]))
+
+
+class FakeState:
+    """A state object as hass.states.get returns one."""
+
+    def __init__(self, state, **attributes):
+        self.state = state
+        self.attributes = attributes
+
+
+def with_states(hass, states):
+    """Give a fake hass a hass.states.get answering from `states`."""
+    hass.states.get = lambda entity_id: states.get(entity_id)
+    return hass
+
+
+class LatestVersionTest(SupervisedInstallation):
+    """`latest_version` wherever Home Assistant knows the latest version,
+    equal to `version` included; omitted only when unknown.
+
+    Expected values are hand-written from the fixtures, never read back out of
+    the code's own constants.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._saved_core = components_mod.HA_VERSION
+        components_mod.HA_VERSION = "2026.10.2"
+        self.addCleanup(setattr, components_mod, "HA_VERSION", self._saved_core)
+
+    def test_a_core_only_install_reports_the_core_update_on_offer(self):
+        hass = with_states(
+            FakeHass(loaded=()),
+            {"update.home_assistant_core_update": FakeState(
+                "on", installed_version="2026.10.2", latest_version="2026.11.1"
+            )},
+        )
+
+        core = asyncio.run(collect(hass))[0]
+
+        self.assertEqual(
+            {"kind": "core", "slug": "core", "name": "Home Assistant Core",
+             "version": "2026.10.2", "latest_version": "2026.11.1",
+             "failing": False},
+            core,
+        )
+
+    def test_core_already_on_its_latest_version_sends_it_equal_to_version(self):
+        # "Up to date" is a statement, not a silence: the server can only
+        # tell it from "unknown" if the key is there.
+        hass = with_states(
+            FakeHass(loaded=()),
+            {"update.home_assistant_core_update": FakeState(
+                "off", installed_version="2026.10.2", latest_version="2026.10.2"
+            )},
+        )
+
+        core = asyncio.run(collect(hass))[0]
+
+        self.assertEqual("2026.10.2", core["version"])
+        self.assertEqual("2026.10.2", core["latest_version"])
+
+    def test_an_unavailable_update_entity_says_nothing(self):
+        hass = with_states(
+            FakeHass(loaded=()),
+            {"update.home_assistant_core_update": FakeState(
+                "unavailable", latest_version="2026.11.1"
+            )},
+        )
+
+        self.assertNotIn("latest_version", asyncio.run(collect(hass))[0])
+
+    def test_no_update_entity_at_all_says_nothing(self):
+        hass = with_states(FakeHass(loaded=()), {})
+
+        self.assertNotIn("latest_version", asyncio.run(collect(hass))[0])
+
+    def test_supervisor_version_latest_rides_the_os_supervisor_and_addons(self):
+        hassio.get_os_info = lambda hass: {"version": "14.2", "version_latest": "14.3"}
+        hassio.get_supervisor_info = lambda hass: {
+            "version": "2026.08.1", "version_latest": "2026.08.1",
+        }
+        self.addons["core_mosquitto"]["version_latest"] = "6.6.0"
+        self.addons["a0d7b954_nodered"]["version_latest"] = "18.1.0"
+        # Supervisor knows the latest of a local add-on whose installed
+        # version it does not know: the latest is still known, so it is sent.
+        self.addons["local_lab"]["version_latest"] = "0.2.0"
+
+        inventory = self.inventory()
+
+        expected = {
+            ("os", "os"): "14.3",
+            ("supervisor", "supervisor"): "2026.08.1",
+            ("addon", "core_mosquitto"): "6.6.0",
+            ("addon", "a0d7b954_nodered"): "18.1.0",
+            ("addon", "local_lab"): "0.2.0",
+        }
+        for (kind, slug), latest in expected.items():
+            with self.subTest(component=f"{kind}:{slug}"):
+                self.assertEqual(
+                    latest, self.find(inventory, kind, slug)["latest_version"]
+                )
+
+    def test_community_store_repositories_report_their_newest_release(self):
+        self.repositories[0].display_available_version = "5.4.0"
+        self.repositories[1].display_available_version = "1.6.1"
+
+        inventory = self.inventory()
+
+        self.assertEqual(
+            "5.4.0",
+            self.find(
+                inventory, "hacs", "blakeblackshear/frigate-hass-integration"
+            )["latest_version"],
+        )
+        self.assertEqual(
+            "1.6.1",
+            self.find(
+                inventory, "hacs", "straplocked/ha-dispatch-client"
+            )["latest_version"],
+        )
+
+    def test_integration_rows_never_carry_it(self):
+        self.repositories[0].display_available_version = "5.4.0"
+        for entry in self.inventory():
+            if entry["kind"] == "integration":
+                with self.subTest(slug=entry["slug"]):
+                    self.assertNotIn("latest_version", entry)
+
+    def test_nothing_known_means_no_key_anywhere(self):
+        # The default fixture knows of no newer version of anything.
+        for entry in self.inventory():
+            with self.subTest(component=f"{entry['kind']}:{entry['slug']}"):
+                self.assertNotIn("latest_version", entry)
 
 
 class TruncationOrderTest(SupervisedInstallation):
