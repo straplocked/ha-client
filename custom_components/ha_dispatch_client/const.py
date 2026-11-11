@@ -9,6 +9,20 @@ CONF_ACCESS_TOKEN = "access_token"
 CONF_CLIENT_ID = "client_id"
 CONF_REGISTRATION_SECRET = "registration_secret"
 
+# Onboarding starts with a pairing code made by the installer in Dispatch, so
+# the homeowner's config flow asks for that and nothing else. A lab or a
+# self-hosted Dispatch uses the advanced path, which still takes a URL.
+CONF_PAIRING_CODE = "pairing_code"
+DEFAULT_SERVER_URL = "https://app.hadispatch.app"
+
+# Pairing code shape, shared with the server: 8 characters of Crockford base32,
+# shown as XXXX-XXXX. Normalised identically on both sides before it is
+# compared -- see pairing.py::normalize_pairing_code.
+PAIRING_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+PAIRING_CODE_LENGTH = 8
+# The one 422 body that means "that code is no good" (wrong, expired or used).
+PAIRING_CODE_INVALID_ERROR = "invalid_pairing_code"
+
 # Default values
 DEFAULT_SCAN_INTERVAL = 60  # seconds
 DEFAULT_NAME = "HA Dispatch"
@@ -78,6 +92,16 @@ API_REMOTE_UI = "/api/v1/installations/{installation_id}/remote-ui"
 API_REMOTE_UI_CSR = "/api/v1/installations/{installation_id}/remote-ui/csr"
 API_REMOTE_UI_TOKEN = "/api/v1/installations/{installation_id}/remote-ui/token"
 API_REMOTE_UI_STATUS = "/api/v1/installations/{installation_id}/remote-ui/status"
+# Enhanced permissions ("Hands-off remote configuration"): what the server has
+# on record, and the homeowner's off-switch from inside Home Assistant. A 404
+# means the server predates the feature (EnhancedPermissionsUnavailable),
+# never that the installation is gone.
+API_ENHANCED_PERMISSIONS = (
+    "/api/v1/installations/{installation_id}/enhanced-permissions"
+)
+API_ENHANCED_PERMISSIONS_REVOKE = (
+    "/api/v1/installations/{installation_id}/enhanced-permissions/revoke"
+)
 
 # --- Component inventory ----------------------------------------------------
 # Full design: docs/technical/component-inventory.md
@@ -141,6 +165,17 @@ ACCESS_SCOPE_SCREEN = "screen"
 
 # Scopes that can be served with a read-only Home Assistant credential.
 ACCESS_READ_ONLY_SCOPES = frozenset({ACCESS_SCOPE_DIAGNOSTIC})
+
+# Consent-only scopes. Each is a standing yes that stays on until the
+# homeowner turns it off -- not a timed session -- so the prompt never quotes a
+# duration for one, and a grant is never recorded as a live tunnel session:
+# the server has no relay rules for these, so the tunnel has nothing to serve
+# under them and must not hold a credential for them.
+ACCESS_SCOPE_ENHANCED_PERMISSIONS = "enhanced_permissions"
+ACCESS_SCOPE_REMOTE_UI = "remote_ui"
+ACCESS_STANDING_SCOPES = frozenset(
+    {ACCESS_SCOPE_ENHANCED_PERMISSIONS, ACCESS_SCOPE_REMOTE_UI}
+)
 
 # Persistent notification and repairs issue ids. Both are derived from the
 # session id so a request can be cleared without keeping a lookup table.
@@ -700,3 +735,19 @@ REMOTE_UI_NOTIFICATION_ID = "remote_ui_on"
 REMOTE_UI_CONSENT_ENHANCED = "enhanced"
 # The port left out of the address the homeowner types.
 REMOTE_UI_PUBLIC_PORT = 443
+
+# --- Enhanced permissions ("Hands-off remote configuration") ---------------
+# Full design: docs/technical/remote-access.md, "Enhanced permissions".
+
+# How the server says a grant was given. Only an admin-attested grant -- an
+# installer ticking the box, not the homeowner saying yes -- raises a
+# notification here: the homeowner did not do it, so they are told it is on,
+# by whom, and how to turn it off.
+ENHANCED_METHOD_ADMIN_ATTESTED = "admin_attested"
+
+# One notification, replaced rather than stacked.
+ENHANCED_NOTIFICATION_ID = "enhanced_permissions_on"
+
+# The last grant_id announced, so a restart does not tell the homeowner twice.
+ENHANCED_STORAGE_KEY = "ha_dispatch_client.enhanced_permissions"
+ENHANCED_STORAGE_VERSION = 1

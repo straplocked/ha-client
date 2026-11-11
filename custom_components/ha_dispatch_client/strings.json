@@ -2,24 +2,46 @@
   "config": {
     "step": {
       "user": {
-        "title": "HA Dispatch Client Setup",
-        "description": "Connect your Home Assistant instance to HA Dispatch server",
+        "title": "Connect to HA Dispatch",
+        "description": "How is this Home Assistant joining HA Dispatch?",
+        "menu_options": {
+          "pair": "With a pairing code from my installer",
+          "custom_server": "With a server of my own (advanced)"
+        }
+      },
+      "pair": {
+        "title": "Connect to HA Dispatch",
+        "description": "Enter the pairing code your installer gave you. It looks like ABCD-1234.",
+        "data": {
+          "pairing_code": "Pairing code"
+        },
+        "data_description": {
+          "pairing_code": "Upper or lower case, with or without the dash."
+        }
+      },
+      "custom_server": {
+        "title": "Connect to your own HA Dispatch server",
+        "description": "For a lab or self-hosted server. Give a pairing code from that server, or its registration secret.",
         "data": {
           "server_url": "Server URL",
           "name": "Installation Name",
+          "pairing_code": "Pairing code",
           "registration_secret": "Registration Secret"
         },
         "data_description": {
           "server_url": "Base URL of the HA Dispatch server, e.g. https://dispatch.example.com",
-          "registration_secret": "Required by internet-facing servers. Leave blank if the server has no enrolment secret configured."
+          "pairing_code": "A pairing code made on that server. Leave blank to use the registration secret instead.",
+          "registration_secret": "Required by internet-facing servers when no pairing code is given. Leave blank if the server has no enrolment secret configured."
         }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect to server",
+      "cannot_connect": "Couldn't reach HA Dispatch. Check this Home Assistant is online, then try again.",
       "invalid_auth": "Invalid authentication",
-      "unknown": "Unexpected error occurred",
-      "invalid_registration_secret": "The server rejected the registration secret. Check the value and try again."
+      "unknown": "Something went wrong. Try again, and if it keeps happening, tell your installer.",
+      "invalid_registration_secret": "The server rejected the registration secret. Check the value and try again.",
+      "invalid_pairing_code": "That code didn't work. It may have expired or already been used. Ask your installer for a new one.",
+      "too_many_attempts": "Too many tries in a row. Wait a minute, then try again."
     },
     "abort": {
       "already_configured": "This integration is already configured"
@@ -192,6 +214,11 @@
       "name": "Rebuild the Home 3D Dashboard",
       "description": "Redraw the Home 3D plan from the floor-plan files this installation has already downloaded, without asking HA Dispatch for anything. Use it after the client has been updated, so the dashboard is rebuilt by the new version.",
       "fields": {}
+    },
+    "revoke_enhanced_permissions": {
+      "name": "Turn off hands-off configuration",
+      "description": "Turn off hands-off remote configuration. Your installer will have to ask you again before setting up or changing anything remotely.",
+      "fields": {}
     }
   },
   "issues": {
@@ -201,7 +228,7 @@
         "step": {
           "init": {
             "title": "{requested_by} is asking to access your Home Assistant",
-            "description": "**Reason:** {reason}\n\n**What they will be able to do:** {scope_description}\n\n**For how long:** {duration_minutes} minutes.\n\nNothing happens unless you approve, and you can end the session at any time afterwards.",
+            "description": "**Reason:** {reason}\n\n**What they will be able to do:** {scope_description}\n\n**For how long:** {duration}\n\nNothing happens unless you approve. Your answer here takes effect straight away, and anything you approve you can turn off again at any time.",
             "menu_options": {
               "grant": "Approve",
               "deny": "Decline"

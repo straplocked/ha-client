@@ -298,3 +298,10 @@ rebuild_floorplan:
     version -- the plan, the rooms and the devices are unchanged, only the
     dashboard that draws them. Does nothing if no floor plan has ever been
     deployed here.
+
+revoke_enhanced_permissions:
+  name: Turn off hands-off configuration
+  description: >-
+    Turn off hands-off remote configuration. Your installer will have to ask
+    you again before setting up or changing anything remotely. Recorded by
+    HA Dispatch as turned off from inside this Home Assistant.

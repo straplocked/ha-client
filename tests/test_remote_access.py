@@ -90,7 +90,8 @@ EXPECTED_MESSAGE = (
     "\n"
     "For how long: 60 minutes.\n"
     "\n"
-    "Approve or decline under Settings > System > Repairs.\n"
+    "Approve or decline under Settings > System > Repairs. Your answer there "
+    "takes effect straight away.\n"
     "You can also answer here: https://dispatch.example.com/access/tok-abc"
 )
 
@@ -103,6 +104,7 @@ EXPECTED_PLACEHOLDERS = {
     ),
     "scope_label": "Diagnostics and repairs",
     "duration_minutes": "60",
+    "duration": "60 minutes.",
 }
 
 
@@ -411,6 +413,144 @@ class ConsentPromptTest(unittest.TestCase):
 
         self.assertIn("41", manager.pending)
         self.assertEqual([], notifications.dismissed)
+
+
+# --- standing scopes ---------------------------------------------------------
+#
+# Hands-off configuration and remote access to the home are a standing yes,
+# not a session: they stay on until the homeowner turns them off. The server
+# still puts duration_minutes on the request (the request lapses), and the
+# prompt used to quote it -- "For how long: 60 minutes." -- which is not true
+# of what the homeowner is agreeing to.
+
+ENHANCED_REQUEST = {
+    "id": 52,
+    "requested_by": "Sam Rivera",
+    "scope": "enhanced_permissions",
+    "scope_label": "Hands-off remote configuration",
+    "scope_description": (
+        "Let your installer set up and update your Home Assistant remotely -- "
+        "dashboards, floor plans, configuration -- without asking each time. "
+        "You can turn this off at any time."
+    ),
+    "reason": "Setting up your floor plan",
+    "duration_minutes": 60,
+    "consent_url": "https://dispatch.example.com/access/tok-enh",
+}
+
+REMOTE_UI_REQUEST = {
+    "id": 53,
+    "requested_by": "Sam Rivera",
+    "scope": "remote_ui",
+    "scope_label": "Remote access to your home",
+    "scope_description": "Reach your Home Assistant from anywhere.",
+    "reason": "You asked for the app to work away from home",
+    "duration_minutes": 60,
+    "consent_url": "https://dispatch.example.com/access/tok-rui",
+}
+
+EXPECTED_ENHANCED_MESSAGE = (
+    "Reason: Setting up your floor plan\n"
+    "\n"
+    "What they will be able to do: Let your installer set up and update your "
+    "Home Assistant remotely -- dashboards, floor plans, configuration -- "
+    "without asking each time. You can turn this off at any time.\n"
+    "\n"
+    "For how long: Until you turn it off.\n"
+    "\n"
+    "Approve or decline under Settings > System > Repairs. Your answer there "
+    "takes effect straight away.\n"
+    "You can also answer here: https://dispatch.example.com/access/tok-enh"
+)
+
+EXPECTED_REMOTE_UI_MESSAGE = (
+    "Reason: You asked for the app to work away from home\n"
+    "\n"
+    "What they will be able to do: Reach your Home Assistant from anywhere.\n"
+    "\n"
+    "For how long: Until you turn it off.\n"
+    "\n"
+    "Approve or decline under Settings > System > Repairs. Your answer there "
+    "takes effect straight away.\n"
+    "You can also answer here: https://dispatch.example.com/access/tok-rui"
+)
+
+
+class StandingScopePromptTest(unittest.TestCase):
+    """What a standing-scope request says, and what approving it does here."""
+
+    def setUp(self):
+        notifications.reset()
+        issue_registry.reset()
+
+    def test_each_scope_says_how_long_in_its_own_terms(self):
+        cases = {
+            "diagnostic": "For how long: 60 minutes.",
+            "maintenance": "For how long: 60 minutes.",
+            "full": "For how long: 60 minutes.",
+            "screen": "For how long: 60 minutes.",
+            "update": "For how long: 60 minutes.",
+            "enhanced_permissions": "For how long: Until you turn it off.",
+            "remote_ui": "For how long: Until you turn it off.",
+        }
+        for scope, expected in cases.items():
+            with self.subTest(scope=scope):
+                record = {**PENDING_PAYLOAD["requests"][0], "scope": scope}
+                _, message = remote_access_mod.build_prompt(record)
+                self.assertIn(expected, message)
+
+    def test_the_enhanced_permissions_prompt_never_quotes_minutes(self):
+        title, message = remote_access_mod.build_prompt(ENHANCED_REQUEST)
+        self.assertEqual("Sam Rivera is asking to access your Home Assistant", title)
+        self.assertEqual(EXPECTED_ENHANCED_MESSAGE, message)
+        self.assertNotIn("60 minutes", message)
+        self.assertNotIn("minutes", message)
+
+    def test_the_remote_ui_prompt_never_quotes_minutes(self):
+        _, message = remote_access_mod.build_prompt(REMOTE_UI_REQUEST)
+        self.assertEqual(EXPECTED_REMOTE_UI_MESSAGE, message)
+        self.assertNotIn("60 minutes", message)
+
+    def test_the_repairs_dialog_says_until_you_turn_it_off(self):
+        manager, _, _ = make_manager(
+            pending=[{**EMPTY_PAYLOAD, "requests": [ENHANCED_REQUEST]}]
+        )
+        asyncio.run(manager.async_poll_pending())
+
+        placeholders = issue_registry.created_issues[0]["translation_placeholders"]
+        self.assertEqual("Until you turn it off.", placeholders["duration"])
+
+    def test_the_translated_dialog_quotes_the_duration_placeholder_not_minutes(self):
+        import json as _json
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "custom_components", "ha_dispatch_client", "strings.json",
+        )
+        with open(path) as handle:
+            text = _json.load(handle)["issues"]["access_request"]["fix_flow"][
+                "step"]["init"]["description"]
+        self.assertIn("**For how long:** {duration}", text)
+        self.assertNotIn("{duration_minutes} minutes", text)
+
+    def test_approving_a_standing_scope_here_records_no_session_to_serve(self):
+        # The grant is the server's. A live entry would let the tunnel mint an
+        # admin credential for a scope the server never relays, and raise
+        # "access is active until ..." for something with no until.
+        manager, api, _ = make_manager(
+            pending=[{**EMPTY_PAYLOAD, "requests": [ENHANCED_REQUEST]}]
+        )
+        asyncio.run(manager.async_poll_pending())
+        notifications.reset()
+        issue_registry.reset()
+
+        accepted = asyncio.run(manager.async_respond(52, "grant"))
+
+        self.assertTrue(accepted)
+        self.assertEqual("grant", api.responded[0]["decision"])
+        self.assertIsNone(manager.scope_for(52))
+        self.assertFalse(manager.has_live_sessions())
+        self.assertEqual([], notifications.created)
+        self.assertIn("dispatch_access_52", notifications.dismissed)
 
 
 class DecisionWireFormatTest(unittest.TestCase):

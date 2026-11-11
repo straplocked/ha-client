@@ -28,6 +28,10 @@ from .remote_access import (
     async_find_manager,
 )
 from .remote_ui import HADispatchRemoteUI
+from .enhanced_permissions import (
+    HADispatchEnhancedPermissions,
+    async_all_managers as async_all_enhanced_managers,
+)
 from .updates import HADispatchUpdates
 from .updater import ClientUpdater
 
@@ -47,6 +51,7 @@ SERVICES = (
     "revoke_access",
     "assign_floorplan_device",
     "rebuild_floorplan",
+    "revoke_enhanced_permissions",
 )
 
 # Set once the pending-update record has been resolved, so a second config
@@ -486,6 +491,26 @@ def setup_services(hass: HomeAssistant):
         for manager in managers:
             await manager.async_reapply()
 
+    async def handle_revoke_enhanced_permissions(call: ServiceCall):
+        """Handle revoke_enhanced_permissions service call.
+
+        The homeowner's off-switch for hands-off configuration, from inside
+        their own Home Assistant. Every configured installation, because
+        somebody who wants this off means off.
+        """
+        managers = async_all_enhanced_managers(hass)
+        if not managers:
+            _LOGGER.error("No HA Dispatch installations configured")
+            return
+
+        turned_off = 0
+        for manager in managers:
+            if await manager.async_revoke():
+                turned_off += 1
+        _LOGGER.info(
+            "Turned hands-off configuration off for %d installation(s)", turned_off
+        )
+
     # Register all services
     hass.services.async_register(
         DOMAIN,
@@ -550,6 +575,11 @@ def setup_services(hass: HomeAssistant):
         DOMAIN,
         "rebuild_floorplan",
         handle_rebuild_floorplan,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "revoke_enhanced_permissions",
+        handle_revoke_enhanced_permissions,
     )
 
     _LOGGER.info("HA Dispatch Client services registered successfully")
@@ -635,6 +665,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     remote_ui = HADispatchRemoteUI(hass, coordinator)
     coordinator.remote_ui = remote_ui
     await remote_ui.async_load()
+
+    # Enhanced permissions: when an installer turns hands-off configuration on
+    # for the homeowner, the homeowner is told here, once per grant, with the
+    # way to turn it off. Loaded first so a restart does not tell them twice.
+    enhanced_permissions = HADispatchEnhancedPermissions(hass, coordinator)
+    coordinator.enhanced_permissions = enhanced_permissions
+    await enhanced_permissions.async_load()
 
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()
