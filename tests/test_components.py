@@ -551,7 +551,8 @@ def with_states(hass, states):
 
 
 class LatestVersionTest(SupervisedInstallation):
-    """`latest_version` only where Home Assistant knows of something newer.
+    """`latest_version` wherever Home Assistant knows the latest version,
+    equal to `version` included; omitted only when unknown.
 
     Expected values are hand-written from the fixtures, never read back out of
     the code's own constants.
@@ -580,23 +581,26 @@ class LatestVersionTest(SupervisedInstallation):
             core,
         )
 
-    def test_core_already_on_its_latest_version_carries_no_key(self):
+    def test_core_already_on_its_latest_version_sends_it_equal_to_version(self):
+        # "Up to date" is a statement, not a silence: the server can only
+        # tell it from "unknown" if the key is there.
         hass = with_states(
             FakeHass(loaded=()),
             {"update.home_assistant_core_update": FakeState(
-                "on", installed_version="2026.10.2", latest_version="2026.10.2"
+                "off", installed_version="2026.10.2", latest_version="2026.10.2"
             )},
         )
 
         core = asyncio.run(collect(hass))[0]
 
-        self.assertNotIn("latest_version", core)
+        self.assertEqual("2026.10.2", core["version"])
+        self.assertEqual("2026.10.2", core["latest_version"])
 
-    def test_an_update_entity_that_is_off_says_nothing(self):
+    def test_an_unavailable_update_entity_says_nothing(self):
         hass = with_states(
             FakeHass(loaded=()),
             {"update.home_assistant_core_update": FakeState(
-                "off", latest_version="2026.11.1"
+                "unavailable", latest_version="2026.11.1"
             )},
         )
 
@@ -614,24 +618,24 @@ class LatestVersionTest(SupervisedInstallation):
         }
         self.addons["core_mosquitto"]["version_latest"] = "6.6.0"
         self.addons["a0d7b954_nodered"]["version_latest"] = "18.1.0"
-        # Supervisor knows a newer local add-on but not the one installed:
-        # "newer than unknown" is not something to claim.
+        # Supervisor knows the latest of a local add-on whose installed
+        # version it does not know: the latest is still known, so it is sent.
         self.addons["local_lab"]["version_latest"] = "0.2.0"
 
         inventory = self.inventory()
 
-        self.assertEqual("14.3", self.find(inventory, "os", "os")["latest_version"])
-        self.assertEqual(
-            "6.6.0",
-            self.find(inventory, "addon", "core_mosquitto")["latest_version"],
-        )
-        for kind, slug in (
-            ("supervisor", "supervisor"),
-            ("addon", "a0d7b954_nodered"),
-            ("addon", "local_lab"),
-        ):
+        expected = {
+            ("os", "os"): "14.3",
+            ("supervisor", "supervisor"): "2026.08.1",
+            ("addon", "core_mosquitto"): "6.6.0",
+            ("addon", "a0d7b954_nodered"): "18.1.0",
+            ("addon", "local_lab"): "0.2.0",
+        }
+        for (kind, slug), latest in expected.items():
             with self.subTest(component=f"{kind}:{slug}"):
-                self.assertNotIn("latest_version", self.find(inventory, kind, slug))
+                self.assertEqual(
+                    latest, self.find(inventory, kind, slug)["latest_version"]
+                )
 
     def test_community_store_repositories_report_their_newest_release(self):
         self.repositories[0].display_available_version = "5.4.0"
@@ -645,10 +649,19 @@ class LatestVersionTest(SupervisedInstallation):
                 inventory, "hacs", "blakeblackshear/frigate-hass-integration"
             )["latest_version"],
         )
-        self.assertNotIn(
-            "latest_version",
-            self.find(inventory, "hacs", "straplocked/ha-dispatch-client"),
+        self.assertEqual(
+            "1.6.1",
+            self.find(
+                inventory, "hacs", "straplocked/ha-dispatch-client"
+            )["latest_version"],
         )
+
+    def test_integration_rows_never_carry_it(self):
+        self.repositories[0].display_available_version = "5.4.0"
+        for entry in self.inventory():
+            if entry["kind"] == "integration":
+                with self.subTest(slug=entry["slug"]):
+                    self.assertNotIn("latest_version", entry)
 
     def test_nothing_known_means_no_key_anywhere(self):
         # The default fixture knows of no newer version of anything.

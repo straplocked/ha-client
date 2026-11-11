@@ -178,8 +178,9 @@ appear the next time your plan is sent to your home.
 **For installers.** A client release pushed to a house from HA Dispatch now
 installs even when that house has automatic updates off, within its update
 window and with every signature check unchanged. The component inventory now
-says when Home Assistant knows a newer Core, OS, Supervisor, add-on or
-community-store version is available, so Dispatch can show what is behind.
+carries the latest Core, OS, Supervisor, add-on and community-store version
+Home Assistant knows of, so Dispatch can show what is behind and what is up to
+date.
 Device corrections made on Dispatch ride the next floor plan deploy; a
 correction made at the tablet is kept unless Dispatch corrected the same
 device, and then Dispatch's wins.

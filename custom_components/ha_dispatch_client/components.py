@@ -25,12 +25,13 @@ reconciles a report:
   evidence against a version somebody else is about to install.
 
 `latest_version` follows the same rule as `failing`: it is sent only where
-Home Assistant itself already knows a newer version exists -- the Core update
+Home Assistant itself already knows the latest version -- the Core update
 entity, Supervisor's `version_latest` for the OS, Supervisor and each add-on,
 and the community store's own record of a repository's newest release. It is
-omitted, never sent as null, when unknown or equal to the running version;
-the server reads a missing key as "nothing newer known". Nothing here asks a
-remote service for anything.
+sent even when it equals the running version, because that is how the server
+tells "up to date" from "unknown", and omitted (never sent as null) only when
+Home Assistant does not know it. Nothing here asks a remote service for
+anything.
 
 A whole kind being absent is normal rather than an error: most installations
 are Home Assistant Core with no Supervisor, no add-ons and no HACS. Every
@@ -121,11 +122,13 @@ def _core_component(hass: HomeAssistant) -> dict[str, Any]:
 
 
 def _core_latest_version(hass: HomeAssistant) -> Any:
-    """The newer Core release Home Assistant is offering, if it is offering one.
+    """The latest Core release Home Assistant knows of, if it knows one.
 
     Read off the Core update entity's state, which Home Assistant keeps in
-    memory: `on` means an update is available and `latest_version` names it.
-    Any other state -- off, unavailable, no entity at all -- says nothing.
+    memory: `on` means an update is available and `latest_version` names it;
+    `off` means Core is on its latest version, which `latest_version` also
+    names. Any other state -- unavailable, unknown, no entity at all -- says
+    nothing.
     """
     getter = getattr(getattr(hass, "states", None), "get", None)
     if getter is None:
@@ -134,7 +137,7 @@ def _core_latest_version(hass: HomeAssistant) -> Any:
         state = getter(COMPONENT_CORE_UPDATE_ENTITY)
     except _SOFT_ERRORS:
         return None
-    if state is None or str(getattr(state, "state", "")).lower() != "on":
+    if state is None or str(getattr(state, "state", "")).lower() not in ("on", "off"):
         return None
     attributes = getattr(state, "attributes", None)
     if not isinstance(attributes, dict):
@@ -453,11 +456,11 @@ def _component(
     if number:
         entry["version"] = number
 
-    # Only when Home Assistant knows of something newer than what is running:
-    # unknown, or the same as `version`, is omitted rather than sent as null.
-    # No running version means "newer" cannot be said either.
+    # Whenever Home Assistant knows the latest version, including when it is
+    # the one running: an equal value is how the server tells "up to date"
+    # from "unknown". Omitted rather than sent as null only when unknown.
     latest = _text(latest_version, COMPONENT_VERSION_MAX)
-    if number and latest and latest != number:
+    if latest:
         entry["latest_version"] = latest
 
     return entry

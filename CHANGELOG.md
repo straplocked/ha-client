@@ -13,13 +13,14 @@ All notable changes to HA Dispatch Client will be documented in this file.
   version, signature verification against the pinned keys, and the
   boot-time confirmation. An older server sends no flag, which means no.
 
-### Added -- newer versions in the component inventory
+### Added -- latest versions in the component inventory
 - Each component in the inventory may now carry `latest_version` when Home
-  Assistant already knows a newer version is available: Core from its update
-  entity (while it shows an update), the OS, Supervisor and each add-on from
-  Supervisor's `version_latest`, and community-store repositories from the
-  version their own update entity shows. Omitted when unknown or when it
-  equals the running version. Nothing remote is asked.
+  Assistant already knows the latest version: Core from its update entity,
+  the OS, Supervisor and each add-on from Supervisor's `version_latest`, and
+  community-store repositories from the version their own update entity
+  shows. Sent even when it equals the running version, so Dispatch can tell
+  "up to date" from "unknown"; omitted only when unknown. Integration rows
+  never carry it. Nothing remote is asked.
 
 ### Added -- floor plan corrections from Dispatch
 - A floor plan deploy may now carry `corrections` a technician made on

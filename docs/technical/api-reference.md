@@ -847,9 +847,9 @@ Or, on failure:
 `kind` is one of `core`, `os`, `supervisor`, `addon`, `integration`, `hacs` —
 a wire contract with the server's `InstallationComponent::KINDS`. An unknown
 kind is a 422. `name`, `version`, `latest_version` and `failing` are optional.
-`latest_version` (since client 1.11.0) is sent only when Home Assistant knows a
-newer version than `version` is available, and omitted -- never null -- when
-it does not; see [Component Inventory](component-inventory.md#latest-version).
+`latest_version` (since client 1.11.0) is sent whenever Home Assistant knows
+the latest version, including when it equals `version` (that is "up to date"),
+and omitted -- never null -- only when unknown; see [Component Inventory](component-inventory.md#latest-version).
 
 ### Success Response (201 Created)
 ```json
