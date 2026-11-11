@@ -5,7 +5,7 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.9.1 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.10.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
 - **Dependencies:** `aiohttp>=3.8.0`, `psutil>=5.9.0`, `cryptography>=41.0.0`
@@ -38,11 +38,21 @@ custom_components/ha_dispatch_client/
 ├── floorplan.py      # HADispatchFloorplan - plan assets -> the room-first "Home 3D" dashboard
 ├── www/
 │   └── ayvra-room-plan.js  # <ayvra-room-plan> - the room-first custom Lovelace card
+├── brand/            # icon.png (256) + icon@2x.png (512): the catalog's brands check, served by HA 2026.3+
+├── translations/
+│   └── en.json       # what HA loads at runtime; must equal strings.json (a test holds it)
 ├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
 ├── manifest.json     # Integration metadata
 ├── services.yaml     # 12 service definitions with UI fields
-└── strings.json      # UI text, translations, and repair flow copy
+└── strings.json      # UI text, translations, and repair flow copy (edit it, then copy to translations/en.json)
 ```
+
+At the repo root: `hacs.json` (name, the Home Assistant floor, `filename`) and
+`.github/workflows/validate.yml`, which runs the catalog's two checks (HACS
+action, hassfest) on PRs to `main`, pushes to `main` and `workflow_dispatch`
+**only** -- never a bare `push:`, because CI minutes are a budget and batch
+branches must not trigger it. Getting listed is the owner's by-hand checklist:
+`docs/technical/marketplace-submission.md`.
 
 Release tooling lives in `scripts/`: `release.sh` builds and signs a release
 archive, `generate_signing_key.py` creates the Ed25519 keypair.
@@ -323,7 +333,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `510 passed, 110 subtests passed`. Two standing limits on
+That currently prints `526 passed, 110 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not
@@ -393,6 +403,7 @@ All documentation is organized under `docs/` — see `docs/INDEX.md` as the mast
 | Service schemas | `docs/technical/services.md` |
 | Remote update design | `docs/technical/self-update.md` (client built; server side outstanding) |
 | Remote access design | `docs/technical/remote-access.md` (consent, tunnel, local credentials) |
+| Marketplace catalog | `docs/technical/marketplace-submission.md` (checks, sources, the owner's by-hand checklist) |
 | Component inventory | `docs/technical/component-inventory.md` (sources, stable slugs, cadence, truncation) |
 | Backup reporting | `docs/technical/backup-reporting.md` (which backups, slugs, once-each storage, checksums) |
 | Data model | `docs/technical/data-model/README.md` |
