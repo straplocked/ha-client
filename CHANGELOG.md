@@ -2,6 +2,17 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- Home Assistant 2026.11 replaced HACS with the built-in Marketplace, and the
+  client was still looking for HACS. The component inventory sent no `hacs`
+  rows, so Dispatch deleted them on the first report after the upgrade, and a
+  self-update no longer corrected the installed version the store had on
+  record, leaving it offering to overwrite a signed release. Both now use the
+  Marketplace when it is loaded, keep the same `hacs` kind and slugs, and the
+  client waits for it at start-up (`after_dependencies`).
+
 ## [1.9.1] - 2026-10-24
 
 ### Fixed

@@ -681,6 +681,98 @@ class HacsSyncTest(unittest.TestCase):
         self.assertEqual(data.installed_version, "v1.7.5")
 
 
+# The Marketplace replaced HACS in Home Assistant 2026.11. Same record, but it
+# hangs off a config entry, and `list_downloaded` became `list_installed`.
+class FakeMarketplaceRepositories:
+    def __init__(self, by_name=None, installed=()):
+        self._by_name = by_name or {}
+        self.list_installed = list(installed)
+
+    def get_by_full_name(self, full_name):
+        return self._by_name.get(full_name.lower())
+
+
+def _marketplace_with(repo_data, by_name=True):
+    repository = FakeRepository(repo_data)
+    return FakeHacs(
+        FakeMarketplaceRepositories(
+            by_name={"straplocked/ha-client": repository} if by_name else {},
+            installed=[repository] if repo_data.installed else [],
+        )
+    )
+
+
+class _MarketplaceHass(_HacsHass):
+    def __init__(self, marketplace=None, hacs=None):
+        super().__init__(hacs)
+        self.config_entries = types.SimpleNamespace(
+            async_loaded_entries=lambda domain: (
+                [types.SimpleNamespace(runtime_data=marketplace)]
+                if domain == "marketplace" and marketplace is not None
+                else []
+            )
+        )
+
+
+class MarketplaceSyncTest(unittest.TestCase):
+    """On 2026.11 there is no hass.data["hacs"] to find. Before this was
+    handled the sync silently did nothing, and the Marketplace went on
+    offering to replace a signed release with its own unsigned download."""
+
+    def test_the_marketplace_record_is_brought_up_to_date_persisted_and_announced(self):
+        data = FakeRepositoryData(installed_version="v1.9.1", last_version="v1.9.1")
+        marketplace = _marketplace_with(data)
+        client = updater.ClientUpdater(_MarketplaceHass(marketplace), _Coordinator())
+
+        self.assertTrue(_run(client.async_sync_hacs("1.10.0")))
+
+        self.assertEqual(data.installed_version, "v1.10.0")
+        self.assertEqual(data.last_version, "v1.10.0")
+        self.assertEqual(marketplace.data.writes, [True])
+        self.assertEqual(marketplace.dispatched[0][0], "marketplace_repository")
+        self.assertEqual(
+            marketplace.dispatched[0][1]["repository"], "straplocked/ha-client"
+        )
+
+    def test_a_fork_is_found_by_domain_among_what_it_installed(self):
+        data = FakeRepositoryData(full_name="someone/ha-client-fork")
+        client = updater.ClientUpdater(
+            _MarketplaceHass(_marketplace_with(data, by_name=False)), _Coordinator()
+        )
+
+        self.assertTrue(_run(client.async_sync_hacs("1.7.5")))
+        self.assertEqual(data.installed_version, "v1.7.5")
+
+    def test_a_marketplace_that_did_not_install_this_is_left_alone(self):
+        data = FakeRepositoryData(installed=False)
+        marketplace = _marketplace_with(data)
+        client = updater.ClientUpdater(_MarketplaceHass(marketplace), _Coordinator())
+
+        self.assertFalse(_run(client.async_sync_hacs("1.7.5")))
+        self.assertEqual(data.installed_version, "v1.5.1")
+
+    def test_hacs_is_still_used_when_no_marketplace_is_loaded(self):
+        data = FakeRepositoryData()
+        hacs = _hacs_with(data)
+        client = updater.ClientUpdater(_MarketplaceHass(hacs=hacs), _Coordinator())
+
+        self.assertTrue(_run(client.async_sync_hacs("1.7.5")))
+        self.assertEqual(hacs.dispatched[0][0], "hacs_dispatch_repository")
+
+    def test_the_marketplace_wins_over_anything_left_at_the_old_address(self):
+        moved = FakeRepositoryData()
+        stale = FakeRepositoryData()
+        client = updater.ClientUpdater(
+            _MarketplaceHass(_marketplace_with(moved), _hacs_with(stale)),
+            _Coordinator(),
+        )
+
+        _run(client.async_sync_hacs("1.7.5"))
+
+        self.assertEqual(moved.installed_version, "v1.7.5")
+        self.assertEqual(stale.installed_version, "v1.5.1")
+
+
 # --- download ---------------------------------------------------------------
 
 

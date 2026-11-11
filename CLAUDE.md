@@ -23,6 +23,7 @@ custom_components/ha_dispatch_client/
 ├── update.py         # HADispatchUpdateEntity - client version as an HA update entity
 ├── updater.py        # ClientUpdater - signed self-update (download, verify, swap, restart)
 ├── updates.py        # HADispatchUpdates - consent-gated Core/OS/add-on updates via the Supervisor
+├── community_store.py # Finds HACS or, from HA 2026.11, the Marketplace that replaced it
 ├── health.py         # Home Assistant health signal collection
 ├── components.py     # Component inventory - core, OS, Supervisor, add-ons, integrations, HACS
 ├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and live session state
@@ -289,7 +290,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `453 passed, 88 subtests passed`. Two standing limits on
+That currently prints `460 passed, 88 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not

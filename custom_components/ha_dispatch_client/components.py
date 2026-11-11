@@ -39,6 +39,7 @@ from typing import Any
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant
 
+from .community_store import community_store, installed_repositories
 from .const import (
     COMPONENT_ADDON_FAILED_STATES,
     COMPONENT_KIND_ADDON,
@@ -342,26 +343,19 @@ async def _manifests(hass: HomeAssistant, domains: list[str]) -> dict[str, Any]:
 
 
 def _hacs_components(hass: HomeAssistant) -> list[dict[str, Any]]:
-    """Everything HACS has downloaded, when HACS is installed.
+    """Everything HACS, or the Marketplace that replaced it, has installed.
 
     Slugged by repository (`owner/repo`), which is what HACS itself keys on and
-    the only identifier here that a user cannot rename locally.
+    the only identifier here that a user cannot rename locally. The kind stays
+    `hacs` under the Marketplace: the server keys on (kind, slug), so a new
+    kind would retire every one of these rows the day a house moved to 2026.11.
     """
-    hacs = (getattr(hass, "data", None) or {}).get("hacs")
-    if hacs is None:
-        return []
-
-    downloaded = getattr(getattr(hacs, "repositories", None), "list_downloaded", None)
-    if downloaded is None:
-        return []
-
-    try:
-        repositories = list(downloaded)
-    except TypeError:
+    store = community_store(hass)
+    if store is None:
         return []
 
     found = []
-    for repository in repositories:
+    for repository in installed_repositories(store.manager):
         data = getattr(repository, "data", None)
         if data is None:
             continue
