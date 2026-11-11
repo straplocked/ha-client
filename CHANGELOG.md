@@ -2,6 +2,65 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.10.0] - 2026-11-11
+
+### Added -- ready for the Home Assistant Marketplace
+- The integration now carries what the Marketplace catalog checks for: its own
+  icon (`brand/icon.png`, `brand/icon@2x.png` -- Home Assistant 2026.3 and
+  later serves it from there, so no separate brands submission is needed),
+  runtime translations in `translations/en.json` (kept equal to
+  `strings.json` by a test), a manifest in the order hassfest requires with an
+  `integration_type`, and `hacs.json` now states the Home Assistant version it
+  needs (2025.1). A GitHub workflow (`.github/workflows/validate.yml`) runs the
+  catalog's two checks, HACS validation and hassfest, on pull requests to
+  `main`, on pushes to `main` and on demand; it never runs on other branches.
+- The README is rewritten for this version: what the integration does, how to
+  install it from the Marketplace (or as a custom repository until it is
+  listed), exactly what it sends, how consent works in plain words, and why
+  signed self-update sits comfortably beside the Marketplace.
+- `docs/technical/marketplace-submission.md`: what is left for the owner to do
+  by hand to get listed.
+
+### Added -- pair with a code
+- Setting up the integration now asks for one thing: the pairing code your
+  installer made for you in HA Dispatch (it looks like `ABCD-1234`). No server
+  address, no secret. Case, spaces and the dash do not matter, and an `O`,
+  `I` or `L` typed for a `0` or `1` is read the way it was meant. Once paired,
+  the house appears in the installer's fleet, assigned to them. A code that
+  has expired or been used says so in plain words: ask your installer for a
+  new one. Your own server is still an option in Advanced Mode, with a
+  pairing code or the registration secret.
+- When your installer turns on hands-off configuration for you, your Home
+  Assistant tells you: who turned it on, when, what it allows, and how to turn
+  it off -- a link, or the new `revoke_enhanced_permissions` action. Once per
+  grant, never repeated after a restart, and gone when it is turned off.
+
+### Changed
+- A request for hands-off configuration or remote access to your home no
+  longer says "For how long: 60 minutes". Both stay on until you turn them
+  off, and the request now says exactly that. Approving in Home Assistant is
+  presented as the way to answer, because it now really grants on the server.
+- Approving one of those standing requests no longer records a remote access
+  session in the house. There is nothing to relay under one, and the house no
+  longer holds a credential for it.
+
+### Fixed
+- hassfest, the Marketplace's integration check, refused the manifest and the
+  translations. `aiohttp` and `cryptography` are no longer listed as
+  requirements (Home Assistant ships both, and a custom integration may not
+  declare them); `hassio` and `lovelace` are now declared as
+  `after_dependencies`, because the integration asks the Supervisor and
+  registers a dashboard resource; and the example server address in the
+  advanced setup step moved out of the translation text into a placeholder.
+  Tests now hold all three.
+- Home Assistant 2026.11 replaced HACS with the built-in Marketplace, and the
+  client was still looking for HACS. The component inventory sent no `hacs`
+  rows, so Dispatch deleted them on the first report after the upgrade, and a
+  self-update no longer corrected the installed version the store had on
+  record, leaving it offering to overwrite a signed release. Both now use the
+  Marketplace when it is loaded, keep the same `hacs` kind and slugs, and the
+  client waits for it at start-up (`after_dependencies`).
+
 ## [1.9.1] - 2026-10-24
 
 ### Fixed

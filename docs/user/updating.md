@@ -169,6 +169,23 @@ See [Recovering by hand](#recovering-by-hand) above.
 
 ## Release notes
 
+### 1.10.0 — Pair with a code, and ready for the Marketplace
+
+**For homeowners.** Setting up the integration now asks only for the pairing
+code your installer made for you; there is no server address to type. A
+request for hands-off configuration or for reaching your home from your phone
+now says it stays on until you turn it off, and answering it in Home Assistant
+has the same effect as answering it on the web page. When your installer turns
+hands-off configuration on for you, Home Assistant tells you who, when, and
+how to turn it off.
+
+**For installers.** The integration is prepared for the Home Assistant
+Marketplace catalog (its own icon, runtime translations, a stated Home
+Assistant minimum of 2025.1). On Home Assistant 2026.11 the client now finds
+the Marketplace, so a self-update still corrects the version it has on record
+and the component inventory still reports what it installed. The signed
+self-update is unchanged.
+
 ### 1.9.1 — Updates download again
 
 **For installers and technicians.** GitHub changed how it answers a release

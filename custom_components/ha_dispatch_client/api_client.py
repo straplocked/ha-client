@@ -1,4 +1,5 @@
 """API Client for HA Dispatch Server."""
+import json
 import logging
 from typing import Any, Dict, List, Optional
 import aiohttp
@@ -14,6 +15,8 @@ from .const import (
     API_ACCESS_RESPOND,
     API_ACCESS_REVOKE,
     API_COMPONENTS,
+    API_ENHANCED_PERMISSIONS,
+    API_ENHANCED_PERMISSIONS_REVOKE,
     API_FLOORPLAN_PENDING,
     API_FLOORPLAN_REPORT,
     API_REMOTE_UI,
@@ -25,13 +28,48 @@ from .const import (
     ACCESS_POLL_TIMEOUT,
     FLOORPLAN_DOWNLOAD_CHUNK_BYTES,
     FLOORPLAN_MAX_ASSET_BYTES,
+    PAIRING_CODE_INVALID_ERROR,
 )
+from .pairing import normalize_pairing_code
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class RegistrationSecretError(Exception):
     """Raised when the server rejects the enrolment secret."""
+
+
+class PairingCodeError(Exception):
+    """Raised when the server refuses a pairing code (HTTP 422).
+
+    Wrong, expired or already used -- the server deliberately does not say
+    which, and neither can we. The remedy is the same in every case: a new
+    code from the installer.
+    """
+
+
+class RegistrationThrottledError(Exception):
+    """Raised when the server is rate-limiting registration (HTTP 429).
+
+    Pairing codes are short, so the server throttles guesses. Not a transport
+    failure: asking again at once only extends the wait.
+    """
+
+
+def is_invalid_pairing_code_body(body: Any) -> bool:
+    """Whether a 422 body is the server's ``{"error": "invalid_pairing_code"}``.
+
+    Accepts the raw text or the parsed JSON. Pure; tested directly. Matched on
+    the parsed field rather than a substring, so a validation message that
+    merely mentions the field (``"The pairing code field must be ..."``) is
+    not mistaken for it.
+    """
+    if isinstance(body, (str, bytes)):
+        try:
+            body = json.loads(body)
+        except (TypeError, ValueError):
+            return False
+    return isinstance(body, dict) and body.get("error") == PAIRING_CODE_INVALID_ERROR
 
 
 class InstallationAuthError(Exception):
@@ -119,6 +157,16 @@ class RemoteUiUnavailable(Exception):
     """
 
 
+class EnhancedPermissionsUnavailable(Exception):
+    """Raised when this server does not offer the enhanced-permissions endpoints.
+
+    The same trap as every other *Unavailable error: a server predating the
+    feature answers 404 for both paths while the installation is perfectly
+    healthy. Mapping that onto InstallationGoneError would re-enrol a working
+    installation once a minute, forever. Asked once per run.
+    """
+
+
 class RemoteUiRefused(Exception):
     """Raised when the server declines a Remote UI provisioning step.
 
@@ -183,6 +231,7 @@ class HADispatchApiClient:
         os_info: Optional[str] = None,
         registration_secret: Optional[str] = None,
         client_version: Optional[str] = None,
+        pairing_code: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Register installation with server.
 
@@ -190,6 +239,12 @@ class HADispatchApiClient:
         only unauthenticated endpoint and it issues a bearer token, so without
         one anybody who can reach the URL can mint installations. Servers on a
         trusted network may leave it unset, hence the optional argument.
+
+        A pairing code satisfies that requirement instead, and assigns the new
+        installation to the installer who made the code. It is normalised here
+        exactly as the server normalises it, so ``abcd-efgh`` and ``ABCDEFGH``
+        are the same code. A refused code raises PairingCodeError; a throttled
+        attempt raises RegistrationThrottledError.
         """
         url = f"{self.server_url}/api/v1/installations/register"
         data = {
@@ -200,6 +255,9 @@ class HADispatchApiClient:
             "os_info": os_info,
             "client_version": client_version,
         }
+        code = normalize_pairing_code(pairing_code)
+        if code:
+            data["pairing_code"] = code
 
         headers = self._get_headers()
         if registration_secret:
@@ -213,8 +271,16 @@ class HADispatchApiClient:
                 raise RegistrationSecretError(
                     "Server rejected the registration secret"
                 )
+            if response.status == 429:
+                raise RegistrationThrottledError(
+                    "Too many registration attempts; the server asked us to wait"
+                )
             if response.status == 422:
                 body = await response.text()
+                # Checked first: the pairing refusal is a body of its own, and
+                # a client_id clash is only ever matched as a substring.
+                if is_invalid_pairing_code_body(body):
+                    raise PairingCodeError("The server refused the pairing code")
                 if "client_id" in body:
                     raise ClientIdTakenError(body)
             await self._raise_for_status(response, installation_scoped=False)
@@ -929,6 +995,44 @@ class HADispatchApiClient:
             url, json=payload, headers=self._get_headers()
         ) as response:
             await self._raise_for_remote_ui_status(response)
+
+    # --- Enhanced permissions ("Hands-off remote configuration") ------------
+    #
+    # A 404 on either path means the server predates the feature, not that
+    # this installation has vanished -- see EnhancedPermissionsUnavailable.
+
+    @staticmethod
+    async def _raise_for_enhanced_status(response) -> None:
+        if response.status == 404:
+            raise EnhancedPermissionsUnavailable(
+                f"Server has no enhanced-permissions endpoint at {response.url}"
+            )
+        await HADispatchApiClient._raise_for_status(
+            response, installation_scoped=False
+        )
+
+    async def fetch_enhanced_permissions(self, installation_id: str) -> Dict[str, Any]:
+        """What the server has on record for this house.
+
+        ``{granted, grant_id, method, granted_at, granted_by, off_switch_url}``;
+        everything but ``granted`` may be null.
+        """
+        url = self.server_url + API_ENHANCED_PERMISSIONS.format(
+            installation_id=installation_id
+        )
+        async with self.session.get(url, headers=self._get_headers()) as response:
+            await self._raise_for_enhanced_status(response)
+            payload = await response.json()
+            return payload if isinstance(payload, dict) else {}
+
+    async def revoke_enhanced_permissions(self, installation_id: str) -> None:
+        """The homeowner turned it off from Home Assistant. The server answers 204."""
+        url = self.server_url + API_ENHANCED_PERMISSIONS_REVOKE.format(
+            installation_id=installation_id
+        )
+        _LOGGER.debug("Telling Dispatch the homeowner turned enhanced permissions off")
+        async with self.session.post(url, json={}, headers=self._get_headers()) as response:
+            await self._raise_for_enhanced_status(response)
 
     async def download_floorplan_asset(self, url: str, dest_path: Any) -> int:
         """Stream one authenticated floorplan asset to a local file.

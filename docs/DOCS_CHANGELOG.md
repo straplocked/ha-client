@@ -6,6 +6,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-11-11] — hassfest fixes
+
+### Changed
+- `CLAUDE.md`, `docs/technical/architecture.md`, `docs/technical/dev-guide/client-implementation.md`: `aiohttp` and `cryptography` are no longer declared requirements; test count
+- `docs/technical/self-update.md`: `cryptography` ships with Home Assistant and is not declared (hassfest forbids it)
+- `CHANGELOG.md`: the hassfest fixes under 1.10.0
+
+## [2026-11-11] — Marketplace catalog preparation
+
+### Added
+- `docs/technical/marketplace-submission.md`: the catalog's checks with sources, what the repository already does, and the owner's by-hand checklist (topics, validation run, release, the `hacs/default` pull request text)
+
+### Changed
+- `README.md`: rewritten for 1.10.0 (install from the Marketplace or as a custom repository, what is sent, the consent model, self-update beside the Marketplace)
+- `docs/user/installation.md`: the Marketplace route, and the two new shipped files
+- `docs/user/updating.md`: 1.10.0 release notes
+- `CHANGELOG.md`: 1.10.0 entry
+- `CLAUDE.md`: version, architecture tree (`brand/`, `translations/`, `.github/`), the translations-parity rule, test count
+
+## [2026-11-11] — Pairing codes, standing-scope wording, enhanced-permissions notice
+
+### Added
+- `docs/technical/remote-access.md`: "Standing scopes are not sessions" and "Enhanced permissions (Hands-off remote configuration)" (the once-per-grant notification, persistence, dismissal, the off-switch, the 404 rule); "What the customer sees" covers "Until you turn it off." and the consent link being homeowner-only
+- `docs/technical/api-reference.md`: `pairing_code` on register with its 422/429, and Endpoints 18-19 (enhanced permissions)
+- `docs/technical/services.md`, `docs/user/services-guide.md`: `rebuild_floorplan` and `revoke_enhanced_permissions` (12 services)
+- `docs/user/troubleshooting.md`: "Pairing Code Refused"
+
+### Changed
+- `docs/user/configuration.md`, `quickstart.md`, `installation.md`: setup asks for a pairing code; own server via Advanced Mode; the new form errors
+- `docs/technical/architecture.md`: `pairing.py`, `enhanced_permissions.py`, the registration flow, 12 services
+- `docs/INDEX.md`, `docs/leadership/capabilities.md`: service count
+- `CHANGELOG.md`: Unreleased entries
+- `CLAUDE.md`: architecture tree, the two new key patterns, standing scopes, endpoints, services table (12), test count
+
+## [2026-11-09] — The Marketplace replaces HACS (Home Assistant 2026.11)
+
+### Changed
+- `docs/technical/self-update.md`: section 12 covers finding the Marketplace, what is renamed, and the start-up ordering
+- `docs/technical/component-inventory.md`: the `hacs` source row, and why the kind and slugs do not change
+- `CHANGELOG.md`: an Unreleased entry for the fix
+- `CLAUDE.md`: `community_store.py` in the architecture tree, and the test count
+
 ## [2026-10-24] — 1.9.1: updates download again
 
 ### Added

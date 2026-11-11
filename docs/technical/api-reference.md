@@ -28,9 +28,19 @@
   "name": "string",                 // Optional, max 255 chars (defaults to hostname)
   "ha_version": "string",           // Optional, max 255 chars
   "os_info": "string",              // Optional, max 255 chars
-  "client_version": "1.5.0"         // Optional, client build on disk
+  "client_version": "1.5.0",        // Optional, client build on disk
+  "pairing_code": "7K3M9P2Q"        // Optional, the installer's one-time code (normalised)
 }
 ```
+
+**Pairing code.** Onboarding starts in Dispatch: the installer makes a
+one-time code (8 characters of Crockford base32, shown `XXXX-XXXX`, 30 minute
+lifetime, single use). The client normalises it exactly as the server does --
+uppercase, spaces and hyphens removed, `O` read as `0`, `I` and `L` read as
+`1` (`pairing.py::normalize_pairing_code`) -- and sends it in the body. A valid
+code registers exactly as below, assigns the new installation to the
+installer who made it, and stands in for the registration secret. No code, no
+field: the legacy `X-Registration-Secret` path is unchanged.
 
 ### Success Response (201 Created)
 ```json
@@ -54,7 +64,24 @@
 }
 ```
 
+**422 Unprocessable Entity**: the pairing code was refused -- wrong, expired
+or already used, deliberately not saying which
+```json
+{"error": "invalid_pairing_code"}
+```
+Matched on the parsed `error` field (`api_client.py::is_invalid_pairing_code_body`),
+never as a substring, and checked before the `client_id` clash. Raised as
+`PairingCodeError`; the form says "That code didn't work. It may have expired
+or already been used. Ask your installer for a new one."
+
+**429 Too Many Requests**: registration is throttled. `RegistrationThrottledError`;
+the form says to wait a minute.
+
 ### Client Implementation Notes
+- A pairing code is never stored: it is single use and spent by this call.
+  An installation enrolled with one has no registration secret on record, so
+  if the server ever forgets it, re-enrolment is refused on a server that
+  requires a secret and the way back is a new code
 - Generate `client_id` using UUID v4
 - Store `client_id` persistently (for re-registration scenarios)
 - Store `access_token` securely (encrypted if possible)
@@ -985,6 +1012,43 @@ Answers `204`. Sent on change and at least every 10 minutes. `http_block` is
 `managed`, `present_unmanaged`, `missing` or `not_needed` (DNS-only mode);
 `last_error` is cut to 500 characters, the server's limit. Full design:
 [Remote Access](remote-access.md#remote-ui-the-homeowners-own-way-in).
+
+---
+
+## Endpoints 18-19: Enhanced Permissions
+
+"Hands-off remote configuration": the homeowner's standing yes to their
+installer setting up and changing their Home Assistant remotely. Both paths
+are installation-scoped with the bearer token. A **404 on either means the
+server has no such feature** -- `EnhancedPermissionsUnavailable`, asked once
+per run, and **never** `InstallationGoneError`. A 401 is still an auth error.
+
+### Endpoint 18: State
+
+**Method**: `GET`
+**Path**: `/v1/installations/{id}/enhanced-permissions`
+
+```json
+{"granted": true, "grant_id": 7, "method": "admin_attested",
+ "granted_at": "2026-11-11T14:05:00+00:00", "granted_by": "Morgan Lee",
+ "off_switch_url": "https://app.hadispatch.app/..."}
+```
+
+Everything but `granted` may be null. `granted_by` is the admin's display name
+for `admin_attested` and null otherwise. `off_switch_url` is revoke-only -- it
+can turn the permission off and nothing else, so it is harmless as a bearer
+link. Polled on the coordinator cycle by `enhanced_permissions.py`; only an
+`admin_attested` grant raises a notification (once per `grant_id`).
+
+### Endpoint 19: Revoke
+
+**Method**: `POST`
+**Path**: `/v1/installations/{id}/enhanced-permissions/revoke`
+
+Empty body; answers `204`. The homeowner turned it off from Home Assistant
+(the `revoke_enhanced_permissions` service); the server records it as an
+in-app revoke. Full design:
+[Remote Access](remote-access.md#enhanced-permissions-hands-off-remote-configuration).
 
 ---
 

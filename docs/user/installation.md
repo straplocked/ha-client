@@ -4,6 +4,17 @@ This guide covers installation methods, the setup flow, the entities the integra
 
 ## Installation Methods
 
+### Method 0: The Marketplace (recommended)
+
+On Home Assistant 2026.11 and later, open the **Marketplace**, search for
+**HA Dispatch Client**, install it and restart Home Assistant. Until the
+integration is listed in the catalog, use **Add from link** with
+`https://github.com/straplocked/ha-client`. On earlier versions, add that
+address in HACS as a custom repository with the category **Integration**. A
+self-update later keeps the Marketplace's record of the installed version
+correct, see [Updating the client](updating.md). The steps to get it listed are
+in the [Marketplace submission checklist](../technical/marketplace-submission.md).
+
 ### Method 1: Copy to Home Assistant
 
 1. Copy the `custom_components/ha_dispatch_client` directory to your Home Assistant's `config/custom_components/` directory:
@@ -45,15 +56,19 @@ After copying files, confirm the following files exist in `custom_components/ha_
 - `coordinator.py`
 - `sensor.py`
 - `strings.json`
+- `translations/en.json`
+- `brand/icon.png`
 - `services.yaml`
 
 ## Setup Flow
 
 1. Go to **Settings** -> **Devices & Services** -> **Add Integration**.
 2. Search for "HA Dispatch Client".
-3. Enter your HA Dispatch server URL (e.g., `http://your-server:8080`).
-4. Optionally provide a friendly name for this installation.
-5. Click **Submit**.
+3. Enter the pairing code your installer made for you in HA Dispatch.
+4. Click **Submit**.
+
+(Own server: switch on Advanced Mode in your profile, then choose "a server of
+my own" and give its URL with a pairing code or the registration secret.)
 
 The integration will:
 - Generate a unique client ID (UUID).

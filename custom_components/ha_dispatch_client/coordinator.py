@@ -100,6 +100,11 @@ class HADispatchCoordinator(DataUpdateCoordinator):
         # nothing unless the house has been given its files.
         self.remote_ui = None
 
+        # Enhanced permissions: tells the homeowner when their installer has
+        # turned hands-off configuration on. Same arrangement: absent unless
+        # setup wires it.
+        self.enhanced_permissions = None
+
         # Component inventory. Reported on its own slow cadence rather than on
         # every metrics poll: versions change rarely, and the fleet's
         # attribution window is two hours wide. None means "never reported",
@@ -187,6 +192,11 @@ class HADispatchCoordinator(DataUpdateCoordinator):
             if self.remote_ui is not None:
                 await self.remote_ui.async_poll()
 
+            # Enhanced permissions: one GET, a notification only when an
+            # installer's grant is new. Same cadence, same inability to raise.
+            if self.enhanced_permissions is not None:
+                await self.enhanced_permissions.async_poll()
+
             # Return combined data for sensors
             return {
                 "status": status_data.get("installation_status"),
@@ -258,9 +268,13 @@ class HADispatchCoordinator(DataUpdateCoordinator):
                     client_version=self.client_version,
                 )
         except RegistrationSecretError:
+            # A house enrolled with a pairing code has no secret stored (the
+            # code was single use), so this is where it ends up if the server
+            # forgets it: a new code from the installer is the way back.
             _LOGGER.error(
                 "Re-enrolment refused: the server requires a registration secret and "
-                "the stored one is missing or wrong. Reconfigure the integration."
+                "the stored one is missing or wrong. Remove the integration and add "
+                "it again with a new pairing code from your installer."
             )
             return False
         except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:

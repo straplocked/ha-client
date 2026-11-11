@@ -196,7 +196,7 @@ This feature is, by construction, remote code execution on every Home Assistant 
 ### 7.2 Scheme
 
 - **Algorithm:** Ed25519, signature over the raw zip bytes (not over the digest — one fewer link in the chain to reason about).
-- **Verification library:** `cryptography`, which ships with Home Assistant core (`Ed25519PublicKey.from_public_bytes(...).verify(sig, data)`). Declare `cryptography>=41.0.0` in `manifest.json` `requirements` anyway — it resolves as already-satisfied on a normal install and fails loudly rather than silently on an unusual one. Verify this against the target HA version before relying on it.
+- **Verification library:** `cryptography`, which ships with Home Assistant core (`Ed25519PublicKey.from_public_bytes(...).verify(sig, data)`). It is **not** declared in `manifest.json` `requirements`: hassfest rejects a custom integration that lists one of Home Assistant's own dependencies.
 - **Key storage:** public keys pinned as a literal dict in `const.py`:
 
 ```python
@@ -438,14 +438,16 @@ The original plan here was *not* to reconcile the two automatically, and to docu
 - It finds HACS at `hass.data["hacs"]` and the repository by full name or, failing that, by domain among HACS's *downloaded* repositories, and sets `installed_version` on the live record — plus `last_version` when HACS's notion of "latest" is older than what is running, so the entity does not present a downgrade as an update until HACS next fetches the truth. It then asks HACS to persist (`hacs.data.async_write(force=True)`) and dispatches HACS's repository signal so its entities redraw.
 - It never writes HACS's storage files directly (HACS would overwrite the edit on its next save), and it never raises: no HACS, a HACS that does not manage this integration, or a HACS whose internals have moved all reduce to a DEBUG line. The tag prefix follows what HACS already uses (`v1.7.5` for a repository downloaded from a `v`-prefixed release), because HACS compares the strings as they are.
 
-What remains true: the updater is the authority for fleet installs, HACS for individually-managed ones, and the reconciliation exists so that an install which started as the latter can safely become the former.
+**The Marketplace (Home Assistant 2026.11 and later).** HACS moved into Core as the Marketplace and `hass.data["hacs"]` no longer exists, so the lookup above found nothing and the sync silently stopped. `community_store.py` now finds the Marketplace manager on its loaded config entry (`hass.config_entries.async_loaded_entries("marketplace")[0].runtime_data`) and falls back to `hass.data["hacs"]` on older versions. The record, `get_by_full_name` and `data.async_write(force=True)` are unchanged; `list_downloaded` became `list_installed`, and the signal is `marketplace_repository`. That signal refreshes the Marketplace panel only. Its update entity picks up the new version on the next restart or fetch, which is soon enough because the sync runs before the restart that follows a swap. `manifest.json` lists `marketplace` under `after_dependencies`, because the two load in the same stage and the start-up sync must not run first. Home Assistant only waits on an after-dependency that is scheduled to load, so this does nothing on versions without the Marketplace.
+
+What remains true: the updater is the authority for fleet installs, HACS or the Marketplace for individually-managed ones, and the reconciliation exists so that an install which started as the latter can safely become the former.
 
 ---
 
 ## 13. Open questions
 
 1. **Who holds the signing key?** GitHub Actions secret (convenient, key lives in CI) vs. offline signing on a workstation (safer, manual step per release). Recommendation: offline to start, given release frequency is low.
-2. **Does `cryptography` resolve cleanly on all target install types?** It is declared in `manifest.json` `requirements` and ships with Home Assistant core, so it should resolve as already-satisfied — but this has only been confirmed on a development machine, not on HA OS, Container, or Core. Verify on a canary before enabling updates. The updater imports it lazily, so a missing copy degrades to "updates do not work" rather than "the integration does not load".
+2. **Does `cryptography` resolve cleanly on all target install types?** It ships with Home Assistant core and is not declared in `manifest.json` (hassfest forbids that) — this has only been confirmed on a development machine, not on HA OS, Container, or Core. Verify on a canary before enabling updates. The updater imports it lazily, so a missing copy degrades to "updates do not work" rather than "the integration does not load".
 3. **Should `target_version` pinning survive a re-enrolment?** After `_async_reregister` the server issues a fresh installation record; the new record's `desired_state` defaults would silently unpin a deliberately-held-back instance. Probably needs pinning keyed on `client_id` rather than `installation_id`.
 4. **Beta channel opt-in** — per installation, or a separate enrolment flag?
 5. **Progress reporting granularity** — download percentage only, or phases? Depends on the HA version's `in_progress` contract ([§8.2](#82-the-update-entity)).

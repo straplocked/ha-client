@@ -1,0 +1,252 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to HA Dispatch",
+        "description": "How is this Home Assistant joining HA Dispatch?",
+        "menu_options": {
+          "pair": "With a pairing code from my installer",
+          "custom_server": "With a server of my own (advanced)"
+        }
+      },
+      "pair": {
+        "title": "Connect to HA Dispatch",
+        "description": "Enter the pairing code your installer gave you. It looks like ABCD-1234.",
+        "data": {
+          "pairing_code": "Pairing code"
+        },
+        "data_description": {
+          "pairing_code": "Upper or lower case, with or without the dash."
+        }
+      },
+      "custom_server": {
+        "title": "Connect to your own HA Dispatch server",
+        "description": "For a lab or self-hosted server. Give a pairing code from that server, or its registration secret.",
+        "data": {
+          "server_url": "Server URL",
+          "name": "Installation Name",
+          "pairing_code": "Pairing code",
+          "registration_secret": "Registration Secret"
+        },
+        "data_description": {
+          "server_url": "Base URL of the HA Dispatch server, for example {example_url}",
+          "pairing_code": "A pairing code made on that server. Leave blank to use the registration secret instead.",
+          "registration_secret": "Required by internet-facing servers when no pairing code is given. Leave blank if the server has no enrolment secret configured."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Couldn't reach HA Dispatch. Check this Home Assistant is online, then try again.",
+      "invalid_auth": "Invalid authentication",
+      "unknown": "Something went wrong. Try again, and if it keeps happening, tell your installer.",
+      "invalid_registration_secret": "The server rejected the registration secret. Check the value and try again.",
+      "invalid_pairing_code": "That code didn't work. It may have expired or already been used. Ask your installer for a new one.",
+      "too_many_attempts": "Too many tries in a row. Wait a minute, then try again."
+    },
+    "abort": {
+      "already_configured": "This integration is already configured"
+    }
+  },
+  "services": {
+    "send_test_metrics": {
+      "name": "Send test metrics",
+      "description": "Send test metrics to verify server connectivity and metric submission.",
+      "fields": {
+        "cpu_load": {
+          "name": "CPU Load %",
+          "description": "CPU load percentage (0-100)"
+        },
+        "memory_used": {
+          "name": "Memory Used %",
+          "description": "Memory usage percentage (0-100)"
+        },
+        "disk_free": {
+          "name": "Disk Free %",
+          "description": "Disk free percentage (0-100)"
+        }
+      }
+    },
+    "trigger_alert": {
+      "name": "Trigger alert",
+      "description": "Quick test to trigger predefined alerts on the server (disk_low, cpu_high, memory_high, or all).",
+      "fields": {
+        "alert_type": {
+          "name": "Alert Type",
+          "description": "Type of alert to trigger"
+        }
+      }
+    },
+    "force_update": {
+      "name": "Force update",
+      "description": "Force an immediate status update and metric submission instead of waiting for the next scheduled update."
+    },
+    "send_custom_metric": {
+      "name": "Send custom metric",
+      "description": "Send custom metric values for advanced testing.",
+      "fields": {
+        "cpu_load_1m": {
+          "name": "CPU Load 1m",
+          "description": "1-minute CPU load average"
+        },
+        "memory_used_percent": {
+          "name": "Memory Used %",
+          "description": "Memory usage percentage (0-100)"
+        },
+        "disk_free_percent": {
+          "name": "Disk Free %",
+          "description": "Disk free percentage (0-100)"
+        },
+        "warnings": {
+          "name": "Warnings",
+          "description": "Comma-separated warning tags (e.g., 'low_disk,high_memory')"
+        }
+      }
+    },
+    "submit_alert": {
+      "name": "Submit alert",
+      "description": "Submit a structured alert to the HA Dispatch server with full control over all fields.",
+      "fields": {
+        "severity": {
+          "name": "Severity",
+          "description": "Alert severity level (info, warning, critical)"
+        },
+        "type": {
+          "name": "Type",
+          "description": "Alert type identifier (e.g., low_disk_space, high_cpu_load)"
+        },
+        "title": {
+          "name": "Title",
+          "description": "Short alert title (max 255 characters)"
+        },
+        "message": {
+          "name": "Message",
+          "description": "Detailed alert message"
+        },
+        "context": {
+          "name": "Context",
+          "description": "Additional context data as JSON object (optional)"
+        },
+        "resolved": {
+          "name": "Resolved",
+          "description": "Mark alert as already resolved"
+        }
+      }
+    },
+    "resolve_alert": {
+      "name": "Resolve alert",
+      "description": "Resolve all unresolved alerts of a specific type for this installation.",
+      "fields": {
+        "type": {
+          "name": "Type",
+          "description": "Alert type to resolve (e.g., low_disk_space)"
+        }
+      }
+    },
+    "install_update": {
+      "name": "Install client update",
+      "description": "Install the client release the HA Dispatch server is currently offering. The archive is verified against a pinned signing key before anything is replaced, and Home Assistant restarts afterwards to load it.",
+      "fields": {
+        "force": {
+          "name": "Force",
+          "description": "Install even when the offered version is not newer than the installed one. Allows reinstalling or downgrading; leave off unless you mean it."
+        }
+      }
+    },
+    "respond_to_access_request": {
+      "name": "Answer remote access request",
+      "description": "Approve or decline a pending remote access request.",
+      "fields": {
+        "session_id": {
+          "name": "Session",
+          "description": "The session id from the pending request"
+        },
+        "decision": {
+          "name": "Decision",
+          "description": "Whether to allow the access or refuse it"
+        },
+        "note": {
+          "name": "Note",
+          "description": "Optional message recorded on the audit receipt"
+        }
+      }
+    },
+    "revoke_access": {
+      "name": "End remote access",
+      "description": "End a live remote access session immediately. Leave the session blank to end every live session.",
+      "fields": {
+        "session_id": {
+          "name": "Session",
+          "description": "The session to end. Leave blank to end all of them."
+        },
+        "note": {
+          "name": "Note",
+          "description": "Optional message recorded on the audit receipt"
+        }
+      }
+    },
+    "assign_floorplan_device": {
+      "name": "Correct a Home 3D device's room",
+      "description": "Tell the Home 3D plan where a device really is. The automatic placement is a best guess from the insurance estimate; this is the installer, standing in the house, correcting it. The correction is kept and re-applied every time the plan is deployed again.",
+      "fields": {
+        "device": {
+          "name": "Device",
+          "description": "The device's id from the plan (e.g. thermostat.great_room.01), not a Home Assistant entity id"
+        },
+        "room": {
+          "name": "Room",
+          "description": "The room the device is actually in, spelled as the plan spells it"
+        },
+        "floor_key": {
+          "name": "Floor",
+          "description": "The floor the room is on (e.g. Floor_1); only needed when two floors share a room name"
+        },
+        "entity_id": {
+          "name": "Entity",
+          "description": "The Home Assistant entity this device is, when the automatic match got it wrong"
+        },
+        "clear": {
+          "name": "Clear",
+          "description": "Forget the correction and put this device back under the automatic matcher"
+        }
+      }
+    },
+    "rebuild_floorplan": {
+      "name": "Rebuild the Home 3D Dashboard",
+      "description": "Redraw the Home 3D plan from the floor-plan files this installation has already downloaded, without asking HA Dispatch for anything. Use it after the client has been updated, so the dashboard is rebuilt by the new version.",
+      "fields": {}
+    },
+    "revoke_enhanced_permissions": {
+      "name": "Turn off hands-off configuration",
+      "description": "Turn off hands-off remote configuration. Your installer will have to ask you again before setting up or changing anything remotely.",
+      "fields": {}
+    }
+  },
+  "issues": {
+    "access_request": {
+      "title": "{requested_by} is asking to access your Home Assistant",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "{requested_by} is asking to access your Home Assistant",
+            "description": "**Reason:** {reason}\n\n**What they will be able to do:** {scope_description}\n\n**For how long:** {duration}\n\nNothing happens unless you approve. Your answer here takes effect straight away, and anything you approve you can turn off again at any time.",
+            "menu_options": {
+              "grant": "Approve",
+              "deny": "Decline"
+            }
+          }
+        }
+      }
+    },
+    "access_active": {
+      "title": "Remote access is active",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "End remote access",
+            "description": "{requested_by} can access your Home Assistant until {until} ({scope_label}).\n\nEnding this closes the session immediately."
+          }
+        }
+      }
+    }
+  }
+}

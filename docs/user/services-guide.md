@@ -1,6 +1,6 @@
 # Services Guide
 
-The HA Dispatch Client provides 10 services for testing connectivity, submitting metrics, managing alerts, forcing data refreshes, installing client updates, answering remote support requests, and correcting the Home 3D plan. This guide covers all of them with parameters, examples, and usage patterns.
+The HA Dispatch Client provides 12 services for testing connectivity, submitting metrics, managing alerts, forcing data refreshes, installing client updates, answering remote support requests, turning hands-off configuration off, and correcting and redrawing the Home 3D plan. This guide covers all of them with parameters, examples, and usage patterns.
 
 ## Service Summary
 
@@ -16,6 +16,8 @@ The HA Dispatch Client provides 10 services for testing connectivity, submitting
 | `ha_dispatch_client.respond_to_access_request` | Approve or decline a remote support request |
 | `ha_dispatch_client.revoke_access` | End a live remote support session |
 | `ha_dispatch_client.assign_floorplan_device` | Correct which room a Home 3D device is in, or which entity it is |
+| `ha_dispatch_client.rebuild_floorplan` | Redraw the Home 3D dashboard from the plan already on disk |
+| `ha_dispatch_client.revoke_enhanced_permissions` | Turn off hands-off remote configuration |
 
 > `force_update` and `install_update` sound similar and do very different
 > things. `force_update` refreshes data from the server. `install_update`
@@ -424,6 +426,34 @@ Corrections are kept and re-applied every time the plan is deployed again, so
 a later deploy never undoes this work. A correction whose device or room is no
 longer on the plan is dropped and reported with that deploy, so it does not
 sit there invisibly forever.
+
+---
+
+### 11. Rebuild the Home 3D Dashboard
+
+**Service**: `ha_dispatch_client.rebuild_floorplan`
+
+Redraw the Home 3D plan from the floor-plan files this installation already
+has, without asking HA Dispatch for anything. Use it after the client has been
+updated. No parameters.
+
+---
+
+### 12. Turn Off Hands-off Configuration
+
+**Service**: `ha_dispatch_client.revoke_enhanced_permissions`
+
+Hands-off configuration lets your installer set up and update your Home
+Assistant remotely without asking each time. If your installer turned it on
+for you, a notification ("Your installer turned on hands-off configuration")
+says who and when, and links to this. Running it turns it off; your installer
+will have to ask you again before changing anything remotely. No parameters.
+
+```yaml
+service: ha_dispatch_client.revoke_enhanced_permissions
+```
+
+The notification's own "Turn it off" link does the same thing.
 
 ---
 

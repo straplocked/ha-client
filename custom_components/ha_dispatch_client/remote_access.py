@@ -57,6 +57,7 @@ from .const import (
     ACCESS_REQUEST_ISSUE_PREFIX,
     ACCESS_SCOPE_DIAGNOSTIC,
     ACCESS_SCOPE_SCREEN,
+    ACCESS_STANDING_SCOPES,
     ACCESS_FAST_POLL_FLOOR_SECONDS,
     SCREEN_DEVICES_RESEND_SECONDS,
     ACCESS_STORAGE_KEY,
@@ -78,17 +79,40 @@ def requester_name(record: Dict[str, Any]) -> str:
     return str(record.get("requested_by") or ACCESS_UNKNOWN_REQUESTER)
 
 
+def is_standing_scope(record: Dict[str, Any]) -> bool:
+    """Whether a request is for a standing yes rather than a timed session."""
+    return record.get("scope") in ACCESS_STANDING_SCOPES
+
+
+def duration_text(record: Dict[str, Any]) -> str:
+    """How long the access lasts, in words the homeowner reads.
+
+    A standing scope -- hands-off configuration, remote access to the home --
+    stays on until they turn it off, whatever ``duration_minutes`` the server
+    put on the request (it sends one for every request, because the request
+    itself lapses). Quoting it would tell the homeowner something that is not
+    true about what they are agreeing to.
+    """
+    if is_standing_scope(record):
+        return "Until you turn it off."
+    return f"{record.get('duration_minutes')} minutes."
+
+
 def build_prompt(record: Dict[str, Any]) -> tuple[str, str]:
     """Render the persistent notification for a pending request.
 
     Everything the person needs in order to decide, and nothing they have to go
     and look up: who, why, what, how long. The scope description is the
     server's own homeowner-facing wording, used as-is.
+
+    Answering in Home Assistant is the primary way, and it is a real answer:
+    an approval in Repairs grants on the server exactly as the web consent
+    page would, for every scope. The consent link stays as the second way,
+    for the homeowner only -- it is shown here and nowhere an installer sees.
     """
     who = requester_name(record)
     reason = str(record.get("reason") or "Not given")
     what = str(record.get("scope_description") or "")
-    minutes = record.get("duration_minutes")
 
     title = f"{who} is asking to access your Home Assistant"
 
@@ -97,13 +121,14 @@ def build_prompt(record: Dict[str, Any]) -> tuple[str, str]:
         "",
         f"What they will be able to do: {what}",
         "",
-        f"For how long: {minutes} minutes.",
+        f"For how long: {duration_text(record)}",
     ]
 
     consent_url = record.get("consent_url")
     lines += [
         "",
-        "Approve or decline under Settings > System > Repairs.",
+        "Approve or decline under Settings > System > Repairs. "
+        "Your answer there takes effect straight away.",
     ]
     if consent_url:
         lines.append(f"You can also answer here: {consent_url}")
@@ -112,13 +137,14 @@ def build_prompt(record: Dict[str, Any]) -> tuple[str, str]:
 
 
 def issue_placeholders(record: Dict[str, Any]) -> Dict[str, str]:
-    """The same four facts, for the Repairs dialog's translated text."""
+    """The same facts, for the Repairs dialog's translated text."""
     return {
         "requested_by": requester_name(record),
         "reason": str(record.get("reason") or "Not given"),
         "scope_description": str(record.get("scope_description") or ""),
         "scope_label": str(record.get("scope_label") or ""),
         "duration_minutes": str(record.get("duration_minutes")),
+        "duration": duration_text(record),
     }
 
 
@@ -408,10 +434,10 @@ class HADispatchRemoteAccess:
         )
 
         _LOGGER.info(
-            "Remote access requested by %s (%s) for %s minutes",
+            "Remote access requested by %s (%s), for how long: %s",
             requester_name(record),
             record.get("scope"),
-            record.get("duration_minutes"),
+            duration_text(record),
         )
 
     def _clear_prompt(self, session_id: str) -> None:
@@ -537,7 +563,22 @@ class HADispatchRemoteAccess:
         left the pending list without being answered here. The tunnel runs
         either way; the on-screen "access is active" prompt and its one-tap
         off-switch are only raised when we know consent was actually given.
+
+        A standing scope is never recorded at all. Its grant lives on the
+        server, which has no relay rules for it, so there is nothing for the
+        tunnel to serve -- and a live entry would make the tunnel willing to
+        mint an admin credential for a session that should have none, and
+        raise an "access is active until ..." notice for something that has
+        no "until".
         """
+        if is_standing_scope(record):
+            _LOGGER.info(
+                "Standing consent %s (%s) is held by the server; no session to serve",
+                session_id,
+                record.get("scope"),
+            )
+            return
+
         until = dt_util.parse_datetime(expires_at) if expires_at else None
         if until is None:
             minutes = record.get("duration_minutes") or _FALLBACK_DURATION_MINUTES

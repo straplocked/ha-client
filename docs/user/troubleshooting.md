@@ -28,6 +28,19 @@ This guide consolidates all common issues and their solutions for the HA Dispatc
 
 5. **Try using an IP address** instead of a hostname if DNS resolution is unreliable.
 
+## Pairing Code Refused
+
+**Symptom:** "That code didn't work. It may have expired or already been used."
+
+A pairing code lasts 30 minutes and works exactly once. Ask your installer for
+a new one. Case, spaces and the dash do not matter, and `O`/`0`, `I`/`L`/`1`
+are read the same, so retyping the same code will not help. "Too many tries in
+a row" means the server is throttling guesses: wait a minute.
+
+An installation enrolled with a pairing code keeps no secret, so if the
+server ever forgets it (a rebuilt database), the log says re-enrolment was
+refused: remove the integration and add it again with a new code.
+
 ## Registration Failures
 
 **Symptom:** Config flow fails after entering the server URL. Logs show registration errors.

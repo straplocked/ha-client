@@ -2346,6 +2346,10 @@ class ServiceWiringTest(unittest.TestCase):
         self.assertEqual(sorted(registered), sorted(declared))
         self.assertEqual(sorted(documented), sorted(declared))
         self.assertEqual(sorted(described), sorted(declared))
+        # Twelve, hand-counted: CLAUDE.md's table says so, and a service that
+        # vanished from all four places at once would pass the checks above.
+        self.assertEqual(12, len(declared))
+        self.assertIn("revoke_enhanced_permissions", declared)
 
     def test_the_assignment_service_offers_the_fields_the_correction_needs(self):
         import yaml
