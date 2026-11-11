@@ -64,7 +64,8 @@ custom_components/ha_dispatch_client/
 ├── __init__.py       # Entry setup, service registration (singleton), platform forwarding
 ├── api_client.py     # HADispatchApiClient - async HTTP with Bearer auth
 ├── coordinator.py    # HADispatchCoordinator - DataUpdateCoordinator (60s interval)
-├── config_flow.py    # UI config flow - server URL input, auto-registration
+├── config_flow.py    # UI config flow - pairing code (advanced: own server URL), registration
+├── pairing.py        # Pairing-code normalisation and the form error a failed registration shows
 ├── sensor.py         # 3 CoordinatorEntity sensors (status, cpu_load, memory_used)
 ├── binary_sensor.py  # Pending remote access consent indicator
 ├── update.py         # HADispatchUpdateEntity - client version as an HA update entity
@@ -72,6 +73,7 @@ custom_components/ha_dispatch_client/
 ├── health.py         # Home Assistant health signal collection
 ├── components.py     # Component inventory - core, OS, Supervisor, add-ons, integrations, HACS
 ├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and session state
+├── enhanced_permissions.py # HADispatchEnhancedPermissions - tells the homeowner about an installer's grant
 ├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
 ├── repairs.py        # Approve / Deny and End-access repair flows
 ├── remote_ui.py      # HADispatchRemoteUI - the homeowner's own way in, through the Dispatch relay
@@ -144,7 +146,9 @@ Supervisor, no add-ons and no HACS. Every source degrades independently.
 
 UI-based setup flow (no YAML required):
 
-1. User enters server URL
+1. User enters the pairing code their installer made in Dispatch (the server
+   is `DEFAULT_SERVER_URL`); in Advanced Mode they may instead choose their own
+   server URL with a pairing code or the legacy registration secret
 2. Client generates a UUID `client_id`
 3. Client calls `POST /register` on the server
 4. Server returns `installation_id` and `access_token`
@@ -245,7 +249,7 @@ the tap targets and the label anchors as one CSS transform.
 Entry point that:
 - Creates the API client from stored config entry credentials
 - Initializes the coordinator and triggers first refresh
-- Registers 10 services using the singleton pattern
+- Registers 12 services using the singleton pattern
 - Wires the updater and the remote access manager before the first refresh
 - Forwards setup to the sensor, binary_sensor, and update platforms
 - Handles teardown on unload
@@ -328,7 +332,7 @@ The following values are stored in config entry data (encrypted at rest by HA):
 ### Registration Flow (one-time setup)
 
 ```
-User enters Server URL in UI
+User enters the installer's pairing code in UI
          |
          v
 Client generates UUID client_id
@@ -370,7 +374,7 @@ For full API documentation, see [Alert API](alert-api.md) and [API Reference](ap
 
 ## Services
 
-The integration exposes 10 services via `Developer Tools > Services`:
+The integration exposes 12 services via `Developer Tools > Services`:
 
 | Service | Purpose |
 |---------|---------|
@@ -384,6 +388,8 @@ The integration exposes 10 services via `Developer Tools > Services`:
 | `respond_to_access_request` | Approve or decline a remote access request |
 | `revoke_access` | End a live remote access session |
 | `assign_floorplan_device` | Correct a Home 3D device's room, pin its entity, or clear the correction |
+| `rebuild_floorplan` | Redraw the Home 3D dashboard from the plan files already on disk |
+| `revoke_enhanced_permissions` | Turn hands-off remote configuration off |
 
 For complete service documentation, see [Services](services.md).
 

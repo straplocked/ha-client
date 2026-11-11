@@ -42,9 +42,14 @@ Wait for the restart to complete.
 3. Click **+ Add Integration** (bottom right)
 4. Search for "**HA Dispatch**"
 5. Click "**HA Dispatch Client**"
-6. Enter your server URL: `http://your-server:8080`
-7. Enter installation name (optional): `My Home Assistant`
-8. Click **Submit**
+6. Enter the pairing code your installer made for you in HA Dispatch
+   (it looks like `ABCD-1234`)
+7. Click **Submit**
+
+Running your own HA Dispatch server? Switch on Advanced Mode in your user
+profile first; the dialog then offers "a server of my own", which takes the
+server URL and either a pairing code from that server or its registration
+secret.
 
 Done. The integration should configure successfully.
 
@@ -64,6 +69,9 @@ Search for:
 3. Find your installation -- Should show **Online** (green)
 
 ## Troubleshooting
+
+### "That code didn't work"
+- The code lasts 30 minutes and works once. Ask your installer for a new one.
 
 ### "Cannot connect" error
 - Check server URL is correct

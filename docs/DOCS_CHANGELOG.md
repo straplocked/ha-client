@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-11-11] — Pairing codes, standing-scope wording, enhanced-permissions notice
+
+### Added
+- `docs/technical/remote-access.md`: "Standing scopes are not sessions" and "Enhanced permissions (Hands-off remote configuration)" (the once-per-grant notification, persistence, dismissal, the off-switch, the 404 rule); "What the customer sees" covers "Until you turn it off." and the consent link being homeowner-only
+- `docs/technical/api-reference.md`: `pairing_code` on register with its 422/429, and Endpoints 18-19 (enhanced permissions)
+- `docs/technical/services.md`, `docs/user/services-guide.md`: `rebuild_floorplan` and `revoke_enhanced_permissions` (12 services)
+- `docs/user/troubleshooting.md`: "Pairing Code Refused"
+
+### Changed
+- `docs/user/configuration.md`, `quickstart.md`, `installation.md`: setup asks for a pairing code; own server via Advanced Mode; the new form errors
+- `docs/technical/architecture.md`: `pairing.py`, `enhanced_permissions.py`, the registration flow, 12 services
+- `docs/INDEX.md`, `docs/leadership/capabilities.md`: service count
+- `CHANGELOG.md`: Unreleased entries
+- `CLAUDE.md`: architecture tree, the two new key patterns, standing scopes, endpoints, services table (12), test count
+
 ## [2026-11-09] — The Marketplace replaces HACS (Home Assistant 2026.11)
 
 ### Changed

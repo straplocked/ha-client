@@ -4,6 +4,29 @@ All notable changes to HA Dispatch Client will be documented in this file.
 
 ## [Unreleased]
 
+### Added -- pair with a code
+- Setting up the integration now asks for one thing: the pairing code your
+  installer made for you in HA Dispatch (it looks like `ABCD-1234`). No server
+  address, no secret. Case, spaces and the dash do not matter, and an `O`,
+  `I` or `L` typed for a `0` or `1` is read the way it was meant. Once paired,
+  the house appears in the installer's fleet, assigned to them. A code that
+  has expired or been used says so in plain words: ask your installer for a
+  new one. Your own server is still an option in Advanced Mode, with a
+  pairing code or the registration secret.
+- When your installer turns on hands-off configuration for you, your Home
+  Assistant tells you: who turned it on, when, what it allows, and how to turn
+  it off -- a link, or the new `revoke_enhanced_permissions` action. Once per
+  grant, never repeated after a restart, and gone when it is turned off.
+
+### Changed
+- A request for hands-off configuration or remote access to your home no
+  longer says "For how long: 60 minutes". Both stay on until you turn them
+  off, and the request now says exactly that. Approving in Home Assistant is
+  presented as the way to answer, because it now really grants on the server.
+- Approving one of those standing requests no longer records a remote access
+  session in the house. There is nothing to relay under one, and the house no
+  longer holds a credential for it.
+
 ### Fixed
 - Home Assistant 2026.11 replaced HACS with the built-in Marketplace, and the
   client was still looking for HACS. The component inventory sent no `hacs`

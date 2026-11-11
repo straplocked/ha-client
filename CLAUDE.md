@@ -17,7 +17,8 @@ custom_components/ha_dispatch_client/
 ├── __init__.py       # Entry setup, service registration (singleton), platform forwarding
 ├── api_client.py     # HADispatchApiClient - async HTTP with Bearer auth
 ├── coordinator.py    # HADispatchCoordinator - DataUpdateCoordinator (60s interval)
-├── config_flow.py    # UI config flow - server URL input, auto-registration
+├── config_flow.py    # UI config flow - pairing code only (Advanced Mode: own server URL + secret)
+├── pairing.py        # Pairing-code normalisation + which form error a failed registration shows
 ├── sensor.py         # 3 CoordinatorEntity sensors (status, cpu_load, memory_used)
 ├── binary_sensor.py  # Pending remote access consent indicator
 ├── update.py         # HADispatchUpdateEntity - client version as an HA update entity
@@ -27,6 +28,7 @@ custom_components/ha_dispatch_client/
 ├── health.py         # Home Assistant health signal collection
 ├── components.py     # Component inventory - core, OS, Supervisor, add-ons, integrations, HACS
 ├── remote_access.py  # HADispatchRemoteAccess - consent surfaces and live session state
+├── enhanced_permissions.py # HADispatchEnhancedPermissions - tells the homeowner an installer turned hands-off config on
 ├── tunnel.py         # HADispatchTunnel - relays authorised requests to the local API
 ├── backups.py        # HADispatchBackups - reports the installation's own backups (+ sha256)
 ├── screen.py         # ScreenSockets - Remote Screen's loopback WebSocket, frames over the poll
@@ -38,7 +40,7 @@ custom_components/ha_dispatch_client/
 │   └── ayvra-room-plan.js  # <ayvra-room-plan> - the room-first custom Lovelace card
 ├── const.py          # DOMAIN, config keys, API endpoints, signing keys, entity/attribute keys
 ├── manifest.json     # Integration metadata
-├── services.yaml     # 11 service definitions with UI fields
+├── services.yaml     # 12 service definitions with UI fields
 └── strings.json      # UI text, translations, and repair flow copy
 ```
 
@@ -123,8 +125,24 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   sized to the inverted one, and each label is counter-rotated so text stays
   upright. `floorplan.py::rotate_percent_point` is the normative definition of
   a quarter turn in percent space, tested there and cited by the card.
-- **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. Full design: `docs/technical/remote-access.md`. A `screen` session (Remote Screen) carries the frontend itself to a headless browser on the Dispatch side: its own local policy (no `/auth`, no raw socket, writes only to `/api`), the admin user, and `screen.py` swapping our token into the browser's WebSocket `auth` frame so a real credential never leaves the house.
+- **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. **Standing scopes** (`enhanced_permissions`, `remote_ui` -- `ACCESS_STANDING_SCOPES`) are a yes that stays on until the homeowner turns it off: the prompt says "Until you turn it off.", never the request's `duration_minutes`, and a grant of one is **never recorded as a live session** (the server relays nothing under it, and a live entry would let the tunnel mint an admin credential for it). Approving in HA is the primary answer and grants on the server exactly as the consent page does; the consent link appears only in the homeowner's own notification. Full design: `docs/technical/remote-access.md`. A `screen` session (Remote Screen) carries the frontend itself to a headless browser on the Dispatch side: its own local policy (no `/auth`, no raw socket, writes only to `/api`), the admin user, and `screen.py` swapping our token into the browser's WebSocket `auth` frame so a real credential never leaves the house.
 
+- **Onboarding is a pairing code, and the code is never kept:** the config
+  flow's first step asks for the installer's one-time code and nothing else
+  (server = `DEFAULT_SERVER_URL`); a custom URL plus the legacy registration
+  secret is offered only in Advanced Mode (`show_advanced_options`). Anything
+  worth testing in that flow lives in `pairing.py` / `api_client.py`, because
+  `config_flow.py` imports voluptuous and cannot be loaded by the suite. A
+  paired house stores no secret, so a server that later forgets it refuses
+  re-enrolment and the remedy is a new code.
+- **An installer's grant is told to the homeowner, once:**
+  `enhanced_permissions.py` polls `GET .../enhanced-permissions` on the
+  coordinator cycle; a grant that is on with `method: admin_attested` raises
+  one notification (`enhanced_permissions_on`: who, when, how to turn it off)
+  per `grant_id`, persisted so a restart does not repeat it, dismissed once
+  when the grant goes. A grant the homeowner gave themselves says nothing.
+  `revoke_enhanced_permissions` is the off-switch from HA. 404 ->
+  `EnhancedPermissionsUnavailable`, asked once per run.
 - **Remote UI is the homeowner's path, and nothing of ours is in it:**
   `remote_ui.py` dials out to the Dispatch relay (snitun, the library Nabu
   Casa runs for HA Cloud, already installed by Core) and holds one
@@ -208,14 +226,22 @@ All under `/api/v1/installations/`:
 - `POST .../{id}/remote-ui/csr` - Have the house's CSR signed (the key stays home)
 - `POST .../{id}/remote-ui/token` - Mint the relay token for a keyset made here
 - `POST .../{id}/remote-ui/status` - The house reports (204)
+- `GET  .../{id}/enhanced-permissions` - Hands-off configuration on record (`granted`, `grant_id`, `method`, `granted_by`, `off_switch_url`)
+- `POST .../{id}/enhanced-permissions/revoke` - The homeowner turned it off from HA (204)
+
+`POST .../register` also takes an optional `pairing_code` (normalised: uppercase,
+no spaces/hyphens, O->0, I/L->1). A refused code is a 422
+`{"error": "invalid_pairing_code"}` (`PairingCodeError`), throttling a 429
+(`RegistrationThrottledError`). The code is single use and never stored.
 
 A **404 on any `/access/` path means the server has no remote access**, not
 that this installation has vanished. It maps to `RemoteAccessUnavailable`, and
 must never map to `InstallationGoneError` -- the re-enrolment handler would
 re-register a healthy installation once a minute, forever. The same holds for
-`/remote-ui` paths (`RemoteUiUnavailable`).
+`/remote-ui` paths (`RemoteUiUnavailable`) and `/enhanced-permissions` paths
+(`EnhancedPermissionsUnavailable`).
 
-### Services (11 total)
+### Services (12 total)
 
 | Service | Purpose |
 |---------|---------|
@@ -230,6 +256,7 @@ re-register a healthy installation once a minute, forever. The same holds for
 | `revoke_access` | End a live remote access session (omit the id to end all) |
 | `assign_floorplan_device` | Correct a Home 3D device's room, pin its entity, or clear the correction |
 | `rebuild_floorplan` | Redraw the Home 3D dashboard from the plan files already on disk -- no server round trip |
+| `revoke_enhanced_permissions` | Turn hands-off remote configuration off (POST `.../enhanced-permissions/revoke`) |
 
 ## Development Commands
 
@@ -279,7 +306,13 @@ temperature never binds to an outdoor sensor or to an entity of the wrong
 laid over the *new* manifests, that the dashboard is built from
 `<ayvra-room-plan>` and each device lands in its own room's controls, that a
 quarter turn means what `rotate_percent_point` says it means, and that the
-card's Lovelace resource is re-pointed rather than duplicated. Home Assistant
+card's Lovelace resource is re-pointed rather than duplicated. Onboarding and
+enhanced permissions likewise: pairing-code normalisation (hand-written
+cases), that a refused code is a `PairingCodeError` and never a client_id
+clash, that a standing-scope prompt never quotes minutes, and that an
+installer's grant is announced once per `grant_id` -- not again after a
+restart -- and that a 404 there never re-enrols. `config_flow.py` itself is
+verified by inspection only. Home Assistant
 is not installed in the dev environment; `tests/conftest.py` stubs the symbols
 the integration imports, including recording versions of
 `persistent_notification` and `issue_registry` so tests can assert on what was
@@ -290,7 +323,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `460 passed, 88 subtests passed`. Two standing limits on
+That currently prints `510 passed, 110 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not

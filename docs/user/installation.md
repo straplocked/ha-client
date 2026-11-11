@@ -51,9 +51,11 @@ After copying files, confirm the following files exist in `custom_components/ha_
 
 1. Go to **Settings** -> **Devices & Services** -> **Add Integration**.
 2. Search for "HA Dispatch Client".
-3. Enter your HA Dispatch server URL (e.g., `http://your-server:8080`).
-4. Optionally provide a friendly name for this installation.
-5. Click **Submit**.
+3. Enter the pairing code your installer made for you in HA Dispatch.
+4. Click **Submit**.
+
+(Own server: switch on Advanced Mode in your profile, then choose "a server of
+my own" and give its URL with a pairing code or the registration secret.)
 
 The integration will:
 - Generate a unique client ID (UUID).

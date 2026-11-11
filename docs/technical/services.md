@@ -1,6 +1,6 @@
 # Services Reference
 
-Complete reference for all 10 services exposed by the HA Dispatch Client integration. Services are accessible via **Developer Tools > Services** in the Home Assistant UI, and can be called from automations, scripts, and the REST API.
+Complete reference for all 12 services exposed by the HA Dispatch Client integration. Services are accessible via **Developer Tools > Services** in the Home Assistant UI, and can be called from automations, scripts, and the REST API.
 
 All services use the singleton registration pattern -- they are registered once for the domain and dynamically resolve the active coordinator at call time.
 
@@ -490,6 +490,56 @@ SERVICE_ASSIGN_FLOORPLAN_DEVICE_SCHEMA = vol.Schema({
 - A correction whose device is absent from the new manifest, or whose room is
   absent from the new plan, is dropped, pruned from the store and reported
   with the deploy as a device record with reason `override_dropped`.
+
+---
+
+## rebuild_floorplan
+
+**Full name:** `ha_dispatch_client.rebuild_floorplan`
+
+Redraw the Home 3D dashboard from the plan assets already in
+`/config/www/ha_dispatch/floorplan/`, with no round trip to Dispatch -- for
+after a client update, when the dashboard on disk is the one the old client
+drew. No parameters; calls `HADispatchFloorplan.async_reapply()` for every
+installation and logs a warning when there was nothing deployed to rebuild
+from.
+
+---
+
+## revoke_enhanced_permissions
+
+**Full name:** `ha_dispatch_client.revoke_enhanced_permissions`
+
+Turn off hands-off remote configuration (enhanced permissions) from inside
+Home Assistant. The homeowner's off-switch for a grant their installer turned
+on -- the notification that announces such a grant names this action.
+
+### Parameters
+
+None.
+
+### Schema
+
+None (no fields).
+
+### Handler behavior
+
+1. Finds every configured installation's `HADispatchEnhancedPermissions`
+   (`enhanced_permissions.py::async_all_managers`)
+2. Posts `.../enhanced-permissions/revoke` for each; the server answers 204
+   and records an in-app revoke
+3. Only once the server has said yes: takes the `enhanced_permissions_on`
+   notification down and forgets the announced grant. A failure leaves the
+   notification up, because it is still true
+
+### Notes
+
+- A server without the feature (404) is logged and leaves things as they are;
+  it is never treated as the installation having gone.
+- The handler is verified by inspection only (voluptuous is not installed in
+  the dev environment); the manager method it calls is tested directly in
+  `tests/test_enhanced_permissions.py`.
+- See [Remote Access](remote-access.md#enhanced-permissions-hands-off-remote-configuration).
 
 ---
 

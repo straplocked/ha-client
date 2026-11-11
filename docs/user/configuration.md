@@ -8,12 +8,28 @@ When you add the HA Dispatch Client integration via **Settings** -> **Devices & 
 
 ### Step 1: User Input
 
-The form prompts for two fields:
+Onboarding starts in HA Dispatch: your installer makes a one-time **pairing
+code** there (it looks like `ABCD-1234` and lasts 30 minutes). The dialog asks
+for that code and nothing else:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| Pairing code | Yes | The code your installer gave you. Upper or lower case, with or without the dash; an `O` is read as a zero and an `I` or `L` as a one |
+
+The server is `https://app.hadispatch.app`, and the installation is named
+after your Home Assistant's location name. Once paired it appears in your
+installer's fleet, assigned to them.
+
+**Your own server (Advanced Mode).** With Advanced Mode switched on in your
+user profile, the dialog first offers a choice: a pairing code, or **a server
+of my own**. The second asks for:
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| Server URL | Yes | `http://localhost:8080` | The base URL of your HA Dispatch server |
+| Server URL | Yes | `https://app.hadispatch.app` | The base URL of your HA Dispatch server |
 | Name | No | Your HA location name | A friendly name for this installation |
+| Pairing code | No | -- | A code made on that server |
+| Registration secret | No | -- | The server's enrolment secret, when no pairing code is given |
 
 ### Step 2: Client ID Generation
 
@@ -26,6 +42,9 @@ The integration calls `POST /api/v1/installations/register` with:
 - `client_id` -- The generated UUID
 - `hostname` -- Automatically detected as `<hostname>.local:<port>` (e.g., `homeassistant.local:8123`)
 - `name` -- The friendly name from user input, or the HA location name as a fallback
+- `pairing_code` -- The code, normalised (uppercase, no dash), when one was given
+
+The pairing code is never stored: it is single use and spent by this call.
 
 ### Step 4: Store Config Entry
 
@@ -35,6 +54,9 @@ On successful registration, the server returns an `installation_id` and `access_
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
+| `invalid_pairing_code` | The code is wrong, has expired (30 minutes) or was already used | Ask your installer for a new code |
+| `too_many_attempts` | Too many tries in a row; the server is throttling | Wait a minute, then try again |
+| `invalid_registration_secret` | (Own server) the secret is missing or wrong | Check the value with whoever runs the server |
 | `cannot_connect` | Server unreachable or returned a connection error | Verify the server URL and network connectivity |
 | `unknown` | Unexpected response from the server (missing fields, timeout, etc.) | Check Home Assistant logs and server logs for details |
 
