@@ -12,6 +12,9 @@
   "dependencies": [
     "repairs"
   ],
+  "after_dependencies": [
+    "marketplace"
+  ],
   "codeowners": [
     "@straplocked"
   ],

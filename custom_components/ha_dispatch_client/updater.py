@@ -31,11 +31,10 @@ from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.storage import Store
 from homeassistant.loader import async_get_integration
 
+from .community_store import community_store, installed_repositories
 from .const import (
     DOMAIN,
-    HACS_DOMAIN,
     HACS_REPOSITORY_FULL_NAME,
-    HACS_REPOSITORY_SIGNAL,
     RELEASE_ALLOWED_HOSTS,
     RELEASE_MAX_HEADER_BYTES,
     RELEASE_SIGNING_KEYS,
@@ -758,11 +757,16 @@ class ClientUpdater:
         save). No HACS, a HACS that does not manage this integration, or a
         HACS shaped differently from the one this was written against all
         mean "nothing to do", at DEBUG. Returns whether anything changed.
+
+        From Home Assistant 2026.11 the Marketplace holds this record instead
+        and has the same two-owner problem. Everything below applies to it
+        unchanged, so "HACS" here means whichever of the two is loaded.
         """
-        hacs = (getattr(self.hass, "data", None) or {}).get(HACS_DOMAIN)
-        if hacs is None:
-            _LOGGER.debug("HACS is not loaded; nothing to sync")
+        store = community_store(self.hass)
+        if store is None:
+            _LOGGER.debug("Neither the Marketplace nor HACS is loaded; nothing to sync")
             return False
+        hacs = store.manager
 
         if version is None:
             version = await self.async_installed_version()
@@ -812,8 +816,13 @@ class ClientUpdater:
 
         try:
             hacs.async_dispatch(
-                HACS_REPOSITORY_SIGNAL,
-                {"id": str(getattr(data, "id", "")), "repository": getattr(data, "full_name", None)},
+                store.repository_signal,
+                {
+                    "id": str(getattr(data, "id", "")),
+                    "action": "update",
+                    "repository": getattr(data, "full_name", None),
+                    "repository_id": str(getattr(data, "id", "")),
+                },
             )
         except Exception as err:  # noqa: BLE001 - best-effort
             _LOGGER.debug("Could not nudge HACS's entities: %s", err)
@@ -838,7 +847,7 @@ class ClientUpdater:
         if repository is not None and getattr(repository.data, "installed", False):
             return repository
 
-        for candidate in getattr(repositories, "list_downloaded", None) or []:
+        for candidate in installed_repositories(hacs):
             data = getattr(candidate, "data", None)
             if getattr(data, "domain", None) == DOMAIN and getattr(data, "installed", False):
                 return candidate

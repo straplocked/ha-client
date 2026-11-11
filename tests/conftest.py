@@ -394,6 +394,10 @@ def install_stubs() -> None:
         # The coordinator checks update windows against local wall-clock time.
         now=lambda: datetime.now(),
         parse_datetime=_parse_datetime,
+        # Home Assistant converts to the configured zone; the stub leaves the
+        # offset as given, so a test's expected wall-clock time is the one in
+        # its own ISO string.
+        as_local=lambda value: value,
     )
     util.dt = dt_module
 

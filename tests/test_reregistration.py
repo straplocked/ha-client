@@ -318,5 +318,41 @@ class ReregistrationTest(unittest.TestCase):
         self.assertEqual([], api.register_calls)
 
 
+class EnhancedPermissionsNotFoundTest(unittest.TestCase):
+    """A server without enhanced permissions must not look like a lost installation.
+
+    The trap every *Unavailable error exists for: a 404 on a feature path,
+    mapped onto InstallationGoneError, re-enrols a healthy installation once a
+    minute, forever.
+    """
+
+    def test_a_404_from_enhanced_permissions_does_not_reenrol(self):
+        enhanced_mod = _load("enhanced_permissions")
+
+        class NoFeatureApi(FakeApiClient):
+            def __init__(self):
+                super().__init__()
+                self.enhanced_fetches = 0
+
+            async def fetch_enhanced_permissions(self, installation_id):
+                self.enhanced_fetches += 1
+                raise api_client.EnhancedPermissionsUnavailable("HTTP 404")
+
+        api = NoFeatureApi()
+        coord, hass, _ = make_coordinator(api)
+        hass.data = {}
+        coord.enhanced_permissions = enhanced_mod.HADispatchEnhancedPermissions(hass, coord)
+
+        first = asyncio.run(coord._async_update_data())
+        second = asyncio.run(coord._async_update_data())
+
+        self.assertEqual("online", first["status"])
+        self.assertEqual("online", second["status"])
+        self.assertEqual([], api.register_calls)
+        self.assertEqual([], hass.config_entries.updates)
+        # Asked once per run, not once a minute.
+        self.assertEqual(1, api.enhanced_fetches)
+
+
 if __name__ == "__main__":
     unittest.main()

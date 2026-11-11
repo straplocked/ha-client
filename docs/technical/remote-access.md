@@ -44,10 +44,24 @@ Two surfaces, both raised the moment a request appears:
 
 1. **A persistent notification** carrying who is asking (`requested_by`), why
    (`reason`), what they will be able to do (`scope_description`) and for how
-   long (`duration_minutes`), plus the web consent link as a fallback.
+   long, plus the web consent link as a fallback. Answering here is the
+   primary way, and the copy says so: an approval in Home Assistant grants
+   on the server exactly as the consent page does, for every scope. The
+   consent link appears **only** in this notification, the homeowner's own --
+   never anywhere an installer sees.
 2. **A fixable Repairs issue** (`is_fixable=True`, translation key
    `access_request`) whose repair flow is a native **Approve / Deny** menu.
    `repairs.py` maps those two buttons onto the two decisions and nothing else.
+
+"For how long" depends on the scope. A timed scope (`diagnostic`,
+`maintenance`, `full`, `screen`, `update`) quotes `duration_minutes`. A
+**standing scope** -- `enhanced_permissions` and `remote_ui`
+(`const.py::ACCESS_STANDING_SCOPES`) -- says **"Until you turn it off."**,
+whatever `duration_minutes` the server put on the request: that number is how
+long the *request* lives, not the grant, and quoting it told the homeowner
+something untrue about what they were agreeing to. The Repairs dialog reads
+the same words through the `{duration}` placeholder
+(`remote_access.py::duration_text`).
 
 `scope_description` is passed through **verbatim**. The server writes it for a
 homeowner on purpose; replacing it with technical wording defeats the point of
@@ -88,6 +102,17 @@ Three ways, because a consent model without a working off-switch is theatre:
 - the web consent page, which is the server's own.
 
 All of them end in `POST .../access/{session}/revoke`.
+
+### Standing scopes are not sessions
+
+Approving a standing scope reports the grant exactly as any other answer, and
+then records **nothing** as live. The grant lives on the server, which has no
+relay rules for these scopes, so there is nothing for the tunnel to serve.
+Recording one would have made the tunnel willing to mint an **admin**
+credential for that session id (every scope but `diagnostic` maps to the
+admin group) and raised "access is active until ..." for something with no
+until. `scope_for()` therefore answers `None` for a standing-scope session,
+and the tunnel refuses anything queued under it.
 
 ### Which sessions are live
 
@@ -239,8 +264,47 @@ base64 encoded, keeps its original `Content-Type`, and is labelled
 | Binary sensor | `HA Dispatch Remote Access Requested` | On while a request is waiting. Carries the pending requests and live sessions as attributes, so automations and dashboard buttons have something to act on |
 | Service | `ha_dispatch_client.respond_to_access_request` | Approve or decline from an automation |
 | Service | `ha_dispatch_client.revoke_access` | End one live session, or all of them |
+| Service | `ha_dispatch_client.revoke_enhanced_permissions` | Turn hands-off configuration off |
+| Notification | `enhanced_permissions_on` | An installer turned hands-off configuration on |
 | Repairs issue | `access_request_<session>` | The Approve / Deny dialog |
 | Repairs issue | `access_active_<session>` | The one-tap off-switch |
+
+---
+
+## Enhanced permissions ("Hands-off remote configuration")
+
+The homeowner's standing yes to their installer setting up and changing their
+Home Assistant remotely. Three ways it comes about: the homeowner approves an
+`enhanced_permissions` request here (a standing scope, above); they approve it
+on the web consent page; or an admin at the installer ticks the box in
+Dispatch, attesting that the homeowner agreed (`method: admin_attested`).
+
+The first two the homeowner did. The third they did not do *here*, so
+`enhanced_permissions.py` (`HADispatchEnhancedPermissions`) tells them:
+
+- **Polled** on the coordinator cycle: `GET .../enhanced-permissions`.
+- **One notification**, id `enhanced_permissions_on`, titled "Your installer
+  turned on hands-off configuration", when the grant is on **and** its method
+  is `admin_attested`. It says who (`granted_by`, else "Your installer") and
+  when (`granted_at`, local time), what it allows, that it stays on until they
+  turn it off, and how: a "Turn it off" link to `off_switch_url` when the
+  server sent one (revoke-only, so harmless as a bearer link), and the
+  `ha_dispatch_client.revoke_enhanced_permissions` action either way.
+- **Once per `grant_id`.** The last announced id is persisted
+  (`.storage/ha_dispatch_client.enhanced_permissions`), so neither the next
+  poll nor a restart says it again; a new grant (a new id) is announced
+  afresh. Ids are compared as text, so an int on the wire and a string from
+  storage are the same grant.
+- **Dismissed** once when the grant goes (`granted: false`), or when the grant
+  on record is no longer an admin's -- the homeowner granted it themselves.
+- **Off-switch:** the `revoke_enhanced_permissions` service posts
+  `.../enhanced-permissions/revoke` (204, recorded as an in-app revoke). The
+  notification comes down only after the server has said yes.
+- **404** on either path is `EnhancedPermissionsUnavailable`: asked once per
+  run, logged, and **never** `InstallationGoneError` -- same trap as `/access/`.
+  A transient failure leaves the notification exactly as it is.
+
+A grant the homeowner gave themselves raises nothing: they know.
 
 ---
 
