@@ -55,6 +55,7 @@ For developers working on or extending the integration.
 | [Service Registration](technical/service-registration.md) | Singleton registration pattern analysis |
 | [Alert API](technical/alert-api.md) | Alert API endpoint reference |
 | [Self-Update](technical/self-update.md) | Remote client update design, signing, and rollout (client built in 1.5.0) |
+| [Marketplace Submission](technical/marketplace-submission.md) | Catalog checks, what the repo ships for them, the owner's by-hand checklist |
 | [Remote Access](technical/remote-access.md) | Consent-gated remote access: consent surfaces, the tunnel, and the local credential model (built in 1.6.0) |
 | [Remote Updates](technical/remote-updates.md) | Consent-gated HA Core/OS/add-on updates: backup, apply, and confirm on boot (built in 1.7.0) |
 | [Component Inventory](technical/component-inventory.md) | What the installation is running: where each kind comes from, why slugs must be stable, cadence and truncation (built in 1.6.0) |

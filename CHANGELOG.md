@@ -2,7 +2,24 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
-## [Unreleased]
+## [1.10.0] - 2026-11-11
+
+### Added -- ready for the Home Assistant Marketplace
+- The integration now carries what the Marketplace catalog checks for: its own
+  icon (`brand/icon.png`, `brand/icon@2x.png` -- Home Assistant 2026.3 and
+  later serves it from there, so no separate brands submission is needed),
+  runtime translations in `translations/en.json` (kept equal to
+  `strings.json` by a test), a manifest in the order hassfest requires with an
+  `integration_type`, and `hacs.json` now states the Home Assistant version it
+  needs (2025.1). A GitHub workflow (`.github/workflows/validate.yml`) runs the
+  catalog's two checks, HACS validation and hassfest, on pull requests to
+  `main`, on pushes to `main` and on demand; it never runs on other branches.
+- The README is rewritten for this version: what the integration does, how to
+  install it from the Marketplace (or as a custom repository until it is
+  listed), exactly what it sends, how consent works in plain words, and why
+  signed self-update sits comfortably beside the Marketplace.
+- `docs/technical/marketplace-submission.md`: what is left for the owner to do
+  by hand to get listed.
 
 ### Added -- pair with a code
 - Setting up the integration now asks for one thing: the pairing code your

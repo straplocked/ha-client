@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-11-11] — Marketplace catalog preparation
+
+### Added
+- `docs/technical/marketplace-submission.md`: the catalog's checks with sources, what the repository already does, and the owner's by-hand checklist (topics, validation run, release, the `hacs/default` pull request text)
+
+### Changed
+- `README.md`: rewritten for 1.10.0 (install from the Marketplace or as a custom repository, what is sent, the consent model, self-update beside the Marketplace)
+- `docs/user/installation.md`: the Marketplace route, and the two new shipped files
+- `docs/user/updating.md`: 1.10.0 release notes
+- `CHANGELOG.md`: 1.10.0 entry
+- `CLAUDE.md`: version, architecture tree (`brand/`, `translations/`, `.github/`), the translations-parity rule, test count
+
 ## [2026-11-11] — Pairing codes, standing-scope wording, enhanced-permissions notice
 
 ### Added
