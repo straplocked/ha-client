@@ -169,6 +169,18 @@ See [Recovering by hand](#recovering-by-hand) above.
 
 ## Release notes
 
+### 1.11.1 — Home Assistant OS updates finish
+
+**For homeowners.** When you approve a Home Assistant OS update, your Home
+Assistant now restarts the whole system to finish it, then reports the update
+as done. Expect it to be unreachable for a few minutes while it does.
+
+**For installers.** OS update runs no longer fail right after they install.
+The run shows "Rebooting" while the host restarts and is confirmed when it
+comes back. A host is rebooted at most once per run; one that comes back on
+the old version is reported as failed. An OS already staged and waiting for a
+reboot is rebooted into if it is the version the run asked for.
+
 ### 1.11.0 — Pushed updates install, newer versions reported, plan corrections from Dispatch
 
 **For homeowners.** Nothing to do. Your installer's corrections to where a

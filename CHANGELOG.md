@@ -2,6 +2,24 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.11.1] - 2026-11-12
+
+### Fixed -- Home Assistant OS updates finish
+- An OS update no longer fails at confirm. `update.install` only writes the new
+  OS to the spare slot; it takes effect on a host reboot. The run now reports
+  the `restart` phase ("Rebooting"), asks the Supervisor to reboot the host,
+  keeps its record, and reports `success` or `failed` on the boot that
+  follows. The Supervisor's "already installed, reboot the system to activate
+  it" is the same staged update and takes the same path when it names the
+  run's target; another version fails without a reboot.
+- At most one reboot per run: a host that comes back on the old version is a
+  failed run, never a second reboot. A refused reboot request is reported
+  failed, and a later reboot by hand still reports the run as installed.
+- Confirmation reads the update entity's `installed_version` before the
+  component inventory, which can lag it, and at boot waits up to five minutes
+  for Home Assistant to load what is installed instead of failing off a
+  source that has not loaded. It runs in the background, so setup is not held.
+
 ## [1.11.0] - 2026-11-11
 
 ### Added -- install when Dispatch says so

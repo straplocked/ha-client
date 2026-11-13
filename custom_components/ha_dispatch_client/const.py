@@ -405,6 +405,14 @@ UPDATE_RUN_STORAGE_VERSION = 1
 # backup of a large system is slow, so this is generous.
 UPDATE_RUN_OPERATION_TIMEOUT = 1800
 
+# How long the boot-time confirmation waits for Home Assistant to know what is
+# installed. Right after a reboot the Supervisor integration and its update
+# entities load at their own pace; a version read before then is no answer, so
+# the confirmation retries rather than declaring failure off a source that has
+# not loaded yet. 20 x 15 s: five minutes.
+UPDATE_RUN_CONFIRM_ATTEMPTS = 20
+UPDATE_RUN_CONFIRM_INTERVAL = 15
+
 # --- Backup reporting -------------------------------------------------------
 # Full design: docs/technical/backup-reporting.md
 

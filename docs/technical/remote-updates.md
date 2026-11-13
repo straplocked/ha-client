@@ -1,6 +1,6 @@
 # Remote Updates — Design Specification
 
-**Status:** Implemented. Client in 1.7.0; server side built in the HA Dispatch repository.
+**Status:** Implemented. Client in 1.7.0 (OS reboot-to-activate in 1.11.1); server side built in the HA Dispatch repository.
 **Author:** Design spec, 2026-09-21
 **Related:** [Architecture](architecture.md) · [Remote Access](remote-access.md) · [Self-Update](self-update.md)
 
@@ -34,6 +34,7 @@ server: plan ──▶ homeowner consents ──▶ run becomes "queued"
                                               │
 agent:  poll updates/pending ◀────────────────┘
         report started  →  backup  →  apply  →  confirm
+                                             ╰─ OS: restart (host reboot) → confirm on boot
 ```
 
 Consent is **not** re-checked here. A run only appears on `updates/pending` once
@@ -74,10 +75,11 @@ one open run per installation; the guard is insurance). Each run, in
    updating one, a full backup otherwise. The backup's name is reported as the
    `backup_reference` the receipt records.
 3. **Persist the run's target**, then **apply**. The persist happens *before*
-   the apply because a Core or OS update restarts Home Assistant and kills this
+   the apply because a Core update restarts Home Assistant and kills this
    process mid-call — the persisted record is the only way the run gets
    confirmed afterwards.
-4. **Confirm.** If the process is still alive after the apply — an add-on, or a
+4. **OS only: reboot the host** (client 1.11.1). See below.
+5. **Confirm.** If the process is still alive after the apply — an add-on, or a
    platform update that deferred its restart — the run confirms inline by
    comparing the now-installed version to the target. If the process was
    restarted, `async_load()` on the next boot reads the persisted record and
@@ -87,6 +89,66 @@ one open run per installation; the guard is insurance). Each run, in
 A failed backup or apply reports `failed` with the phase it happened in and
 stops. The inventory is left to reconcile through the normal component report
 rather than being patched by the run.
+
+### 4.1 Home Assistant OS: staged, then a host reboot
+
+Every OS run before 1.11.1 failed. `update.install` for the OS **returns
+normally** having only written the new OS to the spare boot slot; it runs after
+the next *host* reboot. The agent confirmed inline, read the old version and
+reported "After the update, os reports 18.0, not 18.4." — and cleared the
+record, so nothing re-checked. Asked again, the Supervisor refused with
+"Version 18.5 is already installed, reboot the system to activate it", which
+was reported as a second failure.
+
+Since 1.11.1 an OS run, once the apply returns:
+
+- **marks the record `reboot_requested`** and writes it *before* anything
+  else, so the boot that follows confirms from it;
+- **reports `progress` at phase `restart`** with
+  `detail: {"action": "reboot", "reason": "os_staged", "target_version": …}`
+  — what Dispatch shows as "Rebooting";
+- **asks the Supervisor to reboot the host** (`hassio.host_reboot`). Never a
+  Core restart: that leaves the old OS running. The homeowner consented to the
+  update, and the reboot is how it lands.
+
+It is **never confirmed inline**: before that reboot nothing can tell a staged
+OS from an active one — the OS update entity already names the staged version
+as installed.
+
+The Supervisor's "already installed … reboot … to activate" refusal takes the
+same path, **if the staged version is the run's target**. If it names another
+version, the run fails with that version in the message and no reboot: the
+homeowner consented to a version, not to whatever happens to be staged.
+
+**One reboot per run.** The `reboot_requested` mark is carried over if the
+same run is handed out again, and a run that has it is failed, not rebooted.
+On boot, a host that came back on the old version is reported `failed` at
+`confirm` — "Rebooted to activate Home Assistant OS 18.5, but the host came
+back on 18.0." — and the record is cleared. The boot-time confirmation itself
+never reboots.
+
+If the reboot request is refused, the run is reported `failed` at `restart`
+("… is installed and waiting for a reboot … Reboot the host to finish the
+update.") and the record is kept marked `reboot_failed`: a host rebooted by
+hand later still reports `success` on that boot, and anything else is not
+said twice.
+
+### 4.2 What "installed" means at confirm time
+
+The confirmation reads the component's **update entity's `installed_version`
+first**, then the component inventory. The inventory reads the Supervisor's
+cached info, which can lag — it said 18.0 while the entity already said 18.5 —
+so either source naming the target settles it, and a loaded entity naming
+another version is a definite "no".
+
+At boot (`async_load`) the confirmation runs **in the background** and waits
+for Home Assistant to know: an entity that is missing, `unavailable` or
+`unknown` is "no answer yet", not a version. It looks up to 20 times, 15 s
+apart (`UPDATE_RUN_CONFIRM_ATTEMPTS`, `UPDATE_RUN_CONFIRM_INTERVAL`: five
+minutes), then decides from the inventory, or reports that no version could be
+read. The record is cleared once the outcome is decided, so a restart during
+the wait confirms on the next boot instead of being lost. The inline
+confirmation (add-ons) looks once.
 
 ## 5. The Supervisor seam
 
@@ -100,6 +162,7 @@ place:
 | Backup (add-on) | `hassio.backup_partial` `{name, addons: [slug]}` |
 | Backup (platform) | `hassio.backup_full` `{name}` |
 | Update (everything) | `update.install` on the component's update entity, `backup: false` |
+| Activate a staged OS | `hassio.host_reboot` |
 
 **Everything installs through `update.install`, including add-ons.** The
 Supervisor's own `hassio.addon_update` was deprecated in Home Assistant 2024.11

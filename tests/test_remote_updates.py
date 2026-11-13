@@ -82,12 +82,16 @@ class FakeApi:
 class FakeExecutor:
     """Stands in for SupervisorUpdater, recording calls in execution order."""
 
-    def __init__(self, events, backup_ref="pre-update-backup", apply_error=None):
+    def __init__(
+        self, events, backup_ref="pre-update-backup", apply_error=None, reboot_error=None
+    ):
         self.events = events
         self.backup_ref = backup_ref
         self.apply_error = apply_error
+        self.reboot_error = reboot_error
         self.backups = []
         self.applies = []
+        self.reboots = 0
 
     async def async_backup(self, kind, slug, name):
         self.events.append(("backup", kind, slug))
@@ -99,6 +103,12 @@ class FakeExecutor:
         self.applies.append((kind, slug, target))
         if self.apply_error is not None:
             raise self.apply_error
+
+    async def async_reboot(self):
+        self.events.append(("reboot",))
+        self.reboots += 1
+        if self.reboot_error is not None:
+            raise self.reboot_error
 
 
 class FakeCoordinator:
@@ -126,6 +136,9 @@ def _manager(events, api, executor=None, hass=None):
     hass = hass or FakeHass()
     coordinator = FakeCoordinator(api)
     manager = HADispatchUpdates(hass, coordinator, executor=executor)
+    # The boot-time wait for Home Assistant to load is real time in
+    # production; here it is the same number of attempts with no sleep.
+    manager._confirm_interval = 0
     return manager
 
 
@@ -367,8 +380,9 @@ class PollLoopTest(unittest.TestCase):
 
 
 class FakeState:
-    def __init__(self, entity_id, **attributes):
+    def __init__(self, entity_id, state="off", **attributes):
         self.entity_id = entity_id
+        self.state = state
         self.attributes = attributes
 
 
@@ -378,6 +392,12 @@ class FakeStates:
 
     def async_all(self, domain=None):
         return list(self._states)
+
+    def get(self, entity_id):
+        for state in self._states:
+            if state.entity_id == entity_id:
+                return state
+        return None
 
 
 class RecordingServices:
@@ -495,6 +515,291 @@ class SupervisorCallTest(unittest.TestCase):
 
         self.assertEqual(reference, "pre-update")
         self.assertEqual(services.calls[-1]["service"], "backup_full")
+
+
+# --- Home Assistant OS: staged, then a host reboot ----------------------------
+#
+# Every OS run in the field (2026-11-11..13) failed the same way: update.install
+# returned normally having only written the new OS to the spare slot, the agent
+# confirmed inline, read the old version and reported failed. The fixtures below
+# are that house: running 18.0, consented to 18.5.
+
+OS_ENTITY = "update.home_assistant_operating_system_update"
+
+
+def _os_run(target="18.5", run_id=31):
+    return {
+        "run_id": run_id,
+        "kind": "os",
+        "slug": "os",
+        "target_version": target,
+        "backup": False,
+    }
+
+
+def _os_hass(installed=None, entity_state="off", inventory=None):
+    """A supervised house whose OS update entity and inventory say what they say.
+
+    `installed` is the entity's installed_version (None: no entity loaded yet);
+    `inventory` is what the component inventory reports for the OS (None: no
+    OS row at all).
+    """
+    hass = FakeHass()
+    states = []
+    if installed is not None:
+        states.append(
+            FakeState(OS_ENTITY, state=entity_state, installed_version=installed,
+                      supported_features=11)
+        )
+    hass.states = FakeStates(states)
+    hass._inventory_os = inventory
+    return hass
+
+
+def _os_manager(events, api, executor, hass):
+    manager = _manager(events, api, executor, hass=hass)
+
+    async def inventory(kind, slug):
+        return hass._inventory_os if kind == "os" else None
+
+    manager._installed_version = inventory
+    return manager
+
+
+class OsRebootTest(unittest.TestCase):
+    def test_a_normal_return_reboots_once_and_keeps_the_run_open(self):
+        events = []
+        api = FakeApi(events)
+        executor = FakeExecutor(events)
+        # The entity already names the staged version as installed -- exactly
+        # what fooled nobody but would fool an inline confirm. Inventory is 18.0.
+        hass = _os_hass(installed="18.5", inventory="18.0")
+        manager = _os_manager(events, api, executor, hass)
+
+        _run(manager._async_run(_os_run()))
+
+        self.assertEqual(executor.reboots, 1)
+        self.assertNotIn("failed", [r["status"] for r in api.reports])
+        self.assertNotIn("success", [r["status"] for r in api.reports])
+        self.assertEqual(
+            events,
+            [
+                ("report", "started", "apply"),
+                ("report", "progress", "apply"),
+                ("apply", "os", "os"),
+                ("report", "progress", "restart"),
+                ("reboot",),
+            ],
+        )
+        self.assertEqual(
+            manager._store.data,
+            {"run": {"run_id": "31", "kind": "os", "slug": "os",
+                     "target_version": "18.5", "reboot_requested": True}},
+        )
+
+    def test_the_rebooting_report_says_why(self):
+        events = []
+        api = FakeApi(events)
+        manager = _os_manager(events, api, FakeExecutor(events), _os_hass(inventory="18.0"))
+
+        _run(manager._async_run(_os_run()))
+
+        restart = [r for r in api.reports if r["phase"] == "restart"]
+        self.assertEqual(len(restart), 1)
+        self.assertEqual(restart[0]["status"], "progress")
+
+    def test_already_installed_reboot_to_activate_takes_the_reboot_path(self):
+        events = []
+        api = FakeApi(events)
+        executor = FakeExecutor(
+            events,
+            apply_error=UpdateExecutionError(
+                "update.install failed: Version 18.5 is already installed, "
+                "reboot the system to activate it"
+            ),
+        )
+        manager = _os_manager(events, api, executor, _os_hass(inventory="18.0"))
+
+        _run(manager._async_run(_os_run()))
+
+        self.assertEqual(executor.reboots, 1)
+        self.assertNotIn("failed", [r["status"] for r in api.reports])
+        self.assertTrue(manager._store.data["run"]["reboot_requested"])
+
+    def test_a_different_staged_version_is_not_rebooted_into(self):
+        # 18.5 is staged, the homeowner consented to 18.4: not what they agreed.
+        events = []
+        api = FakeApi(events)
+        executor = FakeExecutor(
+            events,
+            apply_error=UpdateExecutionError(
+                "Version 18.5 is already installed, reboot the system to activate it"
+            ),
+        )
+        manager = _os_manager(events, api, executor, _os_hass(inventory="18.0"))
+
+        _run(manager._async_run(_os_run(target="18.4")))
+
+        self.assertEqual(executor.reboots, 0)
+        self.assertEqual(api.reports[-1]["status"], "failed")
+        self.assertIn("18.5", api.reports[-1]["error"])
+        self.assertEqual(manager._store.data, {})
+
+    def test_another_apply_error_still_fails_without_a_reboot(self):
+        events = []
+        api = FakeApi(events)
+        executor = FakeExecutor(events, apply_error=UpdateExecutionError("no space left"))
+        manager = _os_manager(events, api, executor, _os_hass(inventory="18.0"))
+
+        _run(manager._async_run(_os_run()))
+
+        self.assertEqual(executor.reboots, 0)
+        self.assertEqual(api.reports[-1]["status"], "failed")
+        self.assertEqual(api.reports[-1]["phase"], "apply")
+
+    def test_a_run_that_already_rebooted_never_reboots_again(self):
+        events = []
+        api = FakeApi(events)
+        executor = FakeExecutor(events)
+        manager = _os_manager(events, api, executor, _os_hass(inventory="18.0"))
+        manager._store.data = {
+            "run": {"run_id": "31", "kind": "os", "slug": "os",
+                    "target_version": "18.5", "reboot_requested": True}
+        }
+
+        _run(manager._async_run(_os_run()))
+
+        self.assertEqual(executor.reboots, 0)
+        self.assertEqual(api.reports[-1]["status"], "failed")
+        self.assertEqual(api.reports[-1]["phase"], "restart")
+
+    def test_a_refused_reboot_is_failed_but_a_later_reboot_still_confirms(self):
+        events = []
+        api = FakeApi(events)
+        executor = FakeExecutor(events, reboot_error=UpdateExecutionError("supervisor busy"))
+        hass = _os_hass(inventory="18.0")
+        manager = _os_manager(events, api, executor, hass)
+
+        _run(manager._async_run(_os_run()))
+
+        self.assertEqual(api.reports[-1]["status"], "failed")
+        self.assertEqual(api.reports[-1]["phase"], "restart")
+        self.assertIn("Reboot the host", api.reports[-1]["error"])
+        self.assertTrue(manager._store.data["run"]["reboot_failed"])
+
+        # Rebooted by hand; the boot that follows turns it into a success.
+        hass.states = FakeStates([FakeState(OS_ENTITY, installed_version="18.5")])
+        _run(manager.async_confirm_pending())
+
+        self.assertEqual(api.reports[-1]["status"], "success")
+        self.assertEqual(manager._store.data, {})
+
+
+class OsBootConfirmTest(unittest.TestCase):
+    def _rebooted(self, manager, target="18.5"):
+        manager._store.data = {
+            "run": {"run_id": "31", "kind": "os", "slug": "os",
+                    "target_version": target, "reboot_requested": True}
+        }
+
+    def test_the_entity_names_the_target_while_the_inventory_is_stale(self):
+        events = []
+        api = FakeApi(events)
+        executor = FakeExecutor(events)
+        manager = _os_manager(events, api, executor, _os_hass(installed="18.5", inventory="18.0"))
+        self._rebooted(manager)
+
+        _run(manager.async_confirm_pending())
+
+        self.assertEqual(api.reports[-1]["status"], "success")
+        self.assertEqual(api.reports[-1]["phase"], "confirm")
+        self.assertEqual(executor.reboots, 0)
+        self.assertEqual(manager._store.data, {})
+
+    def test_back_on_the_old_version_after_the_reboot_fails_without_a_second_reboot(self):
+        events = []
+        api = FakeApi(events)
+        executor = FakeExecutor(events)
+        manager = _os_manager(events, api, executor, _os_hass(installed="18.0", inventory="18.0"))
+        self._rebooted(manager)
+
+        _run(manager.async_confirm_pending())
+
+        self.assertEqual(executor.reboots, 0)
+        self.assertEqual(api.reports[-1]["status"], "failed")
+        self.assertEqual(
+            api.reports[-1]["error"],
+            "Rebooted to activate Home Assistant OS 18.5, but the host came back on 18.0.",
+        )
+        self.assertEqual(manager._store.data, {})
+
+    def test_a_not_yet_loaded_entity_is_waited_for_not_failed_on(self):
+        events = []
+        api = FakeApi(events)
+        hass = _os_hass(installed=None, inventory=None)
+        manager = _os_manager(events, api, FakeExecutor(events), hass)
+        manager._confirm_attempts = 5
+        self._rebooted(manager)
+
+        # The entity shows up unavailable, then loads with the new version, on
+        # the third look -- as it does a minute after a real boot.
+        looks = []
+        real_sleep = updates_mod.asyncio.sleep
+
+        async def sleep(_seconds):
+            looks.append(1)
+            if len(looks) == 1:
+                hass.states = FakeStates(
+                    [FakeState(OS_ENTITY, state="unavailable", installed_version="18.0")]
+                )
+            elif len(looks) == 2:
+                hass.states = FakeStates([FakeState(OS_ENTITY, installed_version="18.5")])
+            await real_sleep(0)
+
+        updates_mod.asyncio.sleep = sleep
+        try:
+            _run(manager.async_confirm_pending())
+        finally:
+            updates_mod.asyncio.sleep = real_sleep
+
+        self.assertEqual(len(looks), 2)
+        self.assertEqual([r["status"] for r in api.reports], ["success"])
+
+    def test_nothing_readable_for_the_whole_window_is_failed_once(self):
+        events = []
+        api = FakeApi(events)
+        manager = _os_manager(events, api, FakeExecutor(events), _os_hass())
+        manager._confirm_attempts = 3
+        self._rebooted(manager)
+
+        _run(manager.async_confirm_pending())
+
+        self.assertEqual([r["status"] for r in api.reports], ["failed"])
+        self.assertIn("no readable version", api.reports[-1]["error"])
+
+
+class StagedMessageTest(unittest.TestCase):
+    def test_the_supervisor_refusal_is_recognised_and_its_version_read(self):
+        message = "Version 18.5 is already installed, reboot the system to activate it"
+        self.assertTrue(updates_mod.awaits_reboot(message))
+        self.assertEqual(updates_mod.staged_version(message), "18.5")
+
+    def test_an_unrelated_refusal_is_not(self):
+        self.assertFalse(updates_mod.awaits_reboot("Version 18.5 is already installed"))
+        self.assertFalse(updates_mod.awaits_reboot("No space left on device"))
+
+
+class RebootCallTest(unittest.TestCase):
+    def test_the_reboot_is_the_hosts_not_a_core_restart(self):
+        services = RecordingServices()
+        hass = _supervised_hass(services)
+
+        _run(_executor(hass).async_reboot())
+
+        self.assertEqual(
+            [(c["domain"], c["service"]) for c in services.calls],
+            [("hassio", "host_reboot")],
+        )
 
 
 if __name__ == "__main__":

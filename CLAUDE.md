@@ -5,7 +5,7 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.11.0 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.11.1 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
 - **Dependencies:** `psutil>=5.9.0` declared; `aiohttp` and `cryptography` come with Home Assistant and hassfest forbids declaring them
@@ -66,6 +66,16 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
 - **Config entry storage:** Server URL, installation_id, access_token, client_id stored in config entry data
 - **Signed self-update:** `updater.py` replaces the integration's own files and restarts HA. Releases must carry an Ed25519 signature verified against a key pinned in `const.py::RELEASE_SIGNING_KEYS` — the server never holds that key, so it can decide whether/when to offer an update but never what code runs. That dict ships **empty**, so self-update fails closed until a key is deliberately pinned. Never add a placeholder.
 - **Component inventory is a full snapshot, never a delta:** `components.py` reports everything the installation is running on every report. The server retires anything absent -- omission *is* removal -- so an agent that sent only what changed would retire almost the whole inventory on its second report. There is deliberately no memory of the previous report in that module. Slugs must be **stable** because the server keys on `(kind, slug)`: they come from the integration domain, the Supervisor add-on slug, or the HACS repository, and **never** from a config entry title or a display name, which users rename. `failing` is set only where Home Assistant actually knows -- a config entry in a failed setup state, or an add-on Supervisor could not start; a *stopped* add-on is not a failure. Cadence is 30 minutes, **not** the 60 s metrics poll, with a forced report immediately after a self-update because the transition is what opens the fleet's observation window. A whole kind being absent is normal: most installs are Core-only. Full design: `docs/technical/component-inventory.md`.
+- **An OS update is staged, then the host reboots:** `update.install` for
+  Home Assistant OS returns normally having only written the spare slot, so
+  `updates.py` never confirms an OS run inline. It marks the pending record
+  `reboot_requested`, reports `progress` at phase `restart`, calls
+  `hassio.host_reboot` (never a Core restart) and confirms on the next boot.
+  **One reboot per run** -- a host back on the old version is `failed`, and
+  the boot-time confirmation never reboots. Confirmation reads the update
+  entity's `installed_version` before the inventory (which lags) and, at boot,
+  runs in the background waiting up to five minutes for either to load. Design:
+  `docs/technical/remote-updates.md` §4.1-4.2.
 - **Installer corrections outrank the matcher, and survive a redeploy:** the
   render pipeline's automatic placement is weak until there is a definitive
   inventory per project, so `floorplan.py::async_plan_devices` runs the
@@ -333,7 +343,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `556 passed, 131 subtests passed`. Two standing limits on
+That currently prints `570 passed, 131 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not
