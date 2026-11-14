@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-11-12] — Client 1.11.1: OS updates reboot to activate
+
+### Changed
+- `docs/technical/remote-updates.md`: OS runs reboot the host to activate the staged update, one reboot per run, entity-first confirmation and the boot-time wait
+- `docs/user/updating.md`: 1.11.1 release notes
+- `CHANGELOG.md`: 1.11.1 entry
+- `CLAUDE.md`, `README.md`: version; `CLAUDE.md`: test count, OS update pattern
+
+---
+
 ## [2026-11-11] — Client 1.11.0: install flag, latest versions, Dispatch corrections
 
 ### Changed
