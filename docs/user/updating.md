@@ -169,6 +169,21 @@ See [Recovering by hand](#recovering-by-hand) above.
 
 ## Release notes
 
+### 1.12.0 — Rooms and Home Assistant areas
+
+**For homeowners.** When your installer updates your Home 3D dashboard, they
+can also put your devices into the matching rooms in Home Assistant (Settings >
+Areas), so the rooms work in Home Assistant itself and with voice assistants.
+This only happens when you have given hands-off permission, and the
+notification you get for the dashboard update says how many devices were
+filed and which rooms were added. By default, devices you already filed in
+a room are left where you put them.
+
+**For installers.** The room editor suggests a room for a device from the
+Home Assistant area it is in, and offers the house's area names when you name
+a drawn room. Deploy can now also file devices into areas: either only the
+ones with no area, or every device into its room's area.
+
 ### 1.11.1 — Home Assistant OS updates finish
 
 **For homeowners.** When you approve a Home Assistant OS update, your Home

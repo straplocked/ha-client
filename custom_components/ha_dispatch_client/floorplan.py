@@ -57,8 +57,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .api_client import FloorplanUnavailable
+from .areas import annotate_areas, area_names, async_sync_areas, entity_areas
 from .const import (
+    AREA_SYNC_DONE,
+    AREA_SYNC_MODES,
+    AREA_SYNC_REFUSED,
+    AREA_SYNC_REFUSED_NO_GRANT,
     DOMAIN,
+    FLOORPLAN_AREA_SYNC_KEY,
     FLOORPLAN_ASSET_DIR,
     FLOORPLAN_BACKPLATE_NAME,
     FLOORPLAN_CARD_FILENAME,
@@ -147,41 +153,10 @@ def area_tokens_by_entity(hass: HomeAssistant) -> Dict[str, set[str]]:
     no registries at all, yields an empty map and the matcher falls back to
     names alone -- the behaviour this integration shipped with.
     """
-    try:
-        from homeassistant.helpers import area_registry, device_registry, entity_registry
-    except ImportError:
-        return {}
-
-    try:
-        areas = area_registry.async_get(hass)
-        devices = device_registry.async_get(hass)
-        entities = entity_registry.async_get(hass)
-    except Exception as err:  # noqa: BLE001 - best-effort signal, see docstring
-        _LOGGER.debug("Area registry unavailable for floorplan matching: %s", err)
-        return {}
-
-    def area_name(area_id: Any) -> Optional[str]:
-        if not area_id:
-            return None
-        getter = getattr(areas, "async_get_area", None)
-        area = getter(area_id) if getter is not None else None
-        return getattr(area, "name", None)
-
-    result: Dict[str, set[str]] = {}
-    try:
-        for entity_id, entry in dict(getattr(entities, "entities", {}) or {}).items():
-            name = area_name(getattr(entry, "area_id", None))
-            if name is None and getattr(entry, "device_id", None):
-                getter = getattr(devices, "async_get", None)
-                device = getter(entry.device_id) if getter is not None else None
-                name = area_name(getattr(device, "area_id", None))
-            if name:
-                result[str(entity_id)] = _tokens(name)
-    except _SOFT_ERRORS as err:
-        _LOGGER.debug("Could not read the entity registry for floorplan matching: %s", err)
-        return {}
-
-    return result
+    return {
+        entity_id: _tokens(found["area"])
+        for entity_id, found in entity_areas(hass).items()
+    }
 
 
 # How many candidate entity ids a decision record keeps. Enough to tell the
@@ -2274,6 +2249,16 @@ class HADispatchFloorplan:
         placed = sum(1 for d in decisions if d.get("bound"))
         total = len(decisions)
         detail = f"Home 3D dashboard deployed; {placed} of {total} devices placed"
+        # Filing into the house's own areas, when this deploy asked for it.
+        # After the dashboard is written, so a sync that cannot happen never
+        # costs the homeowner their dashboard; before the report, so the
+        # report's areas are the ones the house has now.
+        area_sync = await self._async_area_sync(job, decisions)
+        if area_sync is not None and area_sync.get("status") == AREA_SYNC_DONE:
+            detail += (
+                f"; {area_sync['filed_count']} device(s) filed into Home Assistant areas"
+            )
+        annotate_areas(decisions, entity_areas(self.hass))
         if dropped:
             # Said out loud, in the one place the installer who made the
             # correction will look. A correction silently retained forever is
@@ -2300,9 +2285,57 @@ class HADispatchFloorplan:
             FLOORPLAN_REPORT_STATUS_DONE,
             detail,
             devices=decisions,
+            areas=area_names(self.hass),
+            area_sync=area_sync,
         )
-        self._notify_success(went_live)
+        self._notify_success(went_live, area_sync)
         self._running.discard(job_id)
+
+    # -- filing into the house's areas ---------------------------------------
+
+    async def _async_area_sync(
+        self, job: Dict[str, Any], decisions: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """File the placed entities into their rooms' areas, when asked.
+
+        None when the deploy did not ask, which is every deploy unless an
+        installer ticked it. Refused -- and said so in the report -- unless
+        this client's own record shows enhanced permissions on: the server
+        only queues a deploy under that grant, and this is the homeowner's
+        registry, so it is checked here as well rather than taken on trust.
+        A grant that has only just landed may not have been polled yet, so a
+        "no" is asked once more before it is believed.
+        """
+        mode = job.get(FLOORPLAN_AREA_SYNC_KEY)
+        if not mode:
+            return None
+        mode = str(mode)
+        if mode not in AREA_SYNC_MODES:
+            _LOGGER.warning("Ignoring an area sync in an unknown mode: %s", mode)
+            return None
+
+        grant = getattr(self.coordinator, "enhanced_permissions", None)
+        granted = bool(getattr(grant, "granted", False))
+        if not granted and grant is not None:
+            await grant.async_poll()
+            granted = bool(getattr(grant, "granted", False))
+        if not granted:
+            _LOGGER.warning(
+                "Not filing devices into areas: enhanced permissions are not on"
+            )
+            return {
+                "mode": mode, "status": AREA_SYNC_REFUSED,
+                "reason": AREA_SYNC_REFUSED_NO_GRANT,
+                "created": [], "filed": [], "filed_count": 0, "already": 0,
+                "skipped": [], "skipped_count": 0,
+            }
+
+        placements = [
+            (str(d.get("bound")), room_display_name(d.get("room")))
+            for d in decisions
+            if d.get("bound") and str(d.get("room") or "").strip()
+        ]
+        return async_sync_areas(self.hass, placements, mode)
 
     # -- applying one job -------------------------------------------------
 
@@ -2685,17 +2718,23 @@ class HADispatchFloorplan:
         status: str,
         detail: Optional[str],
         devices: Optional[List[Dict[str, Any]]] = None,
+        areas: Optional[List[str]] = None,
+        area_sync: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Report the outcome, tolerating a server that cannot take it.
 
         `devices` is the matcher's decision list (see _decide): what each
         device from the estimate was bound to, or why it was not, and which
-        entities the house had to offer. Sent with a successful deploy so the
+        entities the house had to offer -- and, since 1.12.0, the area each
+        bound entity is filed under. Sent with a successful deploy so the
         installer can read it off Dispatch instead of this house's log.
+        `areas` is the house's area names and `area_sync` what filing into
+        them did, when the deploy asked for it (see areas.py).
         """
         try:
             await self.api.report_floorplan(
-                self.installation_id, job_id, status, detail=detail, devices=devices
+                self.installation_id, job_id, status, detail=detail, devices=devices,
+                areas=areas, area_sync=area_sync,
             )
         except FloorplanUnavailable:
             _LOGGER.info(
@@ -2707,7 +2746,9 @@ class HADispatchFloorplan:
                 "Could not report floorplan deploy %s (%s): %s", job_id, status, err
             )
 
-    def _notify_success(self, went_live: bool) -> None:
+    def _notify_success(
+        self, went_live: bool, area_sync: Optional[Dict[str, Any]] = None
+    ) -> None:
         """An informational heads-up -- no approval needed, unlike consent prompts.
 
         Unlike remote_access.py's consent notifications, nothing here is
@@ -2720,6 +2761,18 @@ class HADispatchFloorplan:
         message = "Your installer just updated your Home 3D dashboard."
         if not went_live:
             message += " Restart Home Assistant to see it."
+        filed = (area_sync or {}).get("filed_count") or 0
+        if (area_sync or {}).get("status") == AREA_SYNC_DONE and filed:
+            # The receipt for a change to the homeowner's own registry, in the
+            # one notification they already get for this deploy.
+            created = list((area_sync or {}).get("created") or [])
+            message += (
+                f"\n\nIt also put {filed} device(s) into the matching rooms under"
+                " Settings > Areas"
+            )
+            message += (
+                f", adding {', '.join(created)}." if created else "."
+            )
         try:
             persistent_notification.async_create(
                 self.hass,

@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [2026-11-15] — Client 1.12.0: Home Assistant areas
+
+### Changed
+- `docs/user/updating.md`: 1.12.0 release notes
+- `CHANGELOG.md`: 1.12.0 entry
+- `CLAUDE.md`, `README.md`: version; `CLAUDE.md`: `areas.py` in the layout, the area-sync pattern, test count
+
+---
+
 ## [2026-11-12] — Client 1.11.1: OS updates reboot to activate
 
 ### Changed
