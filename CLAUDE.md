@@ -5,7 +5,7 @@
 Home Assistant custom integration that connects to a centralized **HA Dispatch server** (Laravel 12 + Filament 4) for monitoring, metrics collection, and alert management across multiple HA instances.
 
 - **Domain:** `ha_dispatch_client`
-- **Version:** 1.11.1 (tracked in `VERSION` file and `manifest.json`)
+- **Version:** 1.12.0 (tracked in `VERSION` file and `manifest.json`)
 - **Language:** Python 3 (async-first)
 - **Framework:** Home Assistant Custom Integration (HACS-compatible, `hacs.json` at root)
 - **Dependencies:** `psutil>=5.9.0` declared; `aiohttp` and `cryptography` come with Home Assistant and hassfest forbids declaring them
@@ -36,6 +36,7 @@ custom_components/ha_dispatch_client/
 ├── http_config.py    # http.yaml (trusted proxies) + the one include line in configuration.yaml
 ├── repairs.py        # Approve/Deny dialog and the end-access off-switch
 ├── floorplan.py      # HADispatchFloorplan - plan assets -> the room-first "Home 3D" dashboard
+├── areas.py          # The house's HA areas: each entity's area for the report, and filing a plan's devices into them
 ├── www/
 │   └── ayvra-room-plan.js  # <ayvra-room-plan> - the room-first custom Lovelace card
 ├── brand/            # icon.png (256) + icon@2x.png (512): the catalog's brands check, served by HA 2026.3+
@@ -145,6 +146,20 @@ archive, `generate_signing_key.py` creates the Ed25519 keypair.
   sized to the inverted one, and each label is counter-rotated so text stays
   upright. `floorplan.py::rotate_percent_point` is the normative definition of
   a quarter turn in percent space, tested there and cited by the card.
+- **Filing into Home Assistant areas is asked for, granted, and receipted:**
+  every deploy report carries each bound entity's area (`area`, `area_id`)
+  and the house's area names (`areas`), so Dispatch's room editor can suggest
+  a room from where the homeowner already filed a device. Writing goes the
+  other way only when the pending payload says `area_sync: fill|move`, and
+  only when `enhanced_permissions.granted` is true on this client's own
+  record (asked once more before a "no" is believed) -- the server's word
+  alone is not enough for the homeowner's registry. `fill` touches entities
+  with no area; `move` also refiles; an area is created only to put something
+  in it; the **entity** is written, never its device. The result rides the
+  report as `area_sync` and the homeowner is told in the deploy's own
+  notification. It runs after the dashboard is written, so a refused or
+  failed sync never costs the dashboard. `areas.py`, `tests/test_areas.py`.
+
 - **Consent-gated remote access:** `remote_access.py` owns consent and session state, `tunnel.py` owns transport, `repairs.py` owns the dialogs. Neither enforces scope -- the server authorises every relayed request before it is queued. What the client adds is a local credential and a local refusal policy. Relayed requests run as a Home Assistant **system user** minted through `hass.auth`: read-only group for `diagnostic`, admin group for `maintenance`/`full`, and **nothing at all** for a session with no consent on record. Both users are created lazily. `scope_description` from the server is shown **verbatim** -- it is written for a homeowner on purpose. **Standing scopes** (`enhanced_permissions`, `remote_ui` -- `ACCESS_STANDING_SCOPES`) are a yes that stays on until the homeowner turns it off: the prompt says "Until you turn it off.", never the request's `duration_minutes`, and a grant of one is **never recorded as a live session** (the server relays nothing under it, and a live entry would let the tunnel mint an admin credential for it). Approving in HA is the primary answer and grants on the server exactly as the consent page does; the consent link appears only in the homeowner's own notification. Full design: `docs/technical/remote-access.md`. A `screen` session (Remote Screen) carries the frontend itself to a headless browser on the Dispatch side: its own local policy (no `/auth`, no raw socket, writes only to `/api`), the admin user, and `screen.py` swapping our token into the browser's WebSocket `auth` frame so a real credential never leaves the house.
 
 - **Onboarding is a pairing code, and the code is never kept:** the config
@@ -343,7 +358,7 @@ way a Core-only install does. Add to that conftest when new HA imports appear.
 python3 -m pytest tests/ -q
 ```
 
-That currently prints `570 passed, 131 subtests passed`. Two standing limits on
+That currently prints `583 passed, 131 subtests passed`. Two standing limits on
 what that number means, both of which have caught people out:
 
 - **`__init__.py` is exercised by no test at all.** `voluptuous` is not

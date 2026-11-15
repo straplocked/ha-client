@@ -2,6 +2,24 @@
 
 All notable changes to HA Dispatch Client will be documented in this file.
 
+## [1.12.0] - 2026-11-15
+
+### Added -- the house's own areas, both ways
+- The floor-plan deploy report now says which Home Assistant area each placed
+  device's entity is in (`area`, `area_id` on every device record) and lists
+  the house's area names (`areas`). Dispatch's room editor uses them to
+  suggest a room for a device from where the homeowner already filed it, and
+  to offer the house's own room names when a room is drawn.
+- "Use these rooms as Home Assistant areas": a deploy that carries
+  `area_sync: fill` files every placed entity that has no area into the area
+  named after its room, creating the area if the house has none by that name;
+  `area_sync: move` also refiles entities that are in another area. Only under
+  enhanced permissions, checked on this client's own record as well as the
+  server's. Entities are written, never devices, and an area is only created
+  to put something in it. What changed rides the report as `area_sync`, and
+  the homeowner's "Home 3D dashboard updated" notification says how many
+  devices were filed and which areas were added.
+
 ## [1.11.1] - 2026-11-12
 
 ### Fixed -- Home Assistant OS updates finish

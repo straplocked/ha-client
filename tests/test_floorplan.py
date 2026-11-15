@@ -196,9 +196,13 @@ class FakeApi:
             raise self._pending_error
         return self._pending
 
-    async def report_floorplan(self, installation_id, job_id, status, detail=None, devices=None):
+    async def report_floorplan(
+        self, installation_id, job_id, status, detail=None, devices=None,
+        areas=None, area_sync=None,
+    ):
         self.reports.append(
-            {"job_id": job_id, "status": status, "detail": detail, "devices": devices}
+            {"job_id": job_id, "status": status, "detail": detail, "devices": devices,
+             "areas": areas, "area_sync": area_sync}
         )
         return {"status": "ok"}
 

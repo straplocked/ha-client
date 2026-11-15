@@ -881,6 +881,8 @@ class HADispatchApiClient:
         status: str,
         detail: Optional[str] = None,
         devices: Optional[List[Dict[str, Any]]] = None,
+        areas: Optional[List[str]] = None,
+        area_sync: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Report the outcome of applying a floorplan deploy.
 
@@ -888,7 +890,9 @@ class HADispatchApiClient:
         human-readable note -- what got deployed, or why it did not. devices
         is the dashboard's per-device match record (floorplan.py's _decide),
         one entry per device in the estimate, so the server can show which
-        were placed and why the rest were not.
+        were placed and why the rest were not. areas is the house's own area
+        names, and area_sync what filing the plan's devices into them did
+        (areas.py); both are left out when None, as an older server expects.
         """
         url = self.server_url + API_FLOORPLAN_REPORT.format(
             installation_id=installation_id, id=job_id
@@ -898,6 +902,10 @@ class HADispatchApiClient:
             data["detail"] = str(detail)[:2000]
         if devices is not None:
             data["devices"] = list(devices)
+        if areas is not None:
+            data["areas"] = list(areas)
+        if area_sync is not None:
+            data["area_sync"] = dict(area_sync)
 
         _LOGGER.debug("Reporting floorplan deploy %s: status=%s", job_id, status)
         async with self.session.post(

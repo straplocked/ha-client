@@ -637,6 +637,28 @@ FLOORPLAN_CARD_SOURCE_DIR = "www"
 # the query string so a version bump updates the one row instead of leaving a
 # second, stale resource behind.
 FLOORPLAN_RESOURCE_TYPE = "module"
+# Filing a deployed plan's devices into the house's own Home Assistant areas
+# (areas.py). Asked for per deploy, by the pending payload's `area_sync`:
+# absent means leave the area registry alone, which is the default and what
+# every deploy before this did. `fill` files only entities with no area at
+# all; `move` also refiles an entity the homeowner has in another area. The
+# server queues a deploy only under enhanced permissions, and this client
+# checks its own record of that grant too before writing the registry.
+FLOORPLAN_AREA_SYNC_KEY = "area_sync"
+AREA_SYNC_FILL = "fill"
+AREA_SYNC_MOVE = "move"
+AREA_SYNC_MODES = (AREA_SYNC_FILL, AREA_SYNC_MOVE)
+AREA_SYNC_DONE = "done"
+AREA_SYNC_REFUSED = "refused"
+AREA_SYNC_FAILED = "failed"
+# Why an entity was left where it was.
+AREA_SYNC_SKIP_NOT_REGISTERED = "not_registered"
+AREA_SYNC_SKIP_FILED_ELSEWHERE = "filed_elsewhere"
+AREA_SYNC_SKIP_TWO_ROOMS = "two_rooms"
+AREA_SYNC_REFUSED_NO_GRANT = "no_grant"
+# How many filed/skipped rows one report carries; the counts are always whole.
+AREA_SYNC_REPORT_LIMIT = 200
+
 FLOORPLAN_RESOURCES_STORAGE_KEY = "lovelace_resources"
 FLOORPLAN_RESOURCE_ID = f"{DOMAIN}_room_plan_card"
 
